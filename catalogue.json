@@ -1,0 +1,55 @@
+{
+  "note": "Wearables for the avatar. Every item is cut from the MakeHuman base mesh's own helper shells, which are authored to fit this body exactly, so nothing needs refitting. Add items by editing this file; the pipeline reads it and does not need changing.",
+  "licence": "All geometry here comes from assets/body_base.obj (MakeHuman, CC0 1.0 Universal). Public domain, commercial use unrestricted, no attribution required. Anything added later must record its own licence and be clear for commercial use.",
+  "source_note": "`group` names a group inside the base mesh. `y_min` / `y_max` cut that shell by height in mesh units (the figure runs about -8.2 at the feet to 8.5 at the crown). `offset` lifts the garment off the skin along its normals so it does not z-fight.",
+  "defaults": { "male": ["shirt_green", "trousers_charcoal", "shoes_dark", "hair_short"],
+                "female": ["shirt_blue", "trousers_navy", "shoes_dark", "hair_short"] },
+  "items": [
+    {
+      "id": "shirt_blue", "category": "top", "label": "Light blue shirt",
+      "group": "helper-tights", "y_min": 0.8, "offset": 0.085,
+      "colour": [150, 176, 208], "licence": "CC0-1.0"
+    },
+    {
+      "id": "shirt_green", "category": "top", "label": "Green shirt",
+      "group": "helper-tights", "y_min": 0.8, "offset": 0.085,
+      "colour": [64, 102, 84], "licence": "CC0-1.0"
+    },
+    {
+      "id": "shirt_white", "category": "top", "label": "White shirt",
+      "group": "helper-tights", "y_min": 0.8, "offset": 0.085,
+      "colour": [222, 226, 232], "licence": "CC0-1.0"
+    },
+    {
+      "id": "trousers_navy", "category": "bottom", "label": "Navy trousers",
+      "group": "helper-tights", "y_min": -7.35, "y_max": 1.25, "offset": 0.05,
+      "colour": [38, 44, 66], "licence": "CC0-1.0"
+    },
+    {
+      "id": "trousers_charcoal", "category": "bottom", "label": "Charcoal trousers",
+      "group": "helper-tights", "y_min": -7.35, "y_max": 1.25, "offset": 0.05,
+      "colour": [62, 64, 70], "licence": "CC0-1.0"
+    },
+    {
+      "id": "skirt_navy", "category": "bottom", "label": "Navy skirt",
+      "group": "helper-skirt", "offset": 0.05,
+      "colour": [38, 44, 66], "licence": "CC0-1.0"
+    },
+    {
+      "id": "shoes_dark", "category": "shoes", "label": "Dark shoes",
+      "group": "helper-tights", "y_max": -7.3, "offset": 0.06,
+      "colour": [28, 28, 32], "licence": "CC0-1.0"
+    },
+    {
+      "id": "hair_short", "category": "hair", "label": "Short hair",
+      "_why": "Cut from the skull itself rather than the base mesh's helper-hair shell. That shell is a loose fitting volume for long hairstyles, not a haircut, and renders as a faceted dome over the face. A skull cap offset a few millimetres reads as short hair; a real haircut needs an authored mesh.",
+      "group": "body", "y_min": 7.45, "offset": 0.055,
+      "colour": "from_photo", "licence": "CC0-1.0"
+    },
+    {
+      "id": "eyes", "category": "eyes", "label": "Eyes",
+      "group": ["helper-l-eye", "helper-r-eye"], "offset": 0.0,
+      "colour": [38, 30, 26], "licence": "CC0-1.0"
+    }
+  ]
+}

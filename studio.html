@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avatar studio</title>
+<style>
+  :root { --bg:#111317; --panel:#191c22; --line:#2a2f38; --text:#e8eaed; --muted:#9aa3af;
+          --accent:#7cc4ff; --accent-ink:#06243a; --bad:#ff8a8a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.55 ui-sans-serif,system-ui,"Segoe UI",sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:14px;
+           align-items:baseline; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:15px; font-weight:600; }
+  header .note { color:var(--muted); font-size:12px; }
+  .wrap { max-width:1200px; margin:0 auto; padding:20px; display:grid; gap:20px; }
+
+  #drop { border:1.5px dashed var(--line); border-radius:12px; padding:28px 20px; text-align:center;
+          background:var(--panel); transition:border-color .15s, background .15s; }
+  #drop.over { border-color:var(--accent); background:#1b222b; }
+  #drop p { margin:0 0 14px; color:var(--muted); }
+  .row { display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap; }
+  button { font:inherit; font-weight:600; border:0; border-radius:8px; padding:9px 16px; cursor:pointer;
+           background:var(--accent); color:var(--accent-ink); }
+  button.ghost { background:#222730; color:var(--text); font-weight:500; }
+  button[disabled] { opacity:.55; cursor:default; }
+  input[type=file] { display:none; }
+  #chosen { color:var(--muted); font-size:13px; }
+  .toggle { color:var(--muted); font-size:13px; display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .toggle input { accent-color:var(--accent); }
+  select.toggle { background:#222730; color:var(--text); border:1px solid var(--line);
+                  border-radius:8px; padding:8px 10px; font:inherit; }
+  #status { min-height:20px; font-size:13px; color:var(--muted); text-align:center; }
+  #status.bad { color:var(--bad); }
+
+  #result { display:none; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--panel); }
+  #result iframe { width:100%; height:62vh; border:0; display:block; }
+
+  h2 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted);
+       margin:0 0 10px; font-weight:600; }
+  #gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden;
+          cursor:pointer; text-align:left; padding:0; display:block; }
+  .card:hover { border-color:var(--accent); }
+  .card img { width:100%; aspect-ratio:1; object-fit:cover; display:block; background:#0d0f13; }
+  .card .meta { padding:8px 10px; }
+  .card .when { font-size:12px; color:var(--text); }
+  .card .expr { font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .empty { color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Avatar studio</h1>
+  <span class="note">internal testing tool · one photo in, a 3D face out · no login, keep it on the office network</span>
+</header>
+
+<div class="wrap">
+  <form id="drop">
+    <p>Drop a photo here, or pick one. Front-facing and well lit works best.</p>
+    <div class="row">
+      <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/bmp">
+      <button type="button" class="ghost" id="pick">Choose photo</button>
+      <label class="toggle"><input type="checkbox" id="fullbody" checked> Full body</label>
+      <select id="gender" class="toggle" title="which default outfit to dress the avatar in">
+        <option value="male">Male outfit</option>
+        <option value="female">Female outfit</option>
+      </select>
+      <button type="submit" id="go" disabled>Generate avatar</button>
+      <span id="chosen"></span>
+    </div>
+  </form>
+
+  <div id="status"></div>
+
+  <div id="result"><iframe id="viewer" title="generated avatar"></iframe></div>
+
+  <section>
+    <h2>Earlier avatars</h2>
+    <div id="gallery"></div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const drop = $('drop'), file = $('file'), go = $('go'), status = $('status'),
+      result = $('result'), viewer = $('viewer'), gallery = $('gallery'), chosen = $('chosen');
+
+function setFile(f) {
+  if (!f) return;
+  file.files = (() => { const dt = new DataTransfer(); dt.items.add(f); return dt.files; })();
+  chosen.textContent = f.name;
+  go.disabled = false;
+  status.textContent = '';
+  status.className = '';
+}
+
+$('pick').addEventListener('click', () => file.click());
+file.addEventListener('change', () => setFile(file.files[0]));
+
+['dragenter', 'dragover'].forEach((e) =>
+  drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach((e) =>
+  drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', (ev) => setFile(ev.dataTransfer.files[0]));
+
+drop.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  if (!file.files[0]) return;
+  go.disabled = true;
+  status.className = '';
+  status.textContent = 'Fitting the face…';
+
+  const body = new FormData();
+  body.append('photo', file.files[0]);
+  body.append('mode', $('fullbody').checked ? 'body' : 'face');
+  body.append('gender', $('gender').value);
+  try {
+    const res = await fetch('/generate', { method: 'POST', body });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Generation failed.');
+    show(data.review);
+    status.textContent = `Done · ${data.info.triangles} triangles · ${data.info.size_kb} KB`;
+    loadGallery();
+  } catch (err) {
+    status.className = 'bad';
+    status.textContent = err.message;
+  } finally {
+    go.disabled = false;
+  }
+});
+
+function show(reviewUrl) {
+  viewer.src = reviewUrl;
+  result.style.display = 'block';
+  result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function loadGallery() {
+  const items = await fetch('/gallery.json').then((r) => r.json()).catch(() => []);
+  if (!items.length) { gallery.innerHTML = '<span class="empty">Nothing generated yet.</span>'; return; }
+  gallery.innerHTML = '';
+  for (const it of items) {
+    const card = document.createElement('button');
+    card.className = 'card';
+    card.type = 'button';
+    const expr = it.expression.map(([k, v]) => k).join(', ') || 'neutral';
+    card.innerHTML =
+      `<img src="${it.photo || ''}" alt="">` +
+      `<div class="meta"><div class="when">${it.created}</div><div class="expr">${expr}</div></div>`;
+    card.addEventListener('click', () =>
+      show(`/review.html?model=${encodeURIComponent(it.model)}&photo=${encodeURIComponent(it.photo || '')}`));
+    gallery.appendChild(card);
+  }
+}
+
+loadGallery();
+</script>
+</body>
+</html>
