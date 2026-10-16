@@ -31,7 +31,8 @@ class Part:
     """One drawable piece: geometry, how it is painted, and how it is skinned."""
 
     def __init__(self, name, vertices, faces, joints, weights,
-                 colour=None, uv=None, texture=None, normals=None):
+                 colour=None, uv=None, texture=None, normals=None, normal_texture=None,
+                 alpha_mask: bool = False, roughness: float = 0.85, normal_scale: float = 1.0):
         self.name = name
         self.vertices = np.asarray(vertices, dtype=np.float32)
         self.faces = np.asarray(faces, dtype=np.uint32)
@@ -40,6 +41,10 @@ class Part:
         self.colour = None if colour is None else np.asarray(colour, dtype=np.float32)
         self.uv = None if uv is None else np.asarray(uv, dtype=np.float32)
         self.texture = texture          # a PIL image, or None
+        self.normal_texture = normal_texture  # a PIL image in tangent space, or None
+        self.alpha_mask = alpha_mask    # texture alpha below 0.5 is cut away
+        self.roughness = roughness      # written into the file, so every engine agrees
+        self.normal_scale = normal_scale
         self.normals = None if normals is None else np.asarray(normals, dtype=np.float32)
 
 
@@ -63,7 +68,7 @@ class _Buffer:
                                         byteLength=len(data), target=target))
         return len(self.views) - 1
 
-    def add(self, array: np.ndarray, target=None, minmax=False) -> int:
+    def add(self, array: np.ndarray, target=None, minmax=False, normalized=False) -> int:
         array = np.ascontiguousarray(array)
         width = 1 if array.ndim == 1 else array.shape[1]
         view = self.add_view(array.tobytes(), target)
@@ -72,7 +77,7 @@ class _Buffer:
             componentType=COMPONENT[array.dtype],
             count=int(array.shape[0]),
             type=TYPE_FOR_WIDTH[width],
-            normalized=False,
+            normalized=normalized,
         )
         if minmax:
             accessor.min = array.min(axis=0).tolist()
@@ -81,8 +86,65 @@ class _Buffer:
         return len(self.accessors) - 1
 
 
-def export(parts: list[Part], skeleton, out_path: pathlib.Path) -> None:
-    """Write the avatar and its skeleton to `out_path` as a GLB."""
+def axis_angle(axis, degrees: float):
+    """A glTF rotation quaternion [x, y, z, w]."""
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    half = np.radians(degrees) / 2.0
+    xyz = axis * np.sin(half)
+    return [float(xyz[0]), float(xyz[1]), float(xyz[2]), float(np.cos(half))]
+
+
+def _quantise_weights(weights: np.ndarray) -> np.ndarray:
+    """Skin weights as normalised bytes that still sum to exactly 255.
+
+    glTF allows weights as unsigned bytes, a quarter the size of floats. Plain
+    rounding can leave a vertex summing to 253 or 257, and the spec wants a sum
+    of one, so the rounding remainder goes onto each vertex's strongest bone.
+    """
+    q = np.rint(np.clip(weights, 0.0, 1.0) * 255.0).astype(np.int32)
+    remainder = 255 - q.sum(axis=1)
+    strongest = q.argmax(axis=1)
+    q[np.arange(len(q)), strongest] += remainder
+    return np.clip(q, 0, 255).astype(np.uint8)
+
+
+def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None) -> int:
+    """Embed an image and return its texture index.
+
+    The same image object passed twice is embedded once: head, body and face
+    share one skin-grain map, and embedding it per part tripled its cost.
+
+    JPEG, not PNG: skin and photo textures are noisy by nature and PNG barely
+    compresses noise, so a PNG skin map alone ran to several megabytes.
+    """
+    if _seen is not None and id(image) in _seen:
+        return _seen[id(image)]
+    data = io.BytesIO()
+    if image.mode == "RGBA":
+        # JPEG has no alpha channel, and an alpha-masked texture needs one.
+        image.save(data, format="PNG", optimize=True)
+        mime = "image/png"
+    else:
+        image.convert("RGB").save(data, format="JPEG", quality=quality, optimize=True)
+        mime = "image/jpeg"
+    view = buf.add_view(data.getvalue())
+    gltf.images.append(gl.Image(mimeType=mime, bufferView=view))
+    gltf.samplers.append(gl.Sampler(magFilter=gl.LINEAR, minFilter=gl.LINEAR_MIPMAP_LINEAR))
+    gltf.textures.append(gl.Texture(source=len(gltf.images) - 1, sampler=len(gltf.samplers) - 1))
+    if _seen is not None:
+        _seen[id(image)] = len(gltf.textures) - 1
+    return len(gltf.textures) - 1
+
+
+def export(parts: list[Part], skeleton, out_path: pathlib.Path,
+           pose: dict[str, list[float]] | None = None) -> None:
+    """Write the avatar and its skeleton to `out_path` as a GLB.
+
+    `pose` rotates named bones in the rest pose. The base mesh is modelled in a
+    mannequin stance, arms out and fingers splayed, which is the first thing that
+    says 'not a person'.
+    """
     buf = _Buffer()
     gltf = gl.GLTF2()
     gltf.asset = gl.Asset(version="2.0", generator="avatar-engine")
@@ -90,10 +152,14 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path) -> None:
     # --- the skeleton: one node per bone, children hanging off their parent ---
     translations = skeleton.local_translations()
     bone_node_start = 0  # bone nodes are written first, so index == bone index
+    pose = pose or {}
     for i, name in enumerate(skeleton.names):
-        gltf.nodes.append(gl.Node(name=name,
-                                  translation=[float(x) for x in translations[i]],
-                                  children=[]))
+        node = gl.Node(name=name,
+                       translation=[float(x) for x in translations[i]],
+                       children=[])
+        if name in pose:
+            node.rotation = pose[name]
+        gltf.nodes.append(node)
     for i, parent in enumerate(skeleton.parents):
         if parent >= 0:
             gltf.nodes[int(parent)].children.append(i)
@@ -109,40 +175,50 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path) -> None:
 
     # --- the geometry ---
     mesh = gl.Mesh(name="avatar", primitives=[])
+    embedded: dict = {}
     for part in parts:
+        # Compact encodings the spec allows: byte joints while there are fewer
+        # than 256 bones, byte weights and colours, 16-bit indices while there
+        # are fewer than 65,536 vertices. Together they roughly halve the file.
+        joints = part.joints.astype(np.uint8 if len(skeleton.names) < 256 else np.uint16)
         attributes = {
             "POSITION": buf.add(part.vertices, gl.ARRAY_BUFFER, minmax=True),
-            "JOINTS_0": buf.add(part.joints, gl.ARRAY_BUFFER),
-            "WEIGHTS_0": buf.add(part.weights, gl.ARRAY_BUFFER),
+            "JOINTS_0": buf.add(joints, gl.ARRAY_BUFFER),
+            "WEIGHTS_0": buf.add(_quantise_weights(part.weights), gl.ARRAY_BUFFER, normalized=True),
         }
         if part.normals is not None:
             attributes["NORMAL"] = buf.add(part.normals, gl.ARRAY_BUFFER)
         if part.colour is not None:
-            attributes["COLOR_0"] = buf.add(part.colour, gl.ARRAY_BUFFER)
+            colour = np.rint(np.clip(part.colour, 0.0, 1.0) * 255.0).astype(np.uint8)
+            attributes["COLOR_0"] = buf.add(colour, gl.ARRAY_BUFFER, normalized=True)
         if part.uv is not None:
             attributes["TEXCOORD_0"] = buf.add(part.uv, gl.ARRAY_BUFFER)
 
-        indices = buf.add(part.faces.reshape(-1), gl.ELEMENT_ARRAY_BUFFER)
+        index_type = np.uint16 if len(part.vertices) < 65536 else np.uint32
+        indices = buf.add(part.faces.reshape(-1).astype(index_type), gl.ELEMENT_ARRAY_BUFFER)
 
         material = gl.Material(
             name=part.name,
             pbrMetallicRoughness=gl.PbrMetallicRoughness(
                 baseColorFactor=[1.0, 1.0, 1.0, 1.0],
                 metallicFactor=0.0,
-                roughnessFactor=0.85,
+                roughnessFactor=float(part.roughness),
             ),
             doubleSided=True,
         )
         if part.texture is not None:
-            png = io.BytesIO()
-            part.texture.convert("RGB").save(png, format="PNG", optimize=True)
-            view = buf.add_view(png.getvalue())
-            gltf.images.append(gl.Image(mimeType="image/png", bufferView=view))
-            gltf.samplers.append(gl.Sampler(magFilter=gl.LINEAR, minFilter=gl.LINEAR))
-            gltf.textures.append(gl.Texture(source=len(gltf.images) - 1,
-                                            sampler=len(gltf.samplers) - 1))
             material.pbrMetallicRoughness.baseColorTexture = gl.TextureInfo(
-                index=len(gltf.textures) - 1
+                index=_add_texture(gltf, buf, part.texture, _seen=embedded)
+            )
+        if part.alpha_mask:
+            material.alphaMode = "MASK"
+            material.alphaCutoff = 0.5
+        if part.normal_texture is not None:
+            # Pores and grain: breaks up the highlight so skin stops reading as
+            # plastic under a key light.
+            material.normalTexture = gl.NormalMaterialTexture(
+                index=_add_texture(gltf, buf, part.normal_texture, quality=85, _seen=embedded),
+                scale=float(part.normal_scale)
             )
 
         gltf.materials.append(material)

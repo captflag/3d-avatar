@@ -34,7 +34,6 @@ WEIGHTS_JSON = HERE / "assets" / "default_weights.mhw"
 
 MAX_INFLUENCES = 4  # what glTF's JOINTS_0/WEIGHTS_0 pair carries
 
-_skeleton = None
 _weights = None
 
 
@@ -69,10 +68,12 @@ class Skeleton:
 
 
 def load_skeleton(vertices: np.ndarray) -> Skeleton:
-    """Bone hierarchy with joint positions resolved against the base mesh."""
-    global _skeleton
-    if _skeleton is not None:
-        return _skeleton
+    """Bone hierarchy with joint positions resolved against the given mesh.
+
+    Not cached: once the head is shaped to the person, the eye and jaw joints
+    move with it, so joints must come from the shaped mesh every time. It is a
+    few hundred small averages, so recomputing costs nothing.
+    """
 
     data = json.loads(SKELETON_JSON.read_text(encoding="utf-8"))
     joints, bones = data["joints"], data["bones"]
@@ -106,8 +107,7 @@ def load_skeleton(vertices: np.ndarray) -> Skeleton:
     heads = np.array([position(bones[n]["head"]) for n in ordered], dtype=np.float64)
     tails = np.array([position(bones[n]["tail"]) for n in ordered], dtype=np.float64)
 
-    _skeleton = Skeleton(ordered, parents, heads, tails)
-    return _skeleton
+    return Skeleton(ordered, parents, heads, tails)
 
 
 def load_weights() -> dict[str, list]:

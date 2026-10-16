@@ -153,6 +153,11 @@ def serve_sample(name: str):
     return send_from_directory(HERE / "samples", name)
 
 
+@app.get("/lib/<path:name>")
+def serve_lib(name: str):
+    return send_from_directory(HERE / "lib", name)
+
+
 @app.get("/review.html")
 def serve_review():
     return send_from_directory(HERE, "review.html")

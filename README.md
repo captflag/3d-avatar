@@ -18,7 +18,8 @@ card is a render of the avatar itself, badged `full body` or `face only`, so you
 can see at a glance what each run produced. Opening the review page with no model
 named shows the newest avatar.
 
-**Full body** is on by default: the fitted face goes on a base body, dressed from
+Pick **3D model** or **2D image** beside the photo picker, then use **Download**
+on the result. **Full body** is on by default: the fitted face goes on a base body, dressed from
 the catalogue, with skin tone and hair colour sampled from the photo. Pick the male
 or female outfit beside it. Untick it for the face mesh on its own.
 
@@ -32,6 +33,23 @@ network only. There is no login, so keep this on the office network and off the
 public internet.
 
 Generation takes a couple of seconds on CPU. One photo is processed at a time.
+
+## What you can download
+
+| Choice | File | Where it opens |
+|---|---|---|
+| 3D model | `.glb` (glTF 2.0 binary), rigged | Unity, Unreal, Blender, three.js, Babylon.js, Godot, most viewers |
+| 2D image | `.png`, transparent background, 900x1200 full body or 900x900 head | anything |
+
+GLB is the default because it is the most widely supported 3D format and the only
+common one that carries the mesh, textures, skeleton and skin weights in a single
+file. The 2D image is that same avatar rendered in the browser, so it always
+matches what you see.
+
+FBX is the other format game pipelines ask for. It is not here because nothing in
+this stack can write it: exporting FBX means driving Blender or Adobe's FBX SDK
+from the pipeline. Worth adding only if an engine team actually needs it, since
+Unity and Unreal both import GLB.
 
 ## Run one photo from the command line
 
@@ -61,6 +79,43 @@ Without it the bare mesh pokes through the clothes.
 
 Hair colour is sampled from just above the hairline in the photo, skin tone from
 the cheeks, so both follow the person rather than a preset.
+
+**Garments from files.** An item can name a mesh under `assets/garments/`
+instead of a base-mesh group (`"file": "jacket.obj"`), positioned with `scale`
+and `translate`, and marked `"fit": "tight"` or `"loose"`. It has no base-mesh
+vertices, so it is rigged by borrowing weights from the body underneath it.
+Every item must carry a `licence`; anything without one is refused.
+
+Measured against garments whose true weights are known, posed in a stride that
+moves parts of them by up to 30 cm, transferred weights land within 0.2 cm (shirt)
+and 0.8 cm (trousers) at the 95th percentile. Loose garments are the weak case:
+a skirt borrowing from the body tears between the legs, so `loose` items borrow
+from MakeHuman's authored skirt shell instead. That path has no foreign skirt to
+test against yet; check the first real one.
+
+**MakeHuman garments (MHCLO).** An item can name a MakeHuman clothes file
+(`"mhclo": "catsuit/catsuit.mhclo"`). These are the best route for real clothes:
+each garment vertex is stored as a blend of three body vertices plus an offset,
+so the garment is rebuilt on each person's shaped body, and its skin weights are
+exact rather than borrowed. Two CC0 garments from MakeHuman's community
+repository are wired in to prove the path (catsuit, tights); fetch them with:
+
+```bash
+cd avatar-engine && for g in tightsv2 catsuit; do mkdir -p assets/garments/$g && for e in mhclo obj mhmat; do curl -sSL -o assets/garments/$g/$g.$e https://raw.githubusercontent.com/makehumancommunity/communityassets-wip/master/clothes/$g/$g.$e; done; done
+```
+
+Hoodies, jeans and shoes in MHCLO exist on MakeHuman's asset portal; licences
+there are per item, so check each before it goes into the catalogue.
+
+**Surface finish lives in the file.** Each part is exported with its own
+roughness (skin 0.5, eyes 0.05, hair 0.45, cloth 0.85, shoes 0.4; a catalogue
+item may set `roughness`). The viewer no longer overrides it, so the studio
+shows what Blender, Unity or Unreal will.
+
+**Skin under clothes is alpha-masked, not deleted.** Every body triangle is
+kept and the texture's alpha hides what a garment covers, leaving a band of skin
+under each edge. Deleting triangles left nothing behind a cuff or collar when
+the figure moved.
 
 ## The rig
 
@@ -98,11 +153,18 @@ The virtualenv, the two model files and anything generated are gitignored, so a
 fresh checkout needs this once:
 
 ```bash
-cd avatar-engine && uv venv --python 3.12 .venv && uv pip install --python .venv/Scripts/python.exe "mediapipe<1" numpy pillow trimesh flask
+cd avatar-engine && uv venv --python 3.12 .venv && uv pip install --python .venv/Scripts/python.exe "mediapipe<1" numpy pillow trimesh flask scipy pygltflib opencv-python-headless
 ```
 
 ```bash
 cd avatar-engine && mkdir -p assets && curl -sSL -o assets/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task && curl -sSL -o assets/canonical_face_model.obj https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/mediapipe/modules/face_geometry/data/canonical_face_model.obj && curl -sSL -o assets/body_base.obj https://raw.githubusercontent.com/makehumancommunity/makehuman/master/makehuman/data/3dobjs/base.obj && curl -sSL -o assets/default.mhskel https://raw.githubusercontent.com/makehumancommunity/makehuman/master/makehuman/data/rigs/default.mhskel && curl -sSL -o assets/default_weights.mhw https://raw.githubusercontent.com/makehumancommunity/makehuman/master/makehuman/data/rigs/default_weights.mhw
+```
+
+The head-shape fit needs MakeHuman's face targets (CC0, about 3 MB), fetched by
+sparse checkout so the rest of their repository is not downloaded:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/makehumancommunity/makehuman.git mh && cd mh && git sparse-checkout set makehuman/data/targets/nose makehuman/data/targets/mouth makehuman/data/targets/eyes makehuman/data/targets/chin makehuman/data/targets/cheek makehuman/data/targets/forehead makehuman/data/targets/head makehuman/data/targets/eyebrows makehuman/data/targets/ears && mkdir -p ../avatar-engine/assets/targets && cp -r makehuman/data/targets/* ../avatar-engine/assets/targets/
 ```
 
 Pinned to the 0.10 line for reproducibility; the code only uses the tasks API,
@@ -131,10 +193,17 @@ haircut, a pair of glasses or a blendshape set made once fit every avatar.
 | `generate.py` | the engine: photo to a face GLB, importable or run from the command line |
 | `compose.py` | assembles the avatar: face on body, dressed, skin and hair coloured |
 | `catalogue.json` | the wearables, as data: what to cut, where, what colour, what licence |
-| `catalogue.py` | cuts items out of the base mesh and applies the visibility masks |
+| `catalogue.py` | builds catalogue items, cut from the base mesh or loaded from files, and masks skin under them |
+| `garments.py` | rigs garments with their own topology by weight transfer, poses meshes in numpy, imports garment files |
+| `morph.py` | fits the head's shape to the person from MakeHuman's CC0 face targets |
+| `facetexture.py` | warps the photo onto the head's features, bakes it into UV, Poisson-blends the seam |
+| `skin.py` | generates a body skin texture and fine grain matched to the person's cheek colour |
 | `rig.py` | the skeleton: bone hierarchy, joint positions, per-vertex weights |
 | `skinned_glb.py` | writes the GLB, because trimesh cannot export a skin |
 | `test_rig.py` | the check that the rig is sound; run it after touching any of the above |
+| `ARCHITECTURE.md` | target architecture, the licence audit behind it, and what is built versus next |
+| `adr/` | architecture decisions, starting with why the head model is MakeHuman and not FLAME |
+| `REALISM-GAP.md` | every reason an avatar looks fake, and what each costs to fix |
 | `app.py` | the studio server: upload, validate, generate, gallery |
 | `studio.html` | the upload page the team uses |
 | `review.html` | the photo-versus-avatar viewer, embedded by the studio and usable on its own |
@@ -169,7 +238,10 @@ MediaPipe and the canonical face model are Apache-2.0. The body base mesh is
 MakeHuman's, released under CC0 1.0 along with the rest of their assets, meshes,
 targets, textures and clothes, so it is public domain and carries no attribution
 requirement. The skeleton and skin weights (`default.mhskel`, `default_weights.mhw`) are CC0
-on the same terms. Their application code is AGPL, but we use none of it.
+on the same terms, so both can be edited and shipped as our own: repaint weights,
+drop bones we do not need, rename them to a convention an engine expects. Weights
+are indexed by base-mesh vertex, so the one rule is that changing mesh topology
+means remapping them, and `test_rig.py` is what catches it when that goes wrong. Their application code is AGPL, but we use none of it.
 
 Both were chosen over the better-known research face and body models, which are
 free for research only and need a paid licence to ship. Keep that constraint when

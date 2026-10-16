@@ -26,6 +26,8 @@ BODY_OBJ = HERE / "assets" / "body_base.obj"
 
 _groups: dict[str, np.ndarray] | None = None
 _vertices: np.ndarray | None = None
+_uv: np.ndarray | None = None
+_uv_groups: dict[str, np.ndarray] | None = None
 _catalogue: dict | None = None
 
 
@@ -47,27 +49,72 @@ def load_base(obj_path: pathlib.Path = BODY_OBJ):
     helpers are what the clothes are cut from, so keep all of them here and let
     callers ask for the group they want.
     """
-    global _groups, _vertices
+    global _groups, _vertices, _uv, _uv_groups
     if _groups is not None and _vertices is not None:
         return _vertices, _groups
 
     vertices: list[list[float]] = []
+    texcoords: list[list[float]] = []
     groups: dict[str, list[tuple[int, int, int]]] = {}
+    uv_groups: dict[str, list[tuple[int, int, int]]] = {}
     current = None
     for line in obj_path.read_text(encoding="utf-8").splitlines():
         if line.startswith("v "):
             vertices.append([float(x) for x in line.split()[1:4]])
+        elif line.startswith("vt "):
+            texcoords.append([float(x) for x in line.split()[1:3]])
         elif line.startswith("g "):
             current = line[2:].strip()
             groups.setdefault(current, [])
+            uv_groups.setdefault(current, [])
         elif line.startswith("f ") and current is not None:
-            idx = [int(p.split("/")[0]) - 1 for p in line.split()[1:]]
+            corners = line.split()[1:]
+            idx = [int(c.split("/")[0]) - 1 for c in corners]
+            # The face texture is baked through these, so keep the UV index of
+            # every corner alongside its position index.
+            tex = [int(c.split("/")[1]) - 1 if "/" in c and c.split("/")[1] else -1
+                   for c in corners]
             for i in range(1, len(idx) - 1):  # the base mesh is quads
                 groups[current].append((idx[0], idx[i], idx[i + 1]))
+                uv_groups[current].append((tex[0], tex[i], tex[i + 1]))
 
     _vertices = np.array(vertices, dtype=np.float64)
+    _uv = np.array(texcoords, dtype=np.float64) if texcoords else np.zeros((1, 2))
     _groups = {name: np.array(faces, dtype=np.int64) for name, faces in groups.items() if faces}
+    _uv_groups = {name: np.array(faces, dtype=np.int64) for name, faces in uv_groups.items() if faces}
     return _vertices, _groups
+
+
+def load_base_uv():
+    """Texture coordinates and, per group, the UV index of every triangle corner."""
+    load_base()
+    return _uv, _uv_groups
+
+
+def submesh_uv(faces: np.ndarray, uv_faces: np.ndarray, vertices: np.ndarray | None = None,
+               uv: np.ndarray | None = None):
+    """Like submesh, but carrying texture coordinates.
+
+    A vertex sits at one position but can hold several texture coordinates where
+    a UV seam runs through it, and glTF allows only one per vertex, so vertices
+    are split per unique position/UV pair. The split keeps the base index, so the
+    rig's weights still apply.
+    """
+    if vertices is None:
+        vertices, _ = load_base()
+    if uv is None:          # a remapped copy, when the island has its own texture
+        uv, _ = load_base_uv()
+
+    pairs = np.stack([faces.reshape(-1), uv_faces.reshape(-1)], axis=1)
+    unique, inverse = np.unique(pairs, axis=0, return_inverse=True)
+
+    mesh = trimesh.Trimesh(
+        vertices=vertices[unique[:, 0]],
+        faces=inverse.reshape(-1, 3),
+        process=False,
+    )
+    mesh.metadata["base_index"] = unique[:, 0]
+    return mesh, uv[unique[:, 1]]
 
 
 def srgb_to_linear(colour) -> np.ndarray:
@@ -83,14 +130,18 @@ def srgb_to_linear(colour) -> np.ndarray:
                    0, 255).astype(np.uint8)
 
 
-def submesh(faces: np.ndarray) -> trimesh.Trimesh:
+def submesh(faces: np.ndarray, vertices: np.ndarray | None = None) -> trimesh.Trimesh:
     """Build a mesh from base-mesh faces, remembering where each vertex came from.
 
     The rig's weights are indexed by base-mesh vertex, and every wearable is a
     slice of that mesh, so the mapping has to survive or the clothes cannot be
     skinned. `remove_unreferenced_vertices` throws it away, hence doing it here.
+
+    `vertices` is the base mesh after any shape fit; it defaults to the plain
+    base, and every index still refers to the same vertex either way.
     """
-    vertices, _ = load_base()
+    if vertices is None:
+        vertices, _ = load_base()
     used = np.unique(faces)
     remap = np.full(len(vertices), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
@@ -99,8 +150,27 @@ def submesh(faces: np.ndarray) -> trimesh.Trimesh:
     return mesh
 
 
-def _mesh_from(faces: np.ndarray, colour, offset: float) -> trimesh.Trimesh:
-    mesh = submesh(faces)
+def _mesh_from(faces: np.ndarray, colour, offset: float,
+               y_min=None, y_max=None, vertices: np.ndarray | None = None,
+               hairline=None) -> trimesh.Trimesh:
+    mesh = submesh(faces, vertices)
+    if hairline is not None:
+        # A curved cut, snapped the same way as a hem: corners below the line
+        # are lifted onto it, so the edge follows the curve instead of stepping.
+        v = mesh.vertices.copy()
+        v[:, 1] = np.maximum(v[:, 1], hairline(v))
+        mesh.vertices = v
+    if y_min is not None or y_max is not None:
+        # Snap the cut edge to a clean line. Keeping or dropping whole faces
+        # leaves a zig-zag hem, one tooth per face, which is the most obvious
+        # sign the garment is a slice of something rather than a piece of cloth.
+        # Boundary faces are kept and their outlying corners pulled onto the cut.
+        y = mesh.vertices[:, 1].copy()
+        if y_min is not None:
+            y = np.maximum(y, y_min)
+        if y_max is not None:
+            y = np.minimum(y, y_max)
+        mesh.vertices = np.column_stack([mesh.vertices[:, 0], y, mesh.vertices[:, 2]])
     if offset:
         # Push the shell off the skin along its own normals, or it z-fights with
         # the body wherever the two surfaces touch.
@@ -112,24 +182,68 @@ def _mesh_from(faces: np.ndarray, colour, offset: float) -> trimesh.Trimesh:
     return mesh
 
 
-def build_item(item: dict, colour=None) -> trimesh.Trimesh:
-    """One wearable, cut from the base mesh's helper shells by height."""
-    vertices, groups = load_base()
+def build_item(item: dict, colour=None, vertices: np.ndarray | None = None) -> trimesh.Trimesh:
+    """One wearable: cut from the base mesh's helper shells, or loaded from a file.
+
+    Every item must carry a licence. That is checked here, for all of them, so an
+    asset of unknown provenance cannot slip into an avatar by any route.
+    """
+    if not str(item.get("licence") or "").strip():
+        raise ValueError(f"catalogue item {item.get('id')!r} has no licence; refusing to use it")
+
+    if "mhclo" in item:
+        # A MakeHuman garment: rebuilt on this body from its reference vertices,
+        # so it follows the person's shape, and rigged exactly from the same.
+        from garments import GARMENT_DIR, load_mhclo
+        if vertices is None:
+            vertices, _ = load_base()
+        mesh = load_mhclo(GARMENT_DIR / item["mhclo"], vertices)
+        rgb = colour if colour is not None else item["colour"]
+        mesh.visual = trimesh.visual.ColorVisuals(
+            mesh, vertex_colors=np.tile(np.append(srgb_to_linear(rgb), 255), (len(mesh.vertices), 1))
+        )
+        return mesh
+
+    if "file" in item:
+        # A garment with its own topology. It has no base-mesh indices, so the
+        # composer rigs it by weight transfer instead of looking weights up.
+        from garments import load_garment
+        mesh = load_garment(item)
+        rgb = colour if colour is not None else item["colour"]
+        mesh.visual = trimesh.visual.ColorVisuals(
+            mesh, vertex_colors=np.tile(np.append(srgb_to_linear(rgb), 255), (len(mesh.vertices), 1))
+        )
+        mesh.metadata["fit"] = item.get("fit", "tight")
+        return mesh
+
+    base, groups = load_base()
+    if vertices is None:
+        vertices = base
 
     names = item["group"] if isinstance(item["group"], list) else [item["group"]]
     faces = np.vstack([groups[n] for n in names if n in groups])
 
+    hairline = item.get("hairline")
+    if hairline is not None:
+        # Keep any face reaching above the line; the boundary is snapped below.
+        corners = vertices[faces]
+        above = corners[:, :, 1] >= hairline(corners.reshape(-1, 3)).reshape(-1, 3)
+        faces = faces[above.any(axis=1)]
+
     y_min, y_max = item.get("y_min"), item.get("y_max")
     if y_min is not None or y_max is not None:
-        centroid_y = vertices[faces][:, :, 1].mean(axis=1)
+        # Keep any face that reaches into the band, not just faces centred in
+        # it, so the boundary faces survive to be snapped flat below.
+        ys = vertices[faces][:, :, 1]
         keep = np.ones(len(faces), dtype=bool)
         if y_min is not None:
-            keep &= centroid_y >= y_min
+            keep &= ys.max(axis=1) >= y_min
         if y_max is not None:
-            keep &= centroid_y <= y_max
+            keep &= ys.min(axis=1) <= y_max
         faces = faces[keep]
 
-    return _mesh_from(faces, colour if colour is not None else item["colour"], item.get("offset", 0.0))
+    return _mesh_from(faces, colour if colour is not None else item["colour"],
+                      item.get("offset", 0.0), y_min, y_max, vertices, hairline)
 
 
 def nearest_distance(points: np.ndarray, targets: np.ndarray, chunk: int = 2048) -> np.ndarray:
@@ -147,23 +261,34 @@ def nearest_distance(points: np.ndarray, targets: np.ndarray, chunk: int = 2048)
     return out
 
 
-def visible_faces(faces: np.ndarray, covers: list[trimesh.Trimesh],
-                  threshold: float = 0.33) -> np.ndarray:
-    """Which of these base-mesh faces are not hidden under something.
+def coverage_alpha(points: np.ndarray, covers: list[trimesh.Trimesh],
+                   reach: float = 0.33, margin: float = 0.25, feather: float = 0.1) -> np.ndarray:
+    """Per body vertex, 1 where the skin shows and 0 where a garment hides it.
 
-    This is the visibility-mask idea from the report: one body wears any outfit
-    because the outfit hides the skin beneath it, instead of every outfit
-    shipping its own body. Without it the bare mesh pokes through the clothes.
-
-    Works on faces rather than on a built mesh so the base-vertex mapping the rig
-    needs survives the cut.
+    Replaces deleting body faces. Deletion works in whole triangles and has to
+    stop exactly at the garment's edge, so the moment an arm bends and the
+    garment and body move a little differently, a gap opens at the cuff or
+    collar with nothing behind it. Masking in the texture keeps every triangle,
+    fades smoothly, and deliberately leaves a `margin` of skin under each edge,
+    so a gap shows skin rather than a hole.
     """
+    alpha = np.ones(len(points))
     if not covers:
-        return np.ones(len(faces), dtype=bool)
-    vertices, _ = load_base()
-    covering = np.vstack([c.vertices for c in covers])
-    centroids = vertices[faces].mean(axis=1)
-    return nearest_distance(centroids, covering) > threshold
+        return alpha
+    near = nearest_distance(points, np.vstack([c.vertices for c in covers]))
+
+    edges = []
+    for cover in covers:
+        unique, counts = np.unique(cover.edges_sorted, axis=0, return_counts=True)
+        rim = np.unique(unique[counts == 1])
+        if len(rim):
+            edges.append(cover.vertices[rim])
+    from_edge = (nearest_distance(points, np.vstack(edges)) if edges
+                 else np.full(len(points), np.inf))
+
+    under = np.clip((reach - near) / feather, 0.0, 1.0)
+    inside = np.clip((from_edge - margin) / feather, 0.0, 1.0)
+    return 1.0 - under * inside
 
 
 def hair_colour(photo, landmarks) -> np.ndarray:

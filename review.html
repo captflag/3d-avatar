@@ -50,6 +50,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { setupRealism, applyMaterials, groundAndShadow } from '/lib/scene-setup.js';
 
 const params = new URLSearchParams(location.search);
 // With no model named, show the newest avatar rather than a hardcoded file:
@@ -73,12 +74,7 @@ scene.background = new THREE.Color(0x191c22);
 const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100);
 camera.position.set(0, 0, 2.6);
 
-// Flat-ish lighting: the texture already carries the photo's own shading, so
-// extra lights would double it up and make judging likeness harder.
-scene.add(new THREE.AmbientLight(0xffffff, 1.1));
-const key = new THREE.DirectionalLight(0xffffff, 0.6);
-key.position.set(0.6, 0.8, 1.4);
-scene.add(key);
+const lights = setupRealism(renderer, scene);
 
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
@@ -95,14 +91,7 @@ function resize() {
 
 new GLTFLoader().load(modelUrl, (gltf) => {
   const model = gltf.scene;
-  model.traverse((o) => {
-    if (o.isMesh) {
-      o.material.side = THREE.DoubleSide;   // the face patch is a single surface
-      o.material.metalness = 0;
-      o.material.roughness = 1;
-      if (o.material.map) o.material.map.colorSpace = THREE.SRGBColorSpace;
-    }
-  });
+  applyMaterials(model);
 
   // Frame the avatar regardless of how big it came out.
   const box = new THREE.Box3().setFromObject(model);
@@ -120,6 +109,7 @@ new GLTFLoader().load(modelUrl, (gltf) => {
   controls.target.set(0, eyeLevel, 0);
   controls.update();
   scene.add(model);
+  groundAndShadow(scene, model, lights.key);
   // Handle for poking at the rig from the console: find a bone by name and
   // rotate it to check the skin follows. window.__avatar.getObjectByName('head')
   window.__avatar = model;

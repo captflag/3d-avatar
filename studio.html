@@ -36,6 +36,10 @@
 
   #result { display:none; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--panel); }
   #result iframe { width:100%; height:62vh; border:0; display:block; }
+  .resultbar { display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:10px 12px; border-bottom:1px solid var(--line); }
+  #resultmeta { color:var(--muted); font-size:12px; }
+  #download { padding:7px 14px; font-size:13px; }
 
   h2 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted);
        margin:0 0 10px; font-weight:600; }
@@ -68,6 +72,10 @@
     <div class="row">
       <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/bmp">
       <button type="button" class="ghost" id="pick">Choose photo</button>
+      <select id="dimension" class="toggle" title="what to produce">
+        <option value="3d">3D model</option>
+        <option value="2d">2D image</option>
+      </select>
       <label class="toggle"><input type="checkbox" id="fullbody" checked> Full body</label>
       <select id="gender" class="toggle" title="which default outfit to dress the avatar in">
         <option value="male">Male outfit</option>
@@ -80,7 +88,13 @@
 
   <div id="status"></div>
 
-  <div id="result"><iframe id="viewer" title="generated avatar"></iframe></div>
+  <div id="result">
+    <div class="resultbar">
+      <span id="resultmeta"></span>
+      <button type="button" id="download">Download</button>
+    </div>
+    <iframe id="viewer" title="generated avatar"></iframe>
+  </div>
 
   <section>
     <h2>Earlier avatars</h2>
@@ -97,10 +111,12 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { setupRealism, applyMaterials, groundAndShadow } from '/lib/scene-setup.js';
 
 const $ = (id) => document.getElementById(id);
 const drop = $('drop'), file = $('file'), go = $('go'), status = $('status'),
       result = $('result'), viewer = $('viewer'), gallery = $('gallery'), chosen = $('chosen');
+let current = null;  // the avatar on screen: what Download acts on
 
 function setFile(f) {
   if (!f) return;
@@ -135,8 +151,12 @@ drop.addEventListener('submit', async (ev) => {
     const res = await fetch('/generate', { method: 'POST', body });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Generation failed.');
+    current = { model: data.model, id: data.id, fullBody: $('fullbody').checked };
     show(data.review);
     status.textContent = `Done · ${data.info.triangles} triangles · ${data.info.size_kb} KB`;
+    $('resultmeta').textContent = $('dimension').value === '2d'
+      ? 'Download gives a transparent PNG rendered from this avatar.'
+      : 'Download gives a GLB: opens in Unity, Unreal, Blender and three.js.';
     loadGallery();
   } catch (err) {
     status.className = 'bad';
@@ -144,6 +164,48 @@ drop.addEventListener('submit', async (ev) => {
   } finally {
     go.disabled = false;
   }
+});
+
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+$('download').addEventListener('click', async () => {
+  if (!current) return;
+  const button = $('download');
+  const wasText = button.textContent;
+  button.disabled = true;
+  try {
+    if ($('dimension').value === '2d') {
+      button.textContent = 'Rendering…';
+      const png = await renderPng(current.model, current.fullBody);
+      saveBlob(png, `${current.id}.png`);
+    } else {
+      // The GLB is already on the server; let the browser fetch it as a file.
+      const link = document.createElement('a');
+      link.href = current.model;
+      link.download = `${current.id}.glb`;
+      link.click();
+    }
+  } catch (err) {
+    status.className = 'bad';
+    status.textContent = `Download failed: ${err.message}`;
+  } finally {
+    button.textContent = wasText;
+    button.disabled = false;
+  }
+});
+
+$('dimension').addEventListener('change', () => {
+  if (!current) return;
+  $('resultmeta').textContent = $('dimension').value === '2d'
+    ? 'Download gives a transparent PNG rendered from this avatar.'
+    : 'Download gives a GLB: opens in Unity, Unreal, Blender and three.js.';
 });
 
 function show(reviewUrl) {
@@ -177,16 +239,18 @@ async function loadGallery() {
 // source photo made the gallery look like a photo album and hid whether an entry
 // was a face patch or a dressed figure.
 const THUMB_W = 220, THUMB_H = 280;
-let thumbRenderer = null;
+let sharedRenderer = null;
 const gltfLoader = new GLTFLoader();
 
-function getRenderer() {
-  if (!thumbRenderer) {
-    thumbRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-    thumbRenderer.setPixelRatio(1);
-    thumbRenderer.setSize(THUMB_W, THUMB_H);
+function getRenderer(width, height) {
+  if (!sharedRenderer) {
+    // alpha, so a 2D export comes out on a transparent background and drops
+    // straight into a UI without a backdrop to cut away.
+    sharedRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    sharedRenderer.setPixelRatio(1);
   }
-  return thumbRenderer;
+  sharedRenderer.setSize(width, height);
+  return sharedRenderer;
 }
 
 function disposeScene(root) {
@@ -198,40 +262,64 @@ function disposeScene(root) {
   });
 }
 
-async function renderThumbnail(url) {
+// One WebGL canvas serves the gallery and the downloads, so renders have to
+// take turns. Without this a download fired while the gallery is still drawing
+// captures whatever frame landed last — in practice, a blank image.
+let renderTurn = Promise.resolve();
+function takeTurn(job) {
+  const run = renderTurn.then(job, job);
+  renderTurn = run.then(() => {}, () => {});
+  return run;
+}
+
+async function drawAvatar(url, width, height, focusHead = false) {
   const gltf = await gltfLoader.loadAsync(url);
   const scene = new THREE.Scene();
-  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
-  const key = new THREE.DirectionalLight(0xffffff, 0.6);
-  key.position.set(0.6, 0.8, 1.4);
-  scene.add(key);
+  const lights = setupRealism(getRenderer(width, height), scene);
 
   const model = gltf.scene;
-  model.traverse((o) => {
-    if (!o.isMesh) return;
-    o.material.side = THREE.DoubleSide;
-    o.material.metalness = 0;
-    if (o.material.map) o.material.map.colorSpace = THREE.SRGBColorSpace;
-  });
+  applyMaterials(model);
 
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
   const centre = box.getCenter(new THREE.Vector3());
   model.position.sub(centre);
   scene.add(model);
+  groundAndShadow(scene, model, lights.key);
 
-  const camera = new THREE.PerspectiveCamera(32, THUMB_W / THUMB_H, 0.01, 200);
+  const camera = new THREE.PerspectiveCamera(32, width / height, 0.01, 200);
   // Fit whichever dimension needs the most room. Fitting width alone clipped the
   // head off every full-body avatar, which is the one thing the card must show.
-  const fit = Math.max(size.y, size.x / camera.aspect);
-  camera.position.set(0, 0, (fit / (2 * Math.tan((32 * Math.PI) / 360))) * 1.12);
-  camera.lookAt(0, 0, 0);
+  const span = focusHead ? size.y * 0.17 : size.y;
+  const fit = Math.max(span, size.x / camera.aspect);
+  const eye = focusHead ? size.y / 2 - size.y * 0.085 : 0;
+  camera.position.set(0, eye, (fit / (2 * Math.tan((32 * Math.PI) / 360))) * 1.12);
+  camera.lookAt(0, eye, 0);
 
-  const renderer = getRenderer();
+  const renderer = getRenderer(width, height);
   renderer.render(scene, camera);
-  const data = renderer.domElement.toDataURL('image/webp', 0.8);
   disposeScene(model);
-  return data;
+  return renderer.domElement;
+}
+
+/** Render and encode without letting go of the canvas in between. */
+function renderAvatar(url, width, height, focusHead, encode) {
+  return takeTurn(async () => {
+    const canvas = await drawAvatar(url, width, height, focusHead);
+    return encode(canvas);
+  });
+}
+
+async function renderThumbnail(url) {
+  return renderAvatar(url, THUMB_W, THUMB_H, false,
+    (canvas) => canvas.toDataURL('image/webp', 0.8));
+}
+
+/** A 2D avatar: the 3D one rendered to a transparent PNG. */
+async function renderPng(url, fullBody) {
+  const [w, h] = fullBody ? [900, 1200] : [900, 900];
+  return renderAvatar(url, w, h, !fullBody,
+    (canvas) => new Promise((resolve) => canvas.toBlob(resolve, 'image/png')));
 }
 
 async function renderThumbnails() {
@@ -244,6 +332,10 @@ async function renderThumbnails() {
     }
   }
 }
+
+// Handle for checking the renderers from the console, same idea as
+// window.__avatar on the review page.
+window.__studio = { renderPng, renderThumbnail };
 
 loadGallery();
 </script>
