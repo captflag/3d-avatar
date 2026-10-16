@@ -40,7 +40,7 @@ Causes are grouped and each is marked:
    symptom of cause 1, not a separate bug: fit the shape and the projection
    lands.
 
-4. **The photo's lighting is baked into the skin. [engine]**
+4. **The photo's lighting is baked into the skin. [mostly fixed — fifth pass]**
    We paint the photo exactly as shot: its highlights, its shadow under the
    chin, the colour cast of wherever it was taken. Light the avatar from a
    different angle and the face disagrees with the scene, which the eye reads
@@ -53,13 +53,17 @@ Causes are grouped and each is marked:
    the strongest "dead" signals a face can give. The base mesh has eyeball
    helpers we are not using, because painted eyes and geometric eyes fight.
 
-6. **The expression is whatever the photo caught. [engine]**
-   A grin or a squint is baked into both texture and geometry. Theirs
-   neutralises to a rest face, which is what you need before animating. We detect
-   the expression already; removing it needs the morphable model from cause 1.
+6. **The expression is whatever the photo caught. [mostly fixed — seventh pass]**
+   A grin or a squint was baked into both texture and geometry. Theirs
+   neutralises to a rest face, which is what you need before animating. Ours now
+   fits the expression alongside the head shape, builds the mesh without it and
+   warps the photo back to a closed, relaxed mouth before baking. Mouth width
+   stays with identity; see the seventh pass.
 
 7. **No teeth, tongue or mouth interior. [art]**
-   An open-mouthed smile paints teeth flat onto the lips surface.
+   An open-mouthed smile painted teeth flat onto the lips surface. Since the
+   seventh pass the mouth is closed, so the teeth no longer show; an avatar that
+   opens its mouth still has nothing inside it.
 
 8. **No skin micro-detail. [partly fixed]**
    The body now has a generated skin texture built to the person's own cheek
@@ -238,6 +242,196 @@ taken on trust.
 Found along the way: the eyes were the photo's eye region painted onto a sphere,
 which read as skin. They are generated now, with the person's iris colour, and
 sized from anatomy after a first attempt with too small an iris gave a stare.
+
+## Fourth pass: MetaPerson's own selfies, run through ours
+
+Their two marketing selfies (a bearded man, a woman with short auburn hair) were
+run through our pipeline in matching outfits. The cheap gaps, closed:
+
+- **The beard was shaved off.** The head bake fades the photo into generated
+  skin across the outer 18% of the face so no edge shows, which is exactly where
+  a beard grows. Pixels clearly darker than the person's cheek skin, below the
+  nose, now keep full strength through the fade (`facetexture.facial_hair`).
+- **Hair read as bald.** Nine pixels above the forehead hit the lit crown, and
+  auburn came out as (219, 171, 134), skin colour, on a skull cap. Hair colour
+  is now read from a band of hair with backdrop and skin rejected, giving
+  (169, 121, 84) for her and (104, 72, 53) for him. It colours MakeHuman's own
+  hair cards (CC0) over a darker cap that hides the scalp between strands.
+- **One body for both.** `--gender` only changed the outfit. MakeHuman's
+  regional macro targets, blended equally as MakeHuman does by default, now
+  make a man's or a woman's figure (17.3 and 15.9 units, about 173 and 159 cm)
+  before the face is fitted.
+- **Clothes were body slices.** Defaults are now MakeHuman system outfits:
+  collared, buttoned shirts and jeans with fabric, normal and occlusion maps,
+  leather shoes, plus eyebrows and eyelashes. All CC0; outfits with a MakeHuman
+  logo print were left out.
+- **Mannequin stance.** A relaxed stance is the default: weight on one leg,
+  hip and shoulders tilted against each other, arms at the sides, elbows soft.
+- **The face patch** turned out to sit behind the shaped skull everywhere but
+  the forehead, where it drew a hard edge. It is off by default.
+
+Not closed, and why:
+
+- **Iris colour.** Sampling is better (the whole iris, no lid shadow) but on
+  these photos the iris pixels are genuinely grey: LAB b* 126 for the "blue"
+  eyes, 128 being neutral. They look blue in the photo by contrast with warm
+  skin. Matching that needs a perceptual rule or an eye-colour palette.
+- **Pale faces.** A bright studio photo is baked in as it is. Fixed in the
+  fifth pass.
+- **Hairstyle is not picked from the photo**, and long hair has no asset.
+- **No green shirt.** Garment recolouring is not built.
+
+Size went from 1.6 to about 3.5 MB per avatar, almost all of it the outfit and
+hair textures (capped at 1024).
+
+## Fifth pass: the photo's lighting taken out of the skin
+
+The face still read as a pale mask: a bright studio photo came out near-white,
+its shading doubled with the renderer's, and the neck — generated skin in the
+body's shared texture — looked like bark next to it. Now, before anything is
+baked (`delight.py`):
+
+- **Lighting fitted and divided out.** MediaPipe gives every landmark a depth,
+  so the face is a 3D surface in the camera's frame with a normal per pixel.
+  Skin being near one colour, its brightness against that normal is the
+  lighting: an ambient term plus one direction, fitted robustly so brows,
+  beard, lips and eyes drop out, then divided out so the face is shaded as if
+  lit from the front. Second-order lighting was tried and was worse — a face
+  shows only half the sphere, and gains hit 11x at the jaw. The correction is
+  smoothed to the broad scale and applied at 70%, clamped to 0.75-1.4x,
+  because the landmark mesh's normals are rough at the scale of a nostril.
+- **Exposure capped.** Real skin reflects at most about half the light on it.
+  Cheeks brighter than 0.45 linear luminance are scaled down: the bright test
+  photos by 0.64 and 0.74; a well-exposed photo of darker skin is untouched.
+- **Shine pulled back.** Specular shine on a forehead or nose is the lamp's
+  reflection, not skin, and baked in it added to the renderer's own highlight.
+  Pixels brighter than the skin around them are blended back towards it, with
+  eyes and mouth excluded so teeth and the whites of the eyes survive.
+- **Generated skin matched to the whole face**, not ten cheek points: in a
+  smile the cheeks catch the light and read brighter than the forehead, jaw and
+  temples the generated skin borders.
+- **Pore grain scaled per texture.** The head's texture is its own (a texel is a
+  fraction of a millimetre); the body shares one map from neck to toe, where the
+  same grain magnified into bark. Normal strength is 0.5 on the head, 0.2 on
+  the body.
+
+Hair, brow and iris colour are still read from the photo as shot.
+
+Still open: no white balance (a warm or blue cast stays), no occlusion (the
+nostrils and the corners of the eyes stay as dark as photographed), and the
+underexposed case is not lifted, since dark skin and a dark photo cannot be
+told apart without a reference. The whites of the eyes are a natural one.
+
+## Sixth pass: hair, eyes and clothes read from the photo; occlusion
+
+Worked through the partly open gaps one at a time, each root-caused before it
+was fixed.
+
+- **Grey hair came out near-white.** Reproduced on the portrait: hair colour
+  (169, 169, 163). Isolated: his face sits near the top of the frame, so the
+  sampling band was mostly the bright window behind him, and the backdrop
+  filter only knew the photo's corners — red curtain. Fixed by modelling the
+  backdrop from every pixel beside the head at the same height: (88, 82, 78).
+  The man and woman did not move. Then superseded for the defaults by the next
+  item, which reads hair directly.
+- **The haircut is chosen from the photo.** MediaPipe's multiclass selfie
+  segmenter (Apache-2.0, per its model card; out of scope only for
+  surveillance and identity) labels hair, face skin, body skin and clothes.
+  From the hair mask: how high it stands above the face, where it ends against
+  the chin, whether it covers the forehead, and how much there is. A close crop
+  (the portrait) gets `short01`, fuller short hair `short02`, a fringe
+  `short03`, jaw-length a bob, below the chin `long01`, and a bald head no hair
+  at all. Hair colour now comes from the hair pixels themselves. Colour alone
+  was tried first and failed: dark skin and a dark backdrop both passed as dark
+  grey hair beside the jaw. The long-hair rule has not been checked against a
+  real long-haired photo; none of the test photos has long hair.
+- **Blue eyes read grey.** Hypothesis tested: the whites of the eyes measure
+  warm in all three photos (a* +6 to +11, b* +8 to +9); against them the man's
+  iris moves to (-9, -10), clearly blue. People judge iris colour against the
+  white beside it, so the iris is now read relative to the sclera and snapped
+  halfway to the nearest natural eye colour (dark brown, brown, hazel, green,
+  grey, blue-grey, blue). Results: blue-grey, grey, dark brown.
+- **The same correction for skin was rejected.** Applied to the skin, the
+  sclera's warmth turned light skin sallow (a* +10 to +4): in small photos it is
+  mostly pink lid and vessel bleeding into the white, not a photo cast. The
+  colour cast stays open.
+- **Outfits can be dyed.** An outfit file is one mesh and one texture; each
+  piece of cloth is its own UV island, so islands below the waist and near the
+  body's centre line are trousers and the rest is the top. Each part is dyed in
+  LAB, scaling lightness and moving hue, so weave, folds, seams and baked
+  occlusion survive. The defaults are now MetaPerson's own reference looks:
+  green shirt with grey trousers, light blue shirt with navy trousers.
+- **Sharper faces from real selfies.** The face fills about 42% of the head
+  texture's width; when the photo's face is wider than that in pixels, the head
+  is baked at 2048 instead of 1024. Small or upscaled photos stay at 1024.
+- **Ambient occlusion in the viewer and studio renders** (GTAO, screen space):
+  under the chin, inside the collar, where arms meet the body, in cloth folds.
+  `review.html?ao=0` shows the render without it.
+
+Still open from this pass: the hair cards' front edge is a hard, ragged line on
+the forehead (alpha-tested cards); jeans authored with a stacked hem pool at the
+ankle on a shorter figure; the colour cast; nostril and eye-corner darkness.
+
+## Seventh pass: a resting face from a smiling photo
+
+MetaPerson's avatars have neutral faces; ours kept the photo's smile twice over.
+The shape fit read a grin as identity — mouth-angles-up at full strength, a wider
+mouth, fuller cheeks — and the texture was baked through the smiling landmarks,
+teeth and all. Now (`morph.fit`, `compose.py`):
+
+- **Expression is fitted alongside identity, then left off the mesh.**
+  MakeHuman's expression units (CC0, fetched by `fetch_assets.py`, each header
+  checked) are extra columns in the same bounded least squares. Each is capped
+  at 1.5x the MediaPipe blendshape score for the same movement (smile, jaw
+  open, lip raise, brow down, squint, sneer), so a unit the photo does not show
+  cannot borrow from identity. Scores under 0.1 count as noise. The three
+  regional sculpts of each unit are blended equally, as the body is.
+- **Identity cannot argue with a shown expression.** Along an expression's own
+  axis the landmarks cannot tell a smile from a mouth shaped that way. Identity
+  targets that nearly repeat or reverse a shown unit (|cos| > 0.6 at the
+  landmarks) sit the fit out. Without that, identity cancelled the smile's lift
+  with mouth-angles-down and the resting face frowned: corners 4.8 mm below
+  the lip line on the big grin. Now 1.2 mm below, against 0.7 mm on
+  MakeHuman's own face.
+- **The photo is warped back to rest.** The fitted expression's displacement is
+  subtracted from the landmark sheet the texture is baked through, before it
+  is placed on the skull. The lips are then closed, each moving half the gap
+  with its thickness kept, and the sampler looks each lip up on its own side of
+  the seam. A triangulation across a closed seam blended upper lip into lower
+  through the teeth; this took the share of mouth texels that sample the
+  photo's teeth from 5.4% to 0.3%.
+- **Eyelids measured where they are.** MediaPipe's eyelid landmarks sit about a
+  centimetre behind MakeHuman's lids, on a rim the blink and squint units do
+  not move, so those units read as doing nothing (0.1 cm or less across all
+  landmarks). Expression motion is measured on the front-most skin under each
+  landmark instead (0.8 to 1.1 cm), and inner lip landmarks take their outer
+  lip's vertex, because a closed mouth has no inner contour of its own.
+- **The sidecar records what was removed**: `expression_removed`, unit by unit.
+
+| Photo | Detected | Removed | Corner vs lip line |
+|---|---|---|---|
+| ref-man | smile 0.64-0.72, chin raise 0.78, brow down 0.48 | smile 0.29, brow down 0.37, chin raise 0.07 | -1.0 -> -1.8 mm |
+| ref-woman | smile 0.28-0.40, squint 0.29 | lip stretch 0.22 | +1.5 -> +1.2 mm |
+| portrait | smile 0.95, lip raise 0.76, squint 0.74 | smile 0.68, lip raise 0.37, squint 0.37, brow down 0.27 | +4.5 -> -1.2 mm, mouth closed |
+
+`test_rig.py` checks it: MediaPipe's average face, smiling and squinting by
+MakeHuman's own units, fits back with 1% taken as identity (87% without the
+expression columns) and neutralises to within 1% of average.
+
+Still open:
+
+- **Mouth width stays identity.** MakeHuman's smile widens the mouth about 8 mm
+  at full strength; the fitted mouths are 9 to 19 mm wider than MakeHuman's on
+  all three photos, slight smile or not, so most of that is a gap between
+  MediaPipe's average mouth and real ones rather than the smile. The neutral
+  mouth is still wide and the lips full on a broad grin.
+- **The slight smile mostly stays.** ref-woman's 0.3-0.4 smile scores did not
+  find a corner lift in the landmarks to take off.
+- **Squint geometry only.** The squint is taken off the lids, but crow's feet
+  and raised cheeks in the photo's texture stay where they were.
+- **One tuning set, three photos.** Gain, regularisation and the 0.6 axis
+  threshold were set on these three. A wider sweep wants a set of neutral and
+  smiling photos of the same people.
 
 ## What changed in the first pass
 

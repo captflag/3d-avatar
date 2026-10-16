@@ -113,9 +113,25 @@ class FaceSampler:
     """
 
     def __init__(self, patch_vertices: np.ndarray, pixels: np.ndarray,
-                 border: np.ndarray, depth_tolerance: float = 0.6):
+                 border: np.ndarray, depth_tolerance: float = 0.6,
+                 keep: np.ndarray | None = None, lips=None):
         xy = patch_vertices[:, :2]
         self._pixels = LinearNDInterpolator(xy, pixels)
+        # A closed mouth's lips sit a hair apart on the sheet, and a
+        # triangulation across them blends the upper lip's pixels with the
+        # lower's, through whatever the photo showed between them: an open
+        # smile's teeth. Given the two inner lip contours, corner to corner,
+        # each lip is looked up without the other's, split where they meet.
+        self._lips = None
+        if lips is not None:
+            upper, lower = (np.asarray(row) for row in lips)
+            seam = (xy[upper] + xy[lower]) / 2.0
+            seam = seam[np.argsort(seam[:, 0])]
+            sides = []
+            for other in (np.setdiff1d(lower, upper), np.setdiff1d(upper, lower)):
+                own = np.setdiff1d(np.arange(len(xy)), other)
+                sides.append(LinearNDInterpolator(xy[own], pixels[own]))
+            self._lips = (seam, *sides)
         self._depth = LinearNDInterpolator(xy, patch_vertices[:, 2])
         # How far inside the face each landmark is, 0 on the outline, for a
         # fade that leaves no edge.
@@ -123,11 +139,21 @@ class FaceSampler:
         from_border = np.linalg.norm(xy[:, None, :] - xy[border][None, :, :], axis=2).min(axis=1)
         self._inside = LinearNDInterpolator(xy, np.clip(from_border / (0.18 * width), 0.0, 1.0))
         self.depth_tolerance = depth_tolerance
+        # Photo-space map of pixels to keep at full strength even inside the
+        # fade: a beard lives in exactly that outer band of the face.
+        self._keep = keep
 
     def sample(self, points: np.ndarray):
         """Pixels for `points`, and how strongly each should take the photo (0-1)."""
         xy = points[:, :2]
         pixels = self._pixels(xy)
+        if self._lips is not None:
+            seam, above, below = self._lips
+            across = (xy[:, 0] > seam[0, 0]) & (xy[:, 0] < seam[-1, 0])
+            under = xy[:, 1] < np.interp(xy[:, 0], seam[:, 0], seam[:, 1])
+            for side, chosen in ((above, across & ~under), (below, across & under)):
+                if chosen.any():
+                    pixels[chosen] = side(xy[chosen])
         depth = self._depth(xy)
         inside = self._inside(xy)
         valid = (~np.isnan(pixels).any(axis=1) & ~np.isnan(depth)
@@ -135,7 +161,43 @@ class FaceSampler:
         strength = np.where(valid, np.nan_to_num(inside), 0.0)
         # Smoothstep, so the fade has no visible start or end.
         strength = strength * strength * (3.0 - 2.0 * strength)
-        return np.nan_to_num(pixels), strength
+        pixels = np.nan_to_num(pixels)
+        if self._keep is not None:
+            h, w = self._keep.shape
+            kx = np.clip(pixels[:, 0].astype(int), 0, w - 1)
+            ky = np.clip(pixels[:, 1].astype(int), 0, h - 1)
+            strength = np.maximum(strength, np.where(valid, self._keep[ky, kx], 0.0))
+        return pixels, strength
+
+
+def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> np.ndarray:
+    """Where the photo shows a beard or moustache, 0-1, in photo pixels.
+
+    The bake fades the photo into generated skin across the outer band of the
+    face so no edge shows, and that band is exactly where a beard grows: the
+    first version shaved every bearded person it was given. Facial hair is told
+    apart by being clearly darker than the person's own cheek skin, below the
+    nose tip. Sideburns and stubble lighter than that threshold are left to the
+    fade.
+
+    ponytail: darkness only, so a hard jaw shadow on a clean-shaven face also
+    survives the fade. Add a texture (local variance) test if that shows.
+    """
+    h, w = photo_rgb.shape[:2]
+    lightness = cv2.cvtColor(photo_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB)[..., 0].astype(np.float64)
+    xs = np.clip(cheek_pixels[:, 0].astype(int), 0, w - 1)
+    ys = np.clip(cheek_pixels[:, 1].astype(int), 0, h - 1)
+    skin_l = float(np.median(lightness[ys, xs]))
+
+    darker = np.clip((skin_l - lightness - 25.0) / 30.0, 0.0, 1.0)
+    darker = darker * darker * (3.0 - 2.0 * darker)
+
+    nose_y = landmarks[1].y * h
+    chin_y = landmarks[152].y * h
+    below = np.clip((np.arange(h)[:, None] - nose_y) / max(0.05 * (chin_y - nose_y), 1.0), 0.0, 1.0)
+    keep = darker * below
+    sigma = max(0.004 * w, 0.8)
+    return cv2.GaussianBlur(keep, (0, 0), sigma)
 
 
 # ------------------------------------------------------------------ bake -----
@@ -280,8 +342,11 @@ def uv_island(uv_faces: np.ndarray, seed_uv: int) -> np.ndarray:
 def iris_colour(photo_rgb: np.ndarray, landmarks, default=(70, 48, 32)) -> np.ndarray:
     """The colour of the person's irises, from the ring between pupil and edge.
 
-    The iris centre landmark is the pupil, which is black on everyone, and the
-    outer ring touches the white of the eye, so the sample is taken partway out.
+    Eight single pixels partway out, as before, mostly hit the upper lid's
+    shadow and the dark limbal ring, and turned blue eyes grey. Now the whole
+    annulus between pupil and rim is sampled, the top of it — usually under the
+    lid — is skipped, and the darkest (pupil, lashes) and brightest (catchlight)
+    pixels are dropped before the median, taken in LAB.
     """
     if len(landmarks) <= 477:
         return np.array(default, dtype=np.float64)
@@ -289,12 +354,50 @@ def iris_colour(photo_rgb: np.ndarray, landmarks, default=(70, 48, 32)) -> np.nd
     samples = []
     for centre, ring in ((468, range(469, 473)), (473, range(474, 478))):
         cx, cy = landmarks[centre].x * w, landmarks[centre].y * h
-        for r in ring:
-            x = cx + 0.6 * (landmarks[r].x * w - cx)
-            y = cy + 0.6 * (landmarks[r].y * h - cy)
-            xi, yi = int(np.clip(x, 0, w - 1)), int(np.clip(y, 0, h - 1))
-            samples.append(photo_rgb[yi, xi])
-    return np.median(np.array(samples, dtype=np.float64), axis=0)
+        radius = np.mean([np.hypot(landmarks[r].x * w - cx, landmarks[r].y * h - cy) for r in ring])
+        if radius < 1.0:
+            continue
+        span = np.linspace(-radius, radius, 15)
+        dx, dy = np.meshgrid(span, span)
+        d = np.hypot(dx, dy) / radius
+        use = (d >= 0.35) & (d <= 0.85) & (dy >= -0.3 * radius)
+        xs = np.clip((cx + dx[use]).astype(int), 0, w - 1)
+        ys = np.clip((cy + dy[use]).astype(int), 0, h - 1)
+        samples.append(photo_rgb[ys, xs])
+    if not samples:
+        return np.array(default, dtype=np.float64)
+    pixels = np.vstack(samples).astype(np.uint8).reshape(-1, 1, 3)
+    lab = cv2.cvtColor(pixels, cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float64)
+    lo, hi = np.percentile(lab[:, 0], [20, 90])
+    median = np.median(lab[(lab[:, 0] >= lo) & (lab[:, 0] <= hi)], axis=0)
+    rgb = cv2.cvtColor(median.astype(np.uint8).reshape(1, 1, 3), cv2.COLOR_LAB2RGB).reshape(3)
+    return rgb.astype(np.float64)
+
+
+BROW_LANDMARKS = [70, 63, 105, 66, 107, 46, 53, 52, 65, 55,
+                  300, 293, 334, 296, 336, 276, 283, 282, 295, 285]
+
+
+def brow_colour(photo_rgb: np.ndarray, landmarks, default=(60, 44, 34)) -> np.ndarray:
+    """The colour of the eyebrows, for tinting the brow cards.
+
+    The brow landmarks trace the brow's outline, so a small patch round each is
+    part brow, part skin; the darker half of the patch is the brow.
+    """
+    if len(landmarks) <= max(BROW_LANDMARKS):
+        return np.array(default, dtype=np.float64)
+    h, w = photo_rgb.shape[:2]
+    reach = max(int(0.004 * w), 1)
+    patches = []
+    for i in BROW_LANDMARKS:
+        x, y = int(landmarks[i].x * w), int(landmarks[i].y * h)
+        patch = photo_rgb[max(y - reach, 0):y + reach + 1, max(x - reach, 0):x + reach + 1]
+        patches.append(patch.reshape(-1, 3))
+    pixels = np.vstack(patches).astype(np.uint8).reshape(-1, 1, 3)
+    lab = cv2.cvtColor(pixels, cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float64)
+    dark = lab[lab[:, 0] <= np.percentile(lab[:, 0], 50)]
+    median = np.median(dark, axis=0).astype(np.uint8).reshape(1, 1, 3)
+    return cv2.cvtColor(median, cv2.COLOR_LAB2RGB).reshape(3).astype(np.float64)
 
 
 def bake_eyes(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.ndarray,

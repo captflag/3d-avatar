@@ -22,7 +22,8 @@ import trimesh
 
 HERE = pathlib.Path(__file__).resolve().parent
 CATALOGUE_JSON = HERE / "catalogue.json"
-BODY_OBJ = HERE / "assets" / "body_base.obj"
+ASSET_DIR = HERE / "assets"
+BODY_OBJ = ASSET_DIR / "body_base.obj"
 
 _groups: dict[str, np.ndarray] | None = None
 _vertices: np.ndarray | None = None
@@ -192,15 +193,34 @@ def build_item(item: dict, colour=None, vertices: np.ndarray | None = None) -> t
         raise ValueError(f"catalogue item {item.get('id')!r} has no licence; refusing to use it")
 
     if "mhclo" in item:
-        # A MakeHuman garment: rebuilt on this body from its reference vertices,
-        # so it follows the person's shape, and rigged exactly from the same.
-        from garments import GARMENT_DIR, load_mhclo
+        # A MakeHuman asset — garment, hair, brows or lashes: rebuilt on this
+        # body from its reference vertices, so it follows the person's shape,
+        # and rigged exactly from the same.
+        from garments import load_mhclo, material_textures
         if vertices is None:
             vertices, _ = load_base()
-        mesh = load_mhclo(GARMENT_DIR / item["mhclo"], vertices)
-        rgb = colour if colour is not None else item["colour"]
+        mesh = load_mhclo(ASSET_DIR / item["mhclo"], vertices)
+        rgb = colour if colour is not None else item.get("colour")
+        if isinstance(rgb, str):
+            rgb = None                            # asked for a photo colour nobody supplied
+        material = mesh.metadata["material"]
+        texture = normal = None
+        if mesh.metadata["uv"] is not None and material is not None and material.exists():
+            texture, normal, transparent = material_textures(material, rgb)
+            if texture is not None and item.get("recolour"):
+                # One outfit file, any colours: dye the shirt and the trousers
+                # separately, keeping the fabric's own shading.
+                from garments import garment_regions, recolour
+                top = garment_regions(mesh, vertices, load_base()[1])
+                for part, dye in item["recolour"].items():
+                    texture = recolour(texture, mesh, top if part == "top" else ~top, dye)
+        if texture is not None:
+            # Authored texture: fabric, stitching, folds, hair strands.
+            mesh.metadata.update(texture=texture, normal_texture=normal,
+                                 alpha_mask=texture.mode == "RGBA")
         mesh.visual = trimesh.visual.ColorVisuals(
-            mesh, vertex_colors=np.tile(np.append(srgb_to_linear(rgb), 255), (len(mesh.vertices), 1))
+            mesh, vertex_colors=np.tile(np.append(srgb_to_linear(rgb if rgb is not None else (200, 200, 200)), 255),
+                                        (len(mesh.vertices), 1))
         )
         return mesh
 
@@ -291,36 +311,68 @@ def coverage_alpha(points: np.ndarray, covers: list[trimesh.Trimesh],
     return 1.0 - under * inside
 
 
-def hair_colour(photo, landmarks) -> np.ndarray:
-    """Hair colour sampled just above the hairline of the photo.
+def hair_colour(photo, landmarks, cheek_pixels: np.ndarray | None = None) -> np.ndarray:
+    """Hair colour, from the band of hair above and beside the forehead.
 
-    Landmark 10 sits at the top of the forehead, so stepping up from it lands in
-    hair for most people. Falls back to a dark brown when that lands off-image or
-    on a bright background, which is what happens with a bald or cropped photo.
+    Nine pixels straight above the forehead, as before, landed on the lit crown:
+    auburn hair came out as pale peach (219, 171, 134), the colour of skin, and
+    the hair read as a bald head. Now a band over the head is sampled, pixels
+    that look like the backdrop or like the person's own cheek skin are thrown
+    out, and the hair's base colour is read from the middle of what is left by
+    lightness: below the highlights, above the deepest shadow.
+
+    The backdrop is every pixel beside the head at the same height (plus the
+    photo's top corners), and a band pixel is dropped if it is close to any of
+    them. One median colour from the corners was not enough: in a portrait
+    framed tight under a bright window the corners were red curtain, the window
+    behind the head passed as hair, and short dark-grey hair came out
+    (169, 169, 163), near white.
+
+    Falls back to a dark brown when too little hair is found: a bald head, a
+    cropped photo, or hair the colour of the backdrop.
     """
-    rgb = photo.convert("RGB")
-    w, h = rgb.size
-    if len(landmarks) <= 10:
-        return np.array([48, 36, 30], dtype=np.uint8)
+    import cv2
+    from scipy.spatial import cKDTree
 
-    top = landmarks[10]
-    chin = landmarks[152] if len(landmarks) > 152 else top
-    face_height = max(abs(chin.y - top.y), 0.05)
+    fallback = np.array([48, 36, 30], dtype=np.uint8)
+    rgb = np.asarray(photo.convert("RGB"))
+    h, w = rgb.shape[:2]
+    if len(landmarks) <= 454:
+        return fallback
 
-    samples = []
-    for up in (0.10, 0.16, 0.22):
-        y = int((top.y - up * face_height) * h)
-        if y < 0:
-            continue
-        for dx in (-0.04, 0.0, 0.04):
-            x = int((top.x + dx) * w)
-            if 0 <= x < w and 0 <= y < h:
-                samples.append(rgb.getpixel((x, y)))
-    if not samples:
-        return np.array([48, 36, 30], dtype=np.uint8)
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float64)
+    top, chin = landmarks[10], landmarks[152]
+    face_h = max(abs(chin.y - top.y), 0.05) * h
+    face_w = max(abs(landmarks[454].x - landmarks[234].x), 0.05) * w
+    cx, ty = top.x * w, top.y * h
 
-    median = np.median(np.array(samples, dtype=np.float64), axis=0)
-    # A very bright sample is almost certainly backdrop, not hair.
-    if median.mean() > 205:
-        return np.array([48, 36, 30], dtype=np.uint8)
-    return median.astype(np.uint8)
+    rows = np.arange(int(ty - 0.45 * face_h), int(ty - 0.03 * face_h), 2)
+    rows = rows[(rows >= 0) & (rows < h)]
+
+    def columns(spans):
+        xs = np.concatenate([np.arange(int(cx + a * face_w), int(cx + b * face_w), 2) for a, b in spans])
+        return xs[(xs >= 0) & (xs < w)]
+
+    band = lab[np.ix_(rows, columns([(-0.5, 0.5)]))].reshape(-1, 3)
+    if len(band) < 50:
+        return fallback
+
+    def far_from(colour, distance):
+        return np.linalg.norm(band - colour, axis=1) > distance
+
+    corner = max(int(0.04 * min(h, w)), 2)
+    beside = lab[np.ix_(rows, columns([(-1.0, -0.75), (0.75, 1.0)]))].reshape(-1, 3)
+    backdrop = np.vstack([beside, lab[:corner, :corner].reshape(-1, 3),
+                          lab[:corner, -corner:].reshape(-1, 3)])
+    keep = cKDTree(backdrop).query(band)[0] > 10.0
+    if cheek_pixels is not None and len(cheek_pixels):
+        cy_ = np.clip(cheek_pixels[:, 1].astype(int), 0, h - 1)
+        cx_ = np.clip(cheek_pixels[:, 0].astype(int), 0, w - 1)
+        keep &= far_from(np.median(lab[cy_, cx_], axis=0), 14.0)
+    hair = band[keep]
+    if len(hair) < 50:
+        return fallback
+
+    lo, hi = np.percentile(hair[:, 0], [20, 60])
+    base = np.median(hair[(hair[:, 0] >= lo) & (hair[:, 0] <= hi)], axis=0)
+    return cv2.cvtColor(base.astype(np.uint8).reshape(1, 1, 3), cv2.COLOR_LAB2RGB).reshape(3)

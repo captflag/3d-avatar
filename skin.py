@@ -46,6 +46,26 @@ def cheek_stats(photo_rgb: np.ndarray, pixels: np.ndarray, radius: int = 6):
     return np.median(lab, axis=0), (q3 - q1) / 1.35
 
 
+def face_stats(photo_rgb: np.ndarray, mask: np.ndarray):
+    """LAB median and spread of the skin over the whole face.
+
+    Ten cheek patches are not the face: in a smile the cheeks bulge into the
+    light and read a few levels brighter than the forehead, jaw and temples the
+    generated skin actually borders. The whole face is used instead, keeping
+    pixels in the middle of its lightness range and near its median colour, so
+    brows, lashes, lips, beard, teeth and highlights drop out.
+    """
+    lab = cv2.cvtColor(photo_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB)[mask].astype(np.float64)
+    if len(lab) < 200:
+        return None
+    lo, hi = np.percentile(lab[:, 0], [30, 80])
+    mid = lab[(lab[:, 0] >= lo) & (lab[:, 0] <= hi)]
+    chroma = np.linalg.norm(mid[:, 1:] - np.median(mid[:, 1:], axis=0), axis=1)
+    skin = mid[chroma <= np.percentile(chroma, 80)]
+    q1, q3 = np.percentile(skin, [25, 75], axis=0)
+    return np.median(skin, axis=0), (q3 - q1) / 1.35
+
+
 def _noise(size: int, cells: int, rng: np.random.Generator) -> np.ndarray:
     grid = rng.standard_normal((cells, cells)).astype(np.float32)
     return cv2.resize(grid, (size, size), interpolation=cv2.INTER_CUBIC)

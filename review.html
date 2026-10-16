@@ -50,7 +50,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { setupRealism, applyMaterials, groundAndShadow } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, groundAndShadow, withOcclusion } from '/lib/scene-setup.js';
 
 const params = new URLSearchParams(location.search);
 // With no model named, show the newest avatar rather than a hardcoded file:
@@ -75,6 +75,8 @@ const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100);
 camera.position.set(0, 0, 2.6);
 
 const lights = setupRealism(renderer, scene);
+// `ao=0` in the URL shows the plain render, for comparison.
+const occlusion = params.get('ao') === '0' ? null : withOcclusion(renderer, scene, camera);
 
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
@@ -84,6 +86,7 @@ function resize() {
   const { clientWidth: w, clientHeight: h } = canvas;
   if (canvas.width !== w || canvas.height !== h) {
     renderer.setSize(w, h, false);
+    occlusion?.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }
@@ -139,7 +142,8 @@ fetch(modelUrl.replace(/\.glb$/, '.json'))
   requestAnimationFrame(tick);
   resize();
   controls.update();
-  renderer.render(scene, camera);
+  if (occlusion) occlusion.render();
+  else renderer.render(scene, camera);
 })();
 </script>
 </body>

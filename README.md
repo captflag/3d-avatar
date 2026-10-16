@@ -63,7 +63,11 @@ For the full dressed figure instead of the face alone:
 avatar-engine/.venv/Scripts/python.exe avatar-engine/compose.py path/to/photo.jpg -o avatar-engine/out/name.glb --gender female
 ```
 
-`--wear shirt_white,trousers_navy,shoes_dark,hair_short` overrides the default outfit.
+`--wear outfit_white_tee_jeans,shoes_black,hair_underlayer,hair_short01,eyebrows,eyelashes`
+overrides the default outfit. `--pose rest` opens the file in the plain rest stance
+instead of the relaxed one (same skeleton either way). `--face-patch` also lays
+the fitted landmark patch over the head; it is off by default because, with the
+skull shaped to the face, it only ever showed as a hard edge on the forehead.
 
 ## The catalogue
 
@@ -77,8 +81,22 @@ authored wearables, and **visibility masks** so the garment hides the skin benea
 it rather than every outfit shipping its own body. `hide_covered()` is that mask.
 Without it the bare mesh pokes through the clothes.
 
-Hair colour is sampled from just above the hairline in the photo, skin tone from
-the cheeks, so both follow the person rather than a preset.
+Hair colour is read from a band of hair above and beside the forehead, with
+backdrop and skin pixels thrown out; brow colour from the brows; skin tone from
+the cheeks. All three follow the person rather than a preset. A beard or
+moustache is kept from the photo: the head bake fades the photo into generated
+skin towards the edge of the face, except where the photo is clearly darker than
+the person's own skin below the nose (`facetexture.facial_hair`).
+
+**MakeHuman's own hair, clothes, brows and lashes.** The defaults are
+MakeHuman's system assets: shirt-and-jeans outfits with fabric, normal and
+ambient-occlusion maps, leather shoes, six short haircuts as alpha-cut hair
+cards, eyebrows and eyelashes. All are CC0 — the pack's manifest marks every
+item so. Hair and brows are recoloured to the person's own, keeping the
+strand-to-strand variation; a darker skull cap (`hair_underlayer`) sits under
+the haircut so no pale scalp shows between strands. Outfits with a MakeHuman
+logo print are deliberately left out. `python fetch_assets.py` fetches exactly
+the folders the catalogue names.
 
 **Garments from files.** An item can name a mesh under `assets/garments/`
 instead of a base-mesh group (`"file": "jacket.obj"`), positioned with `scale`
@@ -94,7 +112,7 @@ from MakeHuman's authored skirt shell instead. That path has no foreign skirt to
 test against yet; check the first real one.
 
 **MakeHuman garments (MHCLO).** An item can name a MakeHuman clothes file
-(`"mhclo": "catsuit/catsuit.mhclo"`). These are the best route for real clothes:
+(`"mhclo": "garments/catsuit/catsuit.mhclo"`, relative to `assets/`). These are the best route for real clothes:
 each garment vertex is stored as a blend of three body vertices plus an offset,
 so the garment is rebuilt on each person's shaped body, and its skin weights are
 exact rather than borrowed. Two CC0 garments from MakeHuman's community
@@ -104,12 +122,13 @@ repository are wired in to prove the path (catsuit, tights); fetch them with:
 cd avatar-engine && for g in tightsv2 catsuit; do mkdir -p assets/garments/$g && for e in mhclo obj mhmat; do curl -sSL -o assets/garments/$g/$g.$e https://raw.githubusercontent.com/makehumancommunity/communityassets-wip/master/clothes/$g/$g.$e; done; done
 ```
 
-Hoodies, jeans and shoes in MHCLO exist on MakeHuman's asset portal; licences
-there are per item, so check each before it goes into the catalogue.
+More MHCLO clothes exist on MakeHuman's asset portal; licences there are per
+item, unlike the system pack, so check each before it goes into the catalogue.
 
 **Surface finish lives in the file.** Each part is exported with its own
-roughness (skin 0.5, eyes 0.05, hair 0.45, cloth 0.85, shoes 0.4; a catalogue
-item may set `roughness`). The viewer no longer overrides it, so the studio
+roughness (skin 0.5, eyes 0.05, hair cards 0.8 so the crown does not flare
+white under the key light, cloth 0.85, shoes 0.4; a catalogue item may set
+`roughness`). The viewer no longer overrides it, so the studio
 shows what Blender, Unity or Unreal will.
 
 **Skin under clothes is alpha-masked, not deleted.** Every body triangle is
@@ -167,7 +186,23 @@ sparse checkout so the rest of their repository is not downloaded:
 git clone --depth 1 --filter=blob:none --sparse https://github.com/makehumancommunity/makehuman.git mh && cd mh && git sparse-checkout set makehuman/data/targets/nose makehuman/data/targets/mouth makehuman/data/targets/eyes makehuman/data/targets/chin makehuman/data/targets/cheek makehuman/data/targets/forehead makehuman/data/targets/head makehuman/data/targets/eyebrows makehuman/data/targets/ears && mkdir -p ../avatar-engine/assets/targets && cp -r makehuman/data/targets/* ../avatar-engine/assets/targets/
 ```
 
-Pinned to the 0.10 line for reproducibility; the code only uses the tasks API,
+Then MakeHuman's hair, clothes, brows and lashes, the body targets that make
+a man's or a woman's figure, and the expression units the face fit uses to take
+a smile off (CC0, about 60 MB, only the parts the catalogue uses):
+
+```bash
+cd avatar-engine && .venv/Scripts/python.exe fetch_assets.py
+```
+
+And MediaPipe's multiclass selfie segmenter (Apache-2.0, about 16 MB), which
+reads the hair for the haircut and hair colour. Without it the default haircut
+is used and hair colour falls back to sampling above the forehead:
+
+```bash
+cd avatar-engine && curl -sSL -o assets/selfie_multiclass_256x256.tflite https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite
+```
+
+MediaPipe is pinned to the 0.10 line for reproducibility; the code only uses the tasks API,
 which 1.x also has. Neither package ships the face topology any more, which is
 why the canonical model is downloaded separately rather than read out of the
 installed package.
@@ -196,11 +231,14 @@ haircut, a pair of glasses or a blendshape set made once fit every avatar.
 | `catalogue.py` | builds catalogue items, cut from the base mesh or loaded from files, and masks skin under them |
 | `garments.py` | rigs garments with their own topology by weight transfer, poses meshes in numpy, imports garment files |
 | `morph.py` | fits the head's shape to the person from MakeHuman's CC0 face targets |
-| `facetexture.py` | warps the photo onto the head's features, bakes it into UV, Poisson-blends the seam |
+| `delight.py` | takes the photo's lighting, shine and over-exposure out of the skin before it is baked |
+| `appearance.py` | reads the photo for haircut, hair colour and eye colour (segmenter, whites of the eyes as reference) |
+| `facetexture.py` | maps the photo onto the head through every landmark, bakes it into UV, fades it into generated skin, keeps a beard |
 | `skin.py` | generates a body skin texture and fine grain matched to the person's cheek colour |
 | `rig.py` | the skeleton: bone hierarchy, joint positions, per-vertex weights |
 | `skinned_glb.py` | writes the GLB, because trimesh cannot export a skin |
 | `test_rig.py` | the check that the rig is sound; run it after touching any of the above |
+| `fetch_assets.py` | fetches the MakeHuman assets the catalogue names, without the whole 280 MB pack |
 | `ARCHITECTURE.md` | target architecture, the licence audit behind it, and what is built versus next |
 | `adr/` | architecture decisions, starting with why the head model is MakeHuman and not FLAME |
 | `REALISM-GAP.md` | every reason an avatar looks fake, and what each costs to fix |
@@ -211,17 +249,23 @@ haircut, a pair of glasses or a blendshape set made once fit every avatar.
 
 ## What it is not, yet
 
-- **No bone roll, and no authored poses or animations.** The skeleton deforms
-  correctly but carries no rest pose of its own beyond the base mesh's stance.
-- **Clothes are cut from the body, not tailored.** Items are slices of the base
-  mesh's own garment shells, so they fit perfectly but have no collars, cuffs,
-  buttons or fabric texture. Real authored garments drop in at `build_item()`.
-- **The face is placed, not wrapped.** It is scaled onto the skull by bounding
-  box and its border ring trimmed off, so there is still a visible seam at the
-  jaw. A proper wrap-and-blend is the upgrade.
-- **Hair is a skull cap**, not strands, and only one style.
-- **One body shape.** Nothing reads height, build or age from the photo; male and
-  female differ only by default outfit.
+- **No bone roll and no animations.** Two stances (relaxed, rest), set by hand.
+- **A small wardrobe.** Four MakeHuman outfits and two pairs of shoes; any
+  outfit can be dyed per part (`"recolour": {"top": [r, g, b], "bottom": ...}`
+  in `catalogue.json`). Jeans come in a men's cut only, and are long on a
+  woman's figure, pooling at the ankle; the one women's cut is a blouse and
+  skirt.
+- **Seven haircuts, chosen by four measurements.** The photo's hair mask picks
+  close crop, short, fringe, bob or long, or none when bald; the long-hair rule
+  has not yet been checked on a real long-haired photo. The cards' front edge is
+  a hard line on the forehead.
+- **The face is textured onto the skull, not wrapped.** Its edge fades into
+  generated skin built to the face's own colour. The photo's broad lighting,
+  shine and over-exposure are taken out first (`delight.py`), but not its white
+  balance or the shadow inside nostrils and eye corners, and a dark photo is not
+  brightened.
+- **Two body shapes.** Male and female are MakeHuman's own macro targets; nothing
+  reads height, build or age from the photo.
 - **Front projection only.** Anything the camera could not see is unpainted, and
   the texture carries the photo's own lighting rather than a neutral albedo.
 - **A testing tool, not the product.** No login, no accounts, no queue, no

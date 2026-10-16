@@ -215,27 +215,36 @@ def load_mhclo(path: pathlib.Path, vertices: np.ndarray) -> trimesh.Trimesh:
 
     The returned mesh remembers its three reference vertices and blend weights,
     so it can be rigged exactly (`mhclo_weights`) rather than by approximation.
+    It also carries the garment's texture coordinates (split at UV seams, since
+    glTF allows one per vertex), its material file, and the body vertices its
+    author marked as hidden underneath it.
     """
-    obj_file, scales, refs = None, {}, []
-    in_verts = False
+    obj_file, material, scales, refs, hidden = None, None, {}, [], []
+    section = None
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         parts = line.split()
-        if in_verts:
-            if parts[0].lstrip("-").isdigit():
-                if len(parts) >= 9:
-                    refs.append([float(x) for x in parts[:9]])
-                elif len(parts) == 1:            # pinned exactly to one vertex
-                    i = float(parts[0])
-                    refs.append([i, i, i, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-                continue
-            in_verts = False                     # a new section begins
-        if parts[0] == "verts":
-            in_verts = True
+        numeric = parts[0].lstrip("-").isdigit()
+        if section == "verts" and numeric:
+            if len(parts) >= 9:
+                refs.append([float(x) for x in parts[:9]])
+            elif len(parts) == 1:                # pinned exactly to one vertex
+                i = float(parts[0])
+                refs.append([i, i, i, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            continue
+        if section == "delete_verts" and numeric:
+            hidden.extend(parts)                 # numbers and "a - b" ranges
+            continue
+        # Only another section header ends a section: some files put a
+        # one-line setting such as `material` between `verts 0` and its data.
+        if parts[0] in ("verts", "delete_verts"):
+            section = parts[0]
         elif parts[0] == "obj_file":
             obj_file = parts[1]
+        elif parts[0] == "material":
+            material = parts[1]
         elif parts[0] in ("x_scale", "y_scale", "z_scale"):
             scales[parts[0][0]] = (int(parts[1]), int(parts[2]), float(parts[3]))
 
@@ -251,20 +260,107 @@ def load_mhclo(path: pathlib.Path, vertices: np.ndarray) -> trimesh.Trimesh:
             scale[axis] = abs(vertices[a, axis] - vertices[b, axis]) / max(base_distance, 1e-9)
     fitted = (blend[:, :, None] * vertices[idx]).sum(axis=1) + offset * scale
 
-    faces = []
+    texcoords, corners = [], []
     for raw in (path.parent / obj_file).read_text(encoding="utf-8").splitlines():
-        if raw.startswith("f "):
-            corner = [int(c.split("/")[0]) - 1 for c in raw.split()[1:]]
-            for i in range(1, len(corner) - 1):
-                faces.append((corner[0], corner[i], corner[i + 1]))
-    faces = np.array(faces, dtype=np.int64)
-    if len(fitted) != faces.max() + 1:
-        raise ValueError(f"{path.name}: {len(fitted)} fitted vertices but the mesh uses {faces.max() + 1}")
+        if raw.startswith("vt "):
+            texcoords.append([float(x) for x in raw.split()[1:3]])
+        elif raw.startswith("f "):
+            corner = [c.split("/") for c in raw.split()[1:]]
+            pairs = [(int(c[0]) - 1, int(c[1]) - 1 if len(c) > 1 and c[1] else -1) for c in corner]
+            for i in range(1, len(pairs) - 1):
+                corners.append((pairs[0], pairs[i], pairs[i + 1]))
+    corners = np.array(corners, dtype=np.int64)          # (faces, 3 corners, [v, vt])
+    if len(fitted) != corners[..., 0].max() + 1:
+        raise ValueError(f"{path.name}: {len(fitted)} fitted vertices but the mesh uses "
+                         f"{corners[..., 0].max() + 1}")
 
-    mesh = trimesh.Trimesh(vertices=fitted, faces=faces, process=False)
-    mesh.metadata["mhclo_idx"] = idx
-    mesh.metadata["mhclo_blend"] = blend
+    uv = None
+    if texcoords and (corners[..., 1] >= 0).all():
+        # One vertex per distinct position/UV pair, as glTF wants.
+        unique, inverse = np.unique(corners.reshape(-1, 2), axis=0, return_inverse=True)
+        faces = inverse.reshape(-1, 3)
+        source, uv = unique[:, 0], np.array(texcoords)[unique[:, 1]]
+    else:
+        faces, source = corners[..., 0], np.arange(len(fitted))
+
+    mesh = trimesh.Trimesh(vertices=fitted[source], faces=faces, process=False)
+    mesh.metadata["mhclo_idx"] = idx[source]
+    mesh.metadata["mhclo_blend"] = blend[source]
+    mesh.metadata["uv"] = uv
+    mesh.metadata["material"] = path.parent / material if material else None
+    mesh.metadata["hides"] = _ranges(hidden)
     return mesh
+
+
+def _ranges(tokens: list[str]) -> np.ndarray:
+    """MakeHuman's vertex lists: plain numbers and inclusive "a - b" ranges."""
+    out, i = [], 0
+    while i < len(tokens):
+        if i + 2 < len(tokens) and tokens[i + 1] == "-":
+            out.extend(range(int(tokens[i]), int(tokens[i + 2]) + 1))
+            i += 3
+        else:
+            out.append(int(tokens[i]))
+            i += 1
+    return np.array(out, dtype=np.int64)
+
+
+def load_mhmat(path: pathlib.Path) -> dict:
+    """The few MakeHuman material settings a glTF material can use."""
+    settings = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        parts = raw.strip().split(None, 1)
+        if len(parts) == 2 and not parts[0].startswith(("#", "//")):
+            settings[parts[0]] = parts[1].strip()
+    return settings
+
+
+def material_textures(mhmat: pathlib.Path, colour=None, size: int = 1024):
+    """Base colour and normal map for an MHCLO asset, ready for glTF.
+
+    Ambient occlusion is multiplied into the base colour: it is where the
+    folds, seams and collar shadows come from, and baking it in keeps it in
+    every engine. `colour` recolours the texture — hair and brows take the
+    person's own colour — keeping the strand-to-strand variation by scaling
+    each texel's brightness relative to the texture's average.
+    Textures are capped at `size` so a 4K normal map does not bloat the file.
+    """
+    from PIL import Image
+
+    settings = load_mhmat(mhmat)
+    transparent = settings.get("transparent", "False").lower() == "true"
+
+    def image(key):
+        name = settings.get(key)
+        if not name or not (mhmat.parent / name).exists():
+            return None
+        im = Image.open(mhmat.parent / name)
+        im.thumbnail((size, size))
+        return im
+
+    diffuse, normal, ao = image("diffuseTexture"), image("normalmapTexture"), image("aomapTexture")
+    if diffuse is None:
+        return None, None, transparent
+
+    rgba = np.asarray(diffuse.convert("RGBA")).astype(np.float64)
+    rgb, alpha = rgba[..., :3], rgba[..., 3]
+    if ao is not None:
+        occlusion = np.asarray(ao.convert("L").resize(diffuse.size)).astype(np.float64) / 255.0
+        rgb = rgb * occlusion[..., None]
+    if colour is not None:
+        brightness = rgb @ np.array([0.299, 0.587, 0.114])
+        solid = alpha > 128
+        mean = brightness[solid].mean() if solid.any() else brightness.mean()
+        # Capped, or the few near-white texels a hair texture carries along its
+        # edge come out at four times the hair's brightness: a white blotch.
+        relative = np.clip(brightness / max(mean, 1.0), 0.0, 1.5)
+        rgb = np.asarray(colour, dtype=np.float64)[None, None, :] * relative[..., None]
+    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+    if transparent:
+        out = Image.fromarray(np.dstack([rgb, alpha.astype(np.uint8)]), mode="RGBA")
+    else:
+        out = Image.fromarray(rgb, mode="RGB")
+    return out, (normal.convert("RGB") if normal is not None else None), transparent
 
 
 def mhclo_weights(idx: np.ndarray, blend: np.ndarray, joints: np.ndarray,
@@ -310,3 +406,59 @@ def make_test_vest(out_path: pathlib.Path | None = None) -> pathlib.Path:
 
 if __name__ == "__main__":
     print(make_test_vest())
+
+
+def garment_regions(mesh: trimesh.Trimesh, vertices: np.ndarray, groups: dict) -> np.ndarray:
+    """For each face of an outfit, True if it belongs to the top, False if to
+    the bottom.
+
+    An outfit file is one mesh with one texture for shirt and trousers alike.
+    Each piece of cloth is its own UV island, so islands are classified whole:
+    one that sits below the waist and near the body's centre line is trousers;
+    anything else is the top. The centre-line test matters because the base
+    mesh is modelled arms-out, and the cuffs hang down to hip height.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    waist = float(vertices[np.unique(groups["joint-spine-3"])][:, 1].mean())
+    hip = 2.5 * abs(float(vertices[np.unique(groups["joint-l-upper-leg"])][:, 0].mean()))
+    n = len(mesh.vertices)
+    edges = np.vstack([mesh.faces[:, [0, 1]], mesh.faces[:, [1, 2]]])
+    graph = coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n))
+    _, label = connected_components(graph, directed=False)
+    centre = np.zeros((label.max() + 1, 3))
+    np.add.at(centre, label, mesh.vertices)
+    centre /= np.bincount(label, minlength=len(centre))[:, None]
+    bottom = (centre[:, 1] < waist) & (np.abs(centre[:, 0]) < hip)
+    return ~bottom[label[mesh.faces[:, 0]]]
+
+
+def recolour(texture, mesh: trimesh.Trimesh, faces_mask: np.ndarray, colour) -> "Image.Image":
+    """`texture` with the cloth under `faces_mask` dyed `colour` (sRGB).
+
+    The fabric keeps its own shading — weave, folds, seams, the baked
+    occlusion — because lightness is scaled, not replaced; only the hue is
+    moved, keeping a little of the original variation so it does not go flat.
+    """
+    import cv2
+    from PIL import Image
+    from facetexture import rasterize
+
+    size = texture.size[0]
+    uv = np.column_stack([mesh.metadata["uv"][:, 0], mesh.metadata["uv"][:, 1]])
+    faces = mesh.faces[faces_mask]
+    region = rasterize(np.ones(len(mesh.vertices)), faces, uv, faces, size, fill=0.0) > 0.5
+    region = cv2.dilate(region.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+    rgb = np.asarray(texture.convert("RGB"))
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float64)
+    target = cv2.cvtColor(np.uint8([[colour]]), cv2.COLOR_RGB2LAB)[0, 0].astype(np.float64)
+    mean = lab[region].mean(axis=0)
+    dyed = lab.copy()
+    dyed[..., 0] = lab[..., 0] * (target[0] / max(mean[0], 1.0))
+    dyed[..., 1:] = target[1:] + (lab[..., 1:] - mean[1:]) * 0.35
+    out = np.where(region[..., None], dyed, lab)
+    out = cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    if texture.mode == "RGBA":
+        return Image.fromarray(np.dstack([out, np.asarray(texture)[..., 3]]), "RGBA")
+    return Image.fromarray(out, "RGB")

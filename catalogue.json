@@ -1,19 +1,23 @@
 {
-  "note": "Wearables for the avatar. Most items are cut from the MakeHuman base mesh's own helper shells; items with a `file` are external meshes under assets/garments, rigged by weight transfer. Add items by editing this file; the pipeline reads it and does not need changing.",
+  "note": "Wearables for the avatar. Items with `group` are cut from the MakeHuman base mesh's own helper shells; items with `mhclo` are MakeHuman assets (clothes, hair, brows, lashes) fitted to the shaped body and rigged exactly; items with `file` are external meshes under assets/garments, rigged by weight transfer. Add items by editing this file; the pipeline reads it and does not need changing.",
   "licence": "Every item must carry its own `licence`, and anything without one is refused. Cut items are MakeHuman CC0 1.0. External files must record a licence clear for commercial use.",
-  "source_note": "`group` names a group inside the base mesh. `y_min` / `y_max` cut that shell by height in mesh units (the figure runs about -8.2 at the feet to 8.5 at the crown). `offset` lifts the garment off the skin along its normals so it does not z-fight.",
+  "source_note": "`group` names a group inside the base mesh. `y_min` / `y_max` cut that shell by height in mesh units (the figure runs about -8.2 at the feet to 8.5 at the crown). `offset` lifts the garment off the skin along its normals so it does not z-fight. `mhclo` paths are relative to assets/. `colour` may be `from_photo` (hair) or `from_brows`; on a textured item it recolours the texture.",
   "defaults": {
     "male": [
-      "shirt_green",
-      "trousers_charcoal",
-      "shoes_dark",
-      "hair_short"
+      "outfit_green_shirt_grey_trousers",
+      "shoes_brown_leather",
+      "hair_underlayer",
+      "hair_short02",
+      "eyebrows",
+      "eyelashes"
     ],
     "female": [
-      "shirt_blue",
-      "trousers_navy",
-      "shoes_dark",
-      "hair_short"
+      "outfit_light_blue_shirt_navy_trousers",
+      "shoes_black",
+      "hair_underlayer",
+      "hair_short02",
+      "eyebrows_thin",
+      "eyelashes"
     ]
   },
   "items": [
@@ -128,6 +132,19 @@
       "licence": "CC0-1.0"
     },
     {
+      "id": "hair_underlayer",
+      "category": "hair",
+      "label": "Hair underlayer (worn under a haircut)",
+      "group": "body",
+      "y_min": 7.45,
+      "offset": 0.055,
+      "colour": "from_photo",
+      "licence": "CC0-1.0",
+      "colour_scale": 0.6,
+      "_why": "The skull cap in a darker shade of the person's hair, worn under a hair mesh so no pale scalp shows between strands, as roots would.",
+      "hairline_lift": 0.35
+    },
+    {
       "id": "eyes",
       "category": "eyes",
       "label": "Eyes",
@@ -162,7 +179,7 @@
       "category": "top",
       "label": "Catsuit (MakeHuman MHCLO)",
       "_why": "A real MakeHuman garment, fitted to the shaped body from its reference vertices and rigged exactly.",
-      "mhclo": "catsuit/catsuit.mhclo",
+      "mhclo": "garments/catsuit/catsuit.mhclo",
       "colour": [
         52,
         58,
@@ -175,7 +192,7 @@
       "id": "tights_mh",
       "category": "bottom",
       "label": "Tights (MakeHuman MHCLO)",
-      "mhclo": "tightsv2/tightsv2.mhclo",
+      "mhclo": "garments/tightsv2/tightsv2.mhclo",
       "colour": [
         30,
         30,
@@ -183,6 +200,167 @@
       ],
       "roughness": 0.6,
       "licence": "CC0-1.0 (MakeHuman communityassets-wip; the repository states every submission is CC0: github.com/makehumancommunity/communityassets-wip)"
+    },
+    {
+      "id": "outfit_blue_shirt_jeans",
+      "category": "outfit",
+      "label": "Blue shirt and jeans",
+      "mhclo": "mh_system/clothes/male_casualsuit01/male_casualsuit01.mhclo",
+      "roughness": 0.85,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "outfit_green_shirt_grey_trousers",
+      "category": "outfit",
+      "label": "Green shirt and grey trousers",
+      "_why": "The blue-shirt outfit, dyed: `recolour` dyes the shirt (`top`) and trousers (`bottom`) separately, keeping the fabric's own shading.",
+      "mhclo": "mh_system/clothes/male_casualsuit01/male_casualsuit01.mhclo",
+      "recolour": {"top": [64, 102, 84], "bottom": [70, 72, 78]},
+      "roughness": 0.85,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "outfit_light_blue_shirt_navy_trousers",
+      "category": "outfit",
+      "label": "Light blue shirt and navy trousers",
+      "mhclo": "mh_system/clothes/male_casualsuit01/male_casualsuit01.mhclo",
+      "recolour": {"top": [168, 192, 222], "bottom": [36, 42, 64]},
+      "roughness": 0.85,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "outfit_striped_shirt_jeans",
+      "category": "outfit",
+      "label": "Striped shirt and jeans",
+      "mhclo": "mh_system/clothes/male_casualsuit03/male_casualsuit03.mhclo",
+      "roughness": 0.85,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "outfit_white_tee_jeans",
+      "category": "outfit",
+      "label": "White T-shirt and jeans",
+      "mhclo": "mh_system/clothes/male_casualsuit06/male_casualsuit06.mhclo",
+      "roughness": 0.85,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "outfit_blouse_skirt",
+      "category": "outfit",
+      "label": "Striped blouse and skirt",
+      "mhclo": "mh_system/clothes/female_elegantsuit01/female_elegantsuit01.mhclo",
+      "roughness": 0.85,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "shoes_brown_leather",
+      "category": "shoes",
+      "label": "Brown leather shoes",
+      "mhclo": "mh_system/clothes/shoes01/shoes01.mhclo",
+      "roughness": 0.45,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "shoes_black",
+      "category": "shoes",
+      "label": "Black shoes",
+      "mhclo": "mh_system/clothes/shoes04/shoes04.mhclo",
+      "roughness": 0.4,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "hair_short01",
+      "category": "hair",
+      "label": "Short, cropped",
+      "mhclo": "mh_system/hair/short01/short01.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.8,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "hair_short02",
+      "category": "hair",
+      "label": "Short, swept back",
+      "mhclo": "mh_system/hair/short02/short02.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.8,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "hair_short03",
+      "category": "hair",
+      "label": "Short with a fringe",
+      "mhclo": "mh_system/hair/short03/short03.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.8,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "hair_short04",
+      "category": "hair",
+      "label": "Short, side parting",
+      "mhclo": "mh_system/hair/short04/short04.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.8,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "hair_bob01",
+      "category": "hair",
+      "label": "Bob",
+      "mhclo": "mh_system/hair/bob01/bob01.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.8,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "hair_bob02",
+      "category": "hair",
+      "label": "Bob with a fringe",
+      "mhclo": "mh_system/hair/bob02/bob02.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.8,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "hair_long01",
+      "category": "hair",
+      "label": "Long",
+      "mhclo": "mh_system/hair/long01/long01.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.8,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "eyebrows",
+      "category": "brows",
+      "label": "Eyebrows",
+      "mhclo": "mh_system/eyebrows/eyebrow001/eyebrow001.mhclo",
+      "colour": "from_brows",
+      "roughness": 0.6,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "eyebrows_thin",
+      "category": "brows",
+      "label": "Thin eyebrows",
+      "mhclo": "mh_system/eyebrows/eyebrow006/eyebrow006.mhclo",
+      "colour": "from_brows",
+      "roughness": 0.6,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "eyelashes",
+      "category": "lashes",
+      "label": "Eyelashes",
+      "mhclo": "mh_system/eyelashes/eyelashes01/eyelashes01.mhclo",
+      "colour": [
+        34,
+        26,
+        24
+      ],
+      "roughness": 0.6,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     }
   ]
 }
