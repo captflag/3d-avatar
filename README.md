@@ -13,7 +13,10 @@ http://localhost:8777
 ```
 
 Drop a photo on the page and the avatar appears next to it, orbitable. Everything
-generated stays in the gallery at the bottom, so the team can compare runs.
+generated stays in the gallery at the bottom, so the team can compare runs. Each
+card is a render of the avatar itself, badged `full body` or `face only`, so you
+can see at a glance what each run produced. Opening the review page with no model
+named shows the newest avatar.
 
 **Full body** is on by default: the fitted face goes on a base body, dressed from
 the catalogue, with skin tone and hair colour sampled from the photo. Pick the male

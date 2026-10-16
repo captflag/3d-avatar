@@ -52,8 +52,15 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const params = new URLSearchParams(location.search);
-const modelUrl = params.get('model') || 'out/portrait.glb';
-const photoUrl = params.get('photo') || 'samples/portrait.jpg';
+// With no model named, show the newest avatar rather than a hardcoded file:
+// that default used to be an early face-only test, so opening the page bare
+// looked like the engine only ever made faces.
+const newest = await fetch('/gallery.json')
+  .then((r) => (r.ok ? r.json() : []))
+  .then((items) => items[0] || null)
+  .catch(() => null);
+const modelUrl = params.get('model') || newest?.model || 'out/portrait.glb';
+const photoUrl = params.get('photo') || newest?.photo || 'samples/portrait.jpg';
 
 document.getElementById('photo').src = photoUrl;
 

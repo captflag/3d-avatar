@@ -64,13 +64,19 @@ def entries() -> list[dict]:
             photo_url = None
         items.append({
             "id": sidecar.stem,
+            "kind": info.get("kind", "face"),
+            "rigged": bool(info.get("rigged")),
             "model": f"/out/{glb.name}",
             "photo": photo_url,
             "created": dt.datetime.fromtimestamp(glb.stat().st_mtime).strftime("%d %b %H:%M"),
+            "_mtime": glb.stat().st_mtime,
             "expression": list(info.get("expression", {}).items())[:3],
             "size_kb": info.get("size_kb"),
         })
-    return sorted(items, key=lambda i: i["id"], reverse=True)
+    # Newest first by when the model was written. Sorting by id looked right
+    # while every id began with a timestamp, but anything made from the command
+    # line is named by hand and sorted alphabetically to the top.
+    return sorted(items, key=lambda i: i["_mtime"], reverse=True)
 
 
 @app.post("/generate")

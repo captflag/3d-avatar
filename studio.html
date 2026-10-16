@@ -43,10 +43,16 @@
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden;
           cursor:pointer; text-align:left; padding:0; display:block; }
   .card:hover { border-color:var(--accent); }
-  .card img { width:100%; aspect-ratio:1; object-fit:cover; display:block; background:#0d0f13; }
+  /* Portrait, and contained: a square crop cut the head off every full-body avatar. */
+  .card img { width:100%; aspect-ratio:11/14; object-fit:contain; display:block; background:#0d0f13; }
   .card .meta { padding:8px 10px; }
   .card .when { font-size:12px; color:var(--text); }
   .card .expr { font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .card .shot { position:relative; }
+  .card .badge { position:absolute; top:6px; left:6px; font-size:10px; letter-spacing:.04em;
+    text-transform:uppercase; background:rgba(17,19,23,.78); color:var(--muted);
+    padding:2px 6px; border-radius:999px; }
+  .card .badge.body { color:var(--accent); }
   .empty { color:var(--muted); font-size:13px; }
 </style>
 </head>
@@ -82,7 +88,16 @@
   </section>
 </div>
 
-<script>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.162.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.162.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
 const $ = (id) => document.getElementById(id);
 const drop = $('drop'), file = $('file'), go = $('go'), status = $('status'),
       result = $('result'), viewer = $('viewer'), gallery = $('gallery'), chosen = $('chosen');
@@ -146,12 +161,87 @@ async function loadGallery() {
     card.className = 'card';
     card.type = 'button';
     const expr = it.expression.map(([k, v]) => k).join(', ') || 'neutral';
+    const label = it.kind === 'full-body' ? (it.rigged ? 'full body · rigged' : 'full body') : 'face only';
     card.innerHTML =
-      `<img src="${it.photo || ''}" alt="">` +
+      `<div class="shot"><img alt="" data-model="${it.model}">` +
+      `<span class="badge ${it.kind === 'full-body' ? 'body' : ''}">${label}</span></div>` +
       `<div class="meta"><div class="when">${it.created}</div><div class="expr">${expr}</div></div>`;
     card.addEventListener('click', () =>
       show(`/review.html?model=${encodeURIComponent(it.model)}&photo=${encodeURIComponent(it.photo || '')}`));
     gallery.appendChild(card);
+  }
+  renderThumbnails();
+}
+
+// Thumbnails are renders of the avatar, not the photo it came from. Showing the
+// source photo made the gallery look like a photo album and hid whether an entry
+// was a face patch or a dressed figure.
+const THUMB_W = 220, THUMB_H = 280;
+let thumbRenderer = null;
+const gltfLoader = new GLTFLoader();
+
+function getRenderer() {
+  if (!thumbRenderer) {
+    thumbRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    thumbRenderer.setPixelRatio(1);
+    thumbRenderer.setSize(THUMB_W, THUMB_H);
+  }
+  return thumbRenderer;
+}
+
+function disposeScene(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.geometry?.dispose();
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) { m?.map?.dispose(); m?.dispose(); }
+  });
+}
+
+async function renderThumbnail(url) {
+  const gltf = await gltfLoader.loadAsync(url);
+  const scene = new THREE.Scene();
+  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+  const key = new THREE.DirectionalLight(0xffffff, 0.6);
+  key.position.set(0.6, 0.8, 1.4);
+  scene.add(key);
+
+  const model = gltf.scene;
+  model.traverse((o) => {
+    if (!o.isMesh) return;
+    o.material.side = THREE.DoubleSide;
+    o.material.metalness = 0;
+    if (o.material.map) o.material.map.colorSpace = THREE.SRGBColorSpace;
+  });
+
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3());
+  const centre = box.getCenter(new THREE.Vector3());
+  model.position.sub(centre);
+  scene.add(model);
+
+  const camera = new THREE.PerspectiveCamera(32, THUMB_W / THUMB_H, 0.01, 200);
+  // Fit whichever dimension needs the most room. Fitting width alone clipped the
+  // head off every full-body avatar, which is the one thing the card must show.
+  const fit = Math.max(size.y, size.x / camera.aspect);
+  camera.position.set(0, 0, (fit / (2 * Math.tan((32 * Math.PI) / 360))) * 1.12);
+  camera.lookAt(0, 0, 0);
+
+  const renderer = getRenderer();
+  renderer.render(scene, camera);
+  const data = renderer.domElement.toDataURL('image/webp', 0.8);
+  disposeScene(model);
+  return data;
+}
+
+async function renderThumbnails() {
+  // One at a time: each avatar is about a megabyte and they are only decoration.
+  for (const img of gallery.querySelectorAll('img[data-model]')) {
+    try {
+      img.src = await renderThumbnail(img.dataset.model);
+    } catch (err) {
+      console.warn('thumbnail failed', img.dataset.model, err);
+    }
   }
 }
 
