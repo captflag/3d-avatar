@@ -302,6 +302,36 @@ def check_hairline_sweep():
     print(f"ok  hairline sweep: fringe turned back {turned:.0f} deg, edge rose {risen:.2f} of 0.30, back kept, off the scalp")
 
 
+def check_hair_volume():
+    """A flat stock cut given a photo's height: its top rises to the height
+    asked, its front edge stays where it was (the lift ramps in behind it, so
+    no shell stands off the forehead), and the back of the hair stays put."""
+    import appearance
+    import garments
+
+    vertices, groups = load_base()
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    # Swept back first, as compose does: that is what puts the front edge
+    # high enough up the head for the lift to reach it.
+    opaque = appearance.opaque_hair(hair)
+    ahead = opaque[(np.abs(opaque[:, 0]) < 0.2) & (opaque[:, 2] > np.median(opaque[:, 2]))]
+    garments.sweep_back(hair, vertices, groups, opaque, np.percentile(ahead[:, 1], 3) + 0.3)
+    original = hair.vertices.copy()
+    middle = np.abs(original[:, 0]) < 0.3
+    top = np.percentile(original[middle, 1], 98)
+    front = middle & (original[:, 2] > np.median(original[:, 2]))
+    edge = np.percentile(original[front, 1], 3)
+    lift = garments.volumise(hair, vertices, groups, top + 0.2)
+    assert lift > 0, "the cut was not lifted"
+    risen = np.percentile(hair.vertices[middle, 1], 98) - top
+    assert 0.12 < risen < 0.3, f"the top rose {risen:.2f} for 0.2 asked"
+    at_edge = front & (original[:, 1] < edge + 0.05)
+    assert np.linalg.norm(hair.vertices[at_edge] - original[at_edge], axis=1).max() < 0.02, "the front edge was lifted off"
+    back = original[:, 2] < np.percentile(original[:, 2], 15)
+    assert np.linalg.norm(hair.vertices[back] - original[back], axis=1).max() < 0.02, "the back of the hair moved"
+    print(f"ok  hair volume: top rose {risen:.2f} for 0.20 asked, front edge and back kept")
+
+
 def check_expression():
     """A smile is fitted as expression, not identity, and comes off the face.
 
@@ -938,6 +968,7 @@ if __name__ == "__main__":
         check_arkit()
         check_mouth_bake()
         check_hairline_sweep()
+        check_hair_volume()
         check_expression()
         check_mhclo()
         check_import()

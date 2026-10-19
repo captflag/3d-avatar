@@ -1216,6 +1216,37 @@ Whole-face landmark error 3.0 -> 2.7 (woman), 2.7 -> 2.5 (ref-man), photo-10
 unchanged at 3.5% of the eye spacing. photo-10's short-sides block still ends
 in a straight edge: that cut's own front, not the sweep.
 
+## Hair: the photo's height, not a different stock cut
+
+Every short cut in the catalogue was built on all three test faces, rendered,
+and its hair lined up with the photo's by the stable face landmarks; the
+score is the overlap of the two (intersection over union) above the eyes.
+No stock cut came close (0.41-0.46 at best), and they all missed the same
+way: height. In the photos the hair stands 1.20, 1.53 and 1.18 eye spacings
+above the brows; every MakeHuman cut lies flat at 0.90-1.17. Width at the
+temples was already right (short02 2.01 against 2.08), and the hairline was
+fixed by the sweep.
+
+`read_hair` now also reads the `rise` (the top of the hair over the
+forehead's middle, a low percentile so flyaways do not set it), and
+`garments.volumise` lifts the cut along the scalp's normals until its top
+reaches that height: fully over the top and front, easing off towards the
+eyes, sides and back, and from nothing at the front edge, so the hair rises
+from the hairline as a quiff does. Lifted right at the edge it stood off the
+forehead as a shell, its dark inside showing under the fringe; over a 0.3
+ramp the painted scalp still showed as a band under ref-man's quiff; 0.6
+closes it.
+
+| | overlap with the photo's hair (stock -> now) | top above the brows (photo / now) |
+|---|---|---|
+| woman | 0.44 -> 0.53 | 1.20 / 1.19 |
+| ref-man | 0.34 -> 0.62 | 1.53 / 1.52 |
+| photo-10 | 0.37 -> 0.67 | 1.18 / 1.15 |
+
+Still open: the cut's own shape (a side parting, a swept fringe, a curl) is
+the stock card layout; ref-man's temples show small notches at 45 degrees;
+photo-10's short-sides front keeps its straight edge.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.

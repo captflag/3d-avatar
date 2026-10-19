@@ -771,6 +771,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
             hairline_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["hairline"] * spacing
             garments.sweep_back(mesh, vertices, groups, appearance.opaque_hair(mesh), hairline_y)
+        if item["category"] == "hair" and "mhclo" in item and hair_reading and hair_reading.get("rise"):
+            # And up to the photo's height over the forehead: the stock cuts lie flat.
+            spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
+            rise_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["rise"] * spacing
+            garments.volumise(mesh, vertices, groups, rise_y)
         if item["category"] == "brows":
             mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
         if item["category"] in ("teeth", "tongue"):
