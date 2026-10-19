@@ -159,6 +159,13 @@ def serve_lib(name: str):
     return send_from_directory(HERE / "lib", name)
 
 
+@app.get("/models/face_landmarker.task")
+def serve_landmarker():
+    # The same face model the pipeline reads photos with, for the studio's
+    # live camera checks: what passes there is what the pipeline will see.
+    return send_from_directory(HERE / "assets", "face_landmarker.task")
+
+
 @app.get("/review.html")
 def serve_review():
     return send_from_directory(HERE, "review.html")

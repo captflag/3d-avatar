@@ -58,6 +58,23 @@
     padding:2px 6px; border-radius:999px; }
   .card .badge.body { color:var(--accent); }
   .empty { color:var(--muted); font-size:13px; }
+
+  #camera { display:none; border:1px solid var(--line); border-radius:12px; background:var(--panel);
+            padding:14px; gap:16px; grid-template-columns:minmax(0,3fr) minmax(220px,2fr); }
+  #camera.open { display:grid; }
+  #camera .frame { position:relative; background:#0d0f13; border-radius:8px; overflow:hidden; }
+  /* A mirror, as every selfie camera shows; the photo itself is taken unmirrored. */
+  #camera video { width:100%; display:block; transform:scaleX(-1); }
+  #camera .oval { position:absolute; left:50%; top:46%; width:34%; aspect-ratio:3/4;
+                  transform:translate(-50%,-50%); border:2px dashed rgba(255,255,255,.35); border-radius:50%; }
+  #camera.ready .oval { border-color:var(--accent); border-style:solid; }
+  #checks { list-style:none; margin:0 0 12px; padding:0; display:grid; gap:6px; font-size:13px; }
+  #checks li { color:var(--muted); }
+  #checks li.ok { color:var(--text); }
+  #checks li .mark { display:inline-block; width:18px; color:var(--bad); }
+  #checks li.ok .mark { color:var(--accent); }
+  #camnote { color:var(--muted); font-size:12px; min-height:18px; margin:0 0 12px; }
+  @media (max-width:700px) { #camera { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -68,10 +85,14 @@
 
 <div class="wrap">
   <form id="drop">
-    <p>Drop a photo here, or pick one. Front-facing and well lit works best.</p>
+    <p>Drop a photo here, choose one, or take one with the camera. Front-facing and well lit works best.</p>
     <div class="row">
       <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/bmp">
-      <button type="button" class="ghost" id="pick">Choose photo</button>
+      <!-- Where the browser cannot open the camera itself (not localhost or https),
+           a phone still opens its own camera from this. -->
+      <input type="file" id="snap" accept="image/*" capture="user">
+      <button type="button" class="ghost" id="pick">Choose from gallery</button>
+      <button type="button" class="ghost" id="usecamera">Use camera</button>
       <select id="dimension" class="toggle" title="what to produce">
         <option value="3d">3D model</option>
         <option value="2d">2D image</option>
@@ -85,6 +106,22 @@
       <span id="chosen"></span>
     </div>
   </form>
+
+  <section id="camera" aria-label="camera">
+    <div class="frame">
+      <video id="video" playsinline muted></video>
+      <div class="oval"></div>
+    </div>
+    <div>
+      <h2>Before the photo is taken</h2>
+      <ul id="checks"></ul>
+      <p id="camnote">Starting the camera…</p>
+      <div class="row" style="justify-content:flex-start">
+        <button type="button" id="shoot" disabled>Take photo</button>
+        <button type="button" class="ghost" id="closecamera">Cancel</button>
+      </div>
+    </div>
+  </section>
 
   <div id="status"></div>
 
@@ -135,6 +172,187 @@ file.addEventListener('change', () => setFile(file.files[0]));
 ['dragleave', 'drop'].forEach((e) =>
   drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', (ev) => setFile(ev.dataTransfer.files[0]));
+
+// ---- Camera ------------------------------------------------------------------
+// A photo taken here is checked live against what the pipeline needs, limits
+// measured on the test photos: a face big enough to carry a likeness, straight
+// on, at rest (a broad smile is never fully taken off the resting face), eyes
+// open, light even across the cheeks, and the hair in frame. Once every check
+// holds for half a second the photo takes itself.
+const GOOD_FACE_PX = 250;        // compose.GOOD_FACE_PX: below it the photo advice asks for closer
+const MAX_TURN = 10;             // degrees left/right or up/down
+const MAX_ROLL = 8;              // degrees of head tilt
+const MAX_SMILE = 0.3;           // MediaPipe score where the shape fit starts damping a smile
+const MAX_BLINK = 0.4;
+const MAX_LIGHT_SPLIT = 0.25;    // cheek against cheek, share of the brighter
+const STEADY_FRAMES = 15;
+const VISION = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+
+const video = $('video'), camera = $('camera'), checks = $('checks'), camnote = $('camnote'), shoot = $('shoot');
+let stream = null, steady = 0, looping = false, lastResults = [];
+const landmarkers = {};
+
+/** One detector per mode: VIDEO tracks a face from frame to frame, which
+ *  unrelated stills (checkPhoto) would confuse. */
+async function getLandmarker(mode = 'VIDEO') {
+  if (landmarkers[mode]) return landmarkers[mode];
+  const { FilesetResolver, FaceLandmarker } = await import(`${VISION}/vision_bundle.mjs`);
+  const files = await FilesetResolver.forVisionTasks(`${VISION}/wasm`);
+  landmarkers[mode] = await FaceLandmarker.createFromOptions(files, {
+    baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
+    runningMode: mode, numFaces: 2,
+    outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
+  });
+  return landmarkers[mode];
+}
+
+const sampler = document.createElement('canvas');
+/** Mean brightness round a point, in a small copy of the frame. */
+function brightness(source, width, height, x, y, radius) {
+  const scale = 320 / width;
+  sampler.width = 320; sampler.height = Math.round(height * scale);
+  const ctx = sampler.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(source, 0, 0, sampler.width, sampler.height);
+  const r = Math.max(2, Math.round(radius * scale));
+  const data = ctx.getImageData(Math.round(x * scale) - r, Math.round(y * scale) - r, 2 * r, 2 * r).data;
+  let sum = 0;
+  for (let i = 0; i < data.length; i += 4) sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  return sum / (data.length / 4);
+}
+
+/** Each check on one frame (`found`: the detector's result for it): [{ ok, text }]. */
+function assess(found, source, width, height) {
+  const faces = found.faceLandmarks || [];
+  const out = [];
+  const add = (ok, good, bad) => out.push({ ok, text: ok ? good : bad });
+  if (faces.length !== 1) {
+    add(false, '', faces.length ? 'Only one face in the picture, please' : 'No face found: look at the camera');
+    return out;
+  }
+  const p = faces[0];
+  const at = (i) => [p[i].x * width, p[i].y * height];
+  const apart = (a, b) => Math.hypot(at(a)[0] - at(b)[0], at(a)[1] - at(b)[1]);
+  const faceWidth = apart(234, 454);
+  add(faceWidth >= GOOD_FACE_PX, 'Face close enough',
+      `Come closer: face ${Math.round(faceWidth)} px across, needs ${GOOD_FACE_PX}`);
+
+  // Head pose from the face's transform (column-major 4x4).
+  const m = found.facialTransformationMatrixes[0].data;
+  const deg = 180 / Math.PI;
+  const pitch = Math.atan2(m[6], m[10]) * deg, yaw = Math.asin(-m[2]) * deg, roll = Math.atan2(m[1], m[0]) * deg;
+  add(Math.abs(yaw) <= MAX_TURN && Math.abs(pitch) <= MAX_TURN, 'Facing the camera',
+      Math.abs(yaw) > MAX_TURN ? 'Turn to face the camera' : 'Keep your chin level');
+  add(Math.abs(roll) <= MAX_ROLL, 'Head upright', 'Straighten your head');
+
+  const score = Object.fromEntries(found.faceBlendshapes[0].categories.map((c) => [c.categoryName, c.score]));
+  add(Math.max(score.mouthSmileLeft, score.mouthSmileRight, score.jawOpen) <= MAX_SMILE, 'Relaxed mouth',
+      'Relax your face: mouth closed, no smile');
+  add(Math.max(score.eyeBlinkLeft, score.eyeBlinkRight) <= MAX_BLINK, 'Eyes open', 'Open your eyes');
+
+  const radius = 0.06 * faceWidth;
+  const left = brightness(source, width, height, ...at(50), radius);
+  const right = brightness(source, width, height, ...at(280), radius);
+  add(Math.abs(left - right) / Math.max(left, right, 1) <= MAX_LIGHT_SPLIT, 'Even light',
+      'The light falls on one side: face the window or lamp');
+
+  const top = p[10].y - 0.45 * (p[152].y - p[10].y);
+  add(top > 0 && p[152].y < 0.98, 'Head and hair in the picture',
+      'Move back or lower the camera: the top of your hair must be in the picture');
+  return out;
+}
+
+function showChecks(results) {
+  checks.replaceChildren(...results.map((r) => {
+    const li = document.createElement('li');
+    li.className = r.ok ? 'ok' : '';
+    const mark = document.createElement('span');
+    mark.className = 'mark';
+    mark.textContent = r.ok ? '✓' : '✗';
+    li.append(mark, r.text);
+    return li;
+  }));
+}
+
+function tick() {
+  if (!looping) return;
+  if (video.readyState >= 2) {
+    lastResults = assess(landmarkers.VIDEO.detectForVideo(video, performance.now()), video,
+                         video.videoWidth, video.videoHeight);
+    showChecks(lastResults);
+    const ok = lastResults.every((r) => r.ok);
+    camera.classList.toggle('ready', ok);
+    steady = ok ? steady + 1 : 0;
+    if (steady >= STEADY_FRAMES) { take(); return; }
+  }
+  requestAnimationFrame(tick);
+}
+
+/** The frame as it is, unmirrored, handed on like a chosen photo. */
+function take() {
+  const passed = lastResults.length > 0 && lastResults.every((r) => r.ok);
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  closeCamera();
+  canvas.toBlob((blob) => {
+    setFile(new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' }));
+    status.className = passed ? '' : 'bad';
+    status.textContent = passed ? 'Photo taken: every check passed. Generate when ready.'
+      : 'Photo taken before every check passed: the avatar may look less like you.';
+  }, 'image/jpeg', 0.95);
+}
+
+async function openCamera() {
+  // Browsers open the camera only on https or localhost; elsewhere a phone
+  // still offers its own camera through the file input.
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) { $('snap').click(); return; }
+  camera.classList.add('open');
+  status.textContent = '';
+  status.className = '';
+  camnote.textContent = 'Starting the camera…';
+  shoot.disabled = true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(
+      { video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    camnote.textContent = 'Loading the face checks…';
+    await getLandmarker();
+    camnote.textContent = 'Hold still once every line is ticked: the photo takes itself.';
+    shoot.disabled = false;
+    steady = 0;
+    looping = true;
+    requestAnimationFrame(tick);
+  } catch (err) {
+    closeCamera();
+    status.className = 'bad';
+    status.textContent = `The camera could not be opened (${err.name || err.message}). Choose a photo from the gallery instead.`;
+  }
+}
+
+function closeCamera() {
+  looping = false;
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = null;
+  video.srcObject = null;
+  camera.classList.remove('open', 'ready');
+}
+
+$('usecamera').addEventListener('click', openCamera);
+$('closecamera').addEventListener('click', closeCamera);
+shoot.addEventListener('click', take);
+$('snap').addEventListener('change', () => setFile($('snap').files[0]));
+
+/** The camera checks run on a still photo (for testing them without a camera). */
+async function checkPhoto(url) {
+  const still = await getLandmarker('IMAGE');
+  // fetch + createImageBitmap: an unattached Image's decode() never settled here.
+  const img = await createImageBitmap(await (await fetch(url)).blob());
+  const canvas = document.createElement('canvas');
+  canvas.width = img.width; canvas.height = img.height;
+  canvas.getContext('2d').drawImage(img, 0, 0);
+  return assess(still.detect(canvas), canvas, canvas.width, canvas.height);
+}
 
 drop.addEventListener('submit', async (ev) => {
   ev.preventDefault();
@@ -347,7 +565,7 @@ async function renderThumbnails() {
 
 // Handle for checking the renderers from the console, same idea as
 // window.__avatar on the review page.
-window.__studio = { renderPng, renderThumbnail };
+window.__studio = { renderPng, renderThumbnail, checkPhoto };
 
 loadGallery();
 </script>
