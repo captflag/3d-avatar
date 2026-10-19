@@ -141,15 +141,23 @@ def segment(photo_rgb: np.ndarray) -> np.ndarray | None:
     return np.array(mask).reshape(photo_rgb.shape[:2])
 
 
+# Heights above the brows, in eye spacings, at which the hair's width is read
+# (`widths` in read_hair) and matched (garments.widen).
+HAIR_WIDTH_ROWS = (0.0, 0.25, 0.5, 0.75)
+
+
 def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dict | None:
     """What the photo says about the hair, measured in face heights.
 
     `top`: how far the hair rises above the top of the face mesh.
     `bottom`: where it ends relative to the chin (negative is above the chin).
     `fringe`: share of the forehead it covers. `hairline`: how far above the
-    brows the hair ends mid-forehead, in eye spacings. `sides`: how far it stands out
+    brows the hair ends mid-forehead, in eye spacings, and `rise` how high above
+    them it stands over the forehead's middle. `sides`: how far it stands out
     past the face's outline at the temples, in face widths (median over the
-    rows from the top of the face to the eyes). `amount`: hair area against
+    rows from the top of the face to the eyes). `widths`: its half-width
+    either side of the face's midline at HAIR_WIDTH_ROWS, in eye spacings
+    (None for a row with no hair). `amount`: hair area against
     face-skin area, near zero when bald. `colour`: its base colour, read from
     the hair pixels themselves, below the highlights and above the shadow.
     """
@@ -167,7 +175,7 @@ def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dic
     ys, xs = np.nonzero(hair & near)
     amount = float((hair & near).sum() / max((parts == FACE_SKIN).sum(), 1))
     reading = {"amount": round(amount, 2), "top": None, "bottom": None, "fringe": 0.0, "sides": None,
-               "hairline": None, "colour": None}
+               "hairline": None, "rise": None, "widths": None, "colour": None}
     if len(ys) < 50:
         return reading
 
@@ -203,6 +211,23 @@ def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dic
             if hair[:int(brows), x].any()]
     if lows:
         reading["hairline"] = round(float((brows - np.median(lows)) / spacing), 2)
+    # The rise: the top of the hair across the middle of the head, a low
+    # percentile so a few flyaway strands do not set it.
+    middle = hair[:int(brows), max(int(x9 - 0.5 * spacing), 0):min(int(x9 + 0.5 * spacing), w)]
+    tops = np.nonzero(middle.any(axis=1))[0]
+    if len(tops):
+        rows = np.nonzero(middle)[0]
+        reading["rise"] = round(float((brows - np.percentile(rows, 2)) / spacing), 2)
+
+    # The outline: half the hair's width at each height, either side of the
+    # nose bridge (landmark 168), averaged over the two sides.
+    mid = landmarks[168].x * w
+    widths = []
+    for above in HAIR_WIDTH_ROWS:
+        row = int(brows - above * spacing)
+        cols = np.nonzero((hair & near)[row])[0] if 0 <= row < h else []
+        widths.append(round(float((cols.max() - cols.min()) / 2 / spacing), 2) if len(cols) else None)
+    reading["widths"] = widths
 
     reading.update(top=round(float((ty - ys.min()) / face_h), 2),
                    bottom=round(float((ys.max() - cy) / face_h), 2),

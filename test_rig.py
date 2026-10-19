@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 import numpy as np
+from PIL import Image
 import pygltflib as gl
 
 from catalogue import build_item, items_by_id, load_base
@@ -172,6 +173,49 @@ def check_proportions():
     print("ok  proportions: eye spacing, widths, height and chin fit within 1.5%")
 
 
+def check_side_views():
+    """Turned views of a known face fuse back to its depth, though each view's
+    own depth is a flattened guess and its turn is read a sixth short, as
+    MediaPipe reads them; and a fit given measured depth leaves a face alone
+    that differs from the skull only by where it sits in depth."""
+    import morph
+    import views
+    from compose import place_face
+
+    truth = np.asarray(morph.canonical_face().vertices, dtype=np.float64)
+    truth = truth - truth.mean(axis=0)
+    rng = np.random.default_rng(2)
+    spacing = np.linalg.norm(truth[33] - truth[263])
+
+    def turn(degrees):
+        a = np.radians(degrees)
+        return np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
+
+    def view(degrees, scale, shift):
+        points = scale * truth @ turn(degrees).T + shift
+        points[:, 2] *= 0.6                                   # a flattened depth guess
+        points[:, :2] += rng.normal(0, 0.005 * spacing * scale, (len(points), 2))
+        return points, turn(degrees * 29 / 35)                # the turn read short
+
+    front = view(0, 1.0, np.zeros(3))
+    fused, measured, _ = views.fuse([front, view(35, 1.3, np.array([0.2, -0.1, 0.0])),
+                                  view(-35, 0.8, np.array([-0.1, 0.05, 0.0]))])
+    fused = fused - fused.mean(axis=0)
+    error = np.sqrt(((fused[:, 2] - truth[:, 2]) ** 2).mean()) / spacing
+    guessed = np.sqrt(((front[0][:, 2] - truth[:, 2]) ** 2).mean()) / spacing
+    assert error < 0.25 * guessed, f"fused depth off by {100 * error:.1f}% of eye spacing, guessed {100 * guessed:.1f}%"
+    assert measured[1] > 0.5, f"nose tip depth counted as measured only {measured[1]:.2f}"
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    person = morph.reference(vertices, corr, average) + [0.0, 0.0, 0.3 * spacing]
+    weights, _, _ = morph.fit(vertices, corr, person, average, depth=np.ones(len(corr)))
+    assert weights.max() < 0.05, f"a face only sitting further forward bent target {weights.argmax()} to {weights.max():.2f}"
+    print(f"ok  side views: depth fused to {100 * error:.1f}% of eye spacing (one view guessed {100 * guessed:.1f}%); "
+          f"a depth offset bends no target")
+
+
 def check_brow_shading():
     """Under the brows the skin's normals lose the eye socket's hollow, so the
     3D light stops shading again what the photo already shows there; the rest
@@ -300,6 +344,124 @@ def check_hairline_sweep():
     gap = ((hair.vertices - vertices[near]) * normals[near]).sum(axis=1)[moved]
     assert gap.min() > 0.04, f"swept hair sank to {gap.min():.3f} from the scalp"
     print(f"ok  hairline sweep: fringe turned back {turned:.0f} deg, edge rose {risen:.2f} of 0.30, back kept, off the scalp")
+
+
+def check_hair_volume():
+    """A flat stock cut given a photo's height: its top rises to the height
+    asked, its front edge stays where it was (the lift ramps in behind it, so
+    no shell stands off the forehead), and the back of the hair stays put."""
+    import appearance
+    import garments
+
+    vertices, groups = load_base()
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    # Swept back first, as compose does: that is what puts the front edge
+    # high enough up the head for the lift to reach it.
+    opaque = appearance.opaque_hair(hair)
+    ahead = opaque[(np.abs(opaque[:, 0]) < 0.2) & (opaque[:, 2] > np.median(opaque[:, 2]))]
+    garments.sweep_back(hair, vertices, groups, opaque, np.percentile(ahead[:, 1], 3) + 0.3)
+    original = hair.vertices.copy()
+    middle = np.abs(original[:, 0]) < 0.3
+    top = np.percentile(original[middle, 1], 98)
+    front = middle & (original[:, 2] > np.median(original[:, 2]))
+    edge = np.percentile(original[front, 1], 3)
+    lift = garments.volumise(hair, vertices, groups, top + 0.2)
+    assert lift > 0, "the cut was not lifted"
+    risen = np.percentile(hair.vertices[middle, 1], 98) - top
+    assert 0.12 < risen < 0.3, f"the top rose {risen:.2f} for 0.2 asked"
+    at_edge = front & (original[:, 1] < edge + 0.05)
+    assert np.linalg.norm(hair.vertices[at_edge] - original[at_edge], axis=1).max() < 0.02, "the front edge was lifted off"
+    back = original[:, 2] < np.percentile(original[:, 2], 15)
+    assert np.linalg.norm(hair.vertices[back] - original[back], axis=1).max() < 0.02, "the back of the hair moved"
+    print(f"ok  hair volume: top rose {risen:.2f} for 0.20 asked, front edge and back kept")
+
+
+def check_hair_width():
+    """A cut whose outline is narrower over the temples than the photo's is
+    pushed out there to the photo's shape, and no further than WIDEN_LIMIT;
+    below the brows and at the back of the head it stays put; and a photo
+    whose outline the cut already has moves nothing."""
+    import appearance
+    import garments
+
+    vertices, groups = load_base()
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    original = hair.vertices.copy()
+    brow_y, spacing = float(np.percentile(original[:, 1], 30)), 0.6
+    own = []
+    for above in appearance.HAIR_WIDTH_ROWS:
+        band = np.abs(original[:, 1] - (brow_y + above * spacing)) < 0.05 * spacing
+        own.append(np.ptp(original[band, 0]) / 2 / spacing)
+    own = np.array(own)
+    assert not garments.widen(hair, vertices, groups, brow_y, spacing, list(own)).any(), \
+        "a cut with the photo's own outline was widened"
+    asked = own * np.array([1.0, 1.05, 1.1, 1.5])
+    push = garments.widen(hair, vertices, groups, brow_y, spacing, list(asked))
+    assert push[0] == 0 and push[1] > 0 and push[2] > push[1], f"pushes {push.round(3)}"
+    assert push[3] <= garments.WIDEN_LIMIT * own[3] * spacing + 1e-9, "widened past the limit"
+    low = original[:, 1] < brow_y - 0.3 * spacing
+    assert np.abs(hair.vertices[low] - original[low]).max() < 1e-6, "hair below the brows moved"
+    print(f"ok  hair width: pushed out {np.round(push / spacing, 2).tolist()} eye spacings up the temples, "
+          f"capped, nothing below the brows")
+
+
+def check_lip_correction():
+    """Lips the targets cannot reach are moved there free-form, smoothly: the
+    lip landmarks most of the way, the eyes and forehead not at all."""
+    import morph
+    from compose import place_face
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    lips = morph.INNER_UPPER + morph.INNER_LOWER + morph.OUTER_UPPER + morph.OUTER_LOWER + [61, 291, 78, 308]
+    person = morph.reference(vertices, corr, average)
+    spacing = np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2])
+    # Fuller lips: each lip point 4% of the eye spacing further from the mouth's middle.
+    mouth = person[lips].mean(axis=0)
+    away = person[lips] - mouth
+    person[lips, :2] += 0.04 * spacing * (away / np.linalg.norm(away, axis=1, keepdims=True))[:, :2]
+    marks = np.zeros(len(corr))
+    marks[lips] = 1.0
+    moved = morph.correct(vertices, vertices, corr, person, average, np.zeros(1), reliable=marks)
+    want = person[lips] - morph.reference(vertices, corr, average)[lips]
+    got = moved[corr[lips]] - vertices[corr[lips]]
+    share = float((got * want).sum() / (want * want).sum())
+    assert 0.5 < share < 1.1, f"the lips moved {share:.2f} of the way"
+    still = np.linalg.norm(moved[corr[[33, 263, 10, 151]]] - vertices[corr[[33, 263, 10, 151]]], axis=1).max()
+    assert still < 0.002 * spacing, f"eyes and forehead moved {still / spacing:.4f} eye spacings"
+    print(f"ok  lip correction: lips moved {share:.2f} of the way, eyes and forehead kept")
+
+
+def check_side_paint():
+    """A surface the front photo never saw, facing a turned photo's camera,
+    takes that photo's colour; the texture round it keeps its own."""
+    import trimesh
+    import appearance
+    import views
+
+    # A square facing +x, its texture in the middle of a grey map, and a
+    # turned photo, all red, whose camera looks along -x at it.
+    square = np.array([[1.0, -1, -1], [1, 1, -1], [1, 1, 1], [1, -1, 1]])
+    faces = np.array([[0, 1, 2], [0, 2, 3]])
+    if trimesh.Trimesh(square, faces, process=False).face_normals[0, 0] < 0:
+        faces = faces[:, ::-1]
+    uv = 0.3 + 0.4 * (square[:, 1:] + 1) / 2
+    turn = np.array([[0.0, 0, -1], [0, 1, 0], [1, 0, 0]])     # its third row: towards +x
+    red = np.zeros((100, 100, 3), np.uint8)
+    red[..., 0] = 220
+    real = appearance.segment
+    appearance.segment = lambda photo: np.full(photo.shape[:2], appearance.FACE_SKIN)
+    try:
+        texture, strength = views.paint_sides(Image.new("RGB", (64, 64), (128, 128, 128)), square, faces, uv,
+                                              faces, np.zeros(4), (1.0, np.zeros(3)),
+                                              [(red, (turn, 0.2, np.zeros(3)))])
+    finally:
+        appearance.segment = real
+    rgb = np.asarray(texture)
+    assert tuple(rgb[32, 32]) == (220, 0, 0), f"the middle took {rgb[32, 32]}"
+    assert tuple(rgb[2, 2]) == (128, 128, 128), f"the corner took {rgb[2, 2]}"
+    print("ok  side paint: a surface facing the turned photo took its colour, the rest kept its own")
 
 
 def check_expression():
@@ -934,10 +1096,15 @@ if __name__ == "__main__":
         check_transfer()
         check_alignment()
         check_proportions()
+        check_side_views()
         check_brow_shading()
         check_arkit()
         check_mouth_bake()
         check_hairline_sweep()
+        check_hair_volume()
+        check_hair_width()
+        check_lip_correction()
+        check_side_paint()
         check_expression()
         check_mhclo()
         check_import()
