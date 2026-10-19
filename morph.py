@@ -51,6 +51,10 @@ DEPTH_TRUST = 0.35
 # Pull weights towards zero so the fit explains the face with as little change
 # as it can, instead of stacking opposing targets to chase landmark noise.
 REGULARISE = 0.002
+# Blendshape scores that say the mouth is moving, and how hard a broad smile
+# pulls mouth and cheek shape towards average (see `fit`).
+MOUTH_SCORES = ("mouthSmileLeft", "mouthSmileRight", "jawOpen", "mouthStretchLeft", "mouthStretchRight")
+MOUTH_DAMPING = 300.0
 
 # MakeHuman's expression units, each with the MediaPipe blendshapes that score
 # the same movement. Sided units take either side's score: the cap is only a
@@ -98,6 +102,14 @@ EXPRESSION_REGULARISE = 0.0005
 # How alike (|cosine| at the landmarks) an identity target and a shown
 # expression unit must be for the identity target to sit the fit out.
 SAME_AXIS = 0.6
+# The distances a face is recognised by: eye spacing, face and jaw width, face
+# height, nose to chin (canonical MediaPipe landmarks). Fitted as distances as
+# well as through their landmarks: among 468 landmarks the few that set them
+# were outvoted, and every avatar came out with eyes 4-6% too far apart and a
+# chin 5-11% too short, which reads as a child's face.
+PROPORTIONS = [(33, 263), (234, 454), (172, 397), (10, 152), (2, 152)]
+# Each distance counts as much as this many landmarks fitted exactly.
+PROPORTION_WEIGHT = 10.0
 # How far across the face, in mesh units, to look for the skin in front of a
 # landmark's vertex (see `front_of`).
 FRONT_REACH = 0.02
@@ -237,7 +249,8 @@ def front_of(base: np.ndarray, body_faces: np.ndarray, corr: np.ndarray) -> np.n
 
 def fit(base: np.ndarray, corr: np.ndarray, person: np.ndarray, average: np.ndarray,
         scores: dict | None = None,
-        front: np.ndarray | None = None) -> tuple[np.ndarray, list[str], dict[str, float]]:
+        front: np.ndarray | None = None,
+        reliable: np.ndarray | None = None) -> tuple[np.ndarray, list[str], dict[str, float]]:
     """Identity weights in [0, 1] that move the skull like this face differs
     from average, and the expression fitted alongside them.
 
@@ -269,10 +282,13 @@ def fit(base: np.ndarray, corr: np.ndarray, person: np.ndarray, average: np.ndar
         moves = [_landmark_motion(base, at, units[k]) for k in shown]
         basis = np.hstack([basis, np.column_stack(moves)])
 
-    residual = (person[:n] - average[:n]).reshape(-1)
+    residual = (person[:n] - reference(base, corr, average)).reshape(-1)
 
-    # Trust depth less than width and height.
+    # Trust depth less than width and height, and any landmark the caller
+    # marks as unreliable (a jaw outline lying on a beard) less again.
     trust = np.tile([1.0, 1.0, DEPTH_TRUST], n)
+    if reliable is not None:
+        trust = trust * np.repeat(np.asarray(reliable, dtype=np.float64)[:n], 3)
     a = basis * trust[:, None]
     b = residual * trust
 
@@ -287,9 +303,25 @@ def fit(base: np.ndarray, corr: np.ndarray, person: np.ndarray, average: np.ndar
         unit = a / np.maximum(np.linalg.norm(a, axis=0), 1e-12)
         used[:t] = np.abs(unit[:, :t].T @ unit[:, t:]).max(axis=1) < SAME_AXIS
 
+    # The wider the smile, the less the photo says about the mouth at rest. The
+    # expression units cannot reach a broad grin, and what they leave was taken
+    # as identity: on a beaming portrait three mouth-width targets sat at their
+    # limit and the "resting" mouth came out wide and full. So mouth and cheek
+    # shape is pulled towards average in proportion to how much the mouth moves.
+    rows, want = proportion_rows(base, corr, person, basis)
+    a = np.vstack([a, PROPORTION_WEIGHT * rows])
+    b = np.concatenate([b, PROPORTION_WEIGHT * want])
+
+    ridges = np.full(t, REGULARISE)
+    moving = max((scores.get(s, 0.0) for s in MOUTH_SCORES), default=0.0)
+    damp = 1.0 + MOUTH_DAMPING * np.clip((moving - 0.3) / 0.6, 0.0, 1.0) ** 2
+    for k, (name, _, _) in enumerate(targets):
+        if name.startswith(("mouth/", "cheek/")):
+            ridges[k] *= damp
+
     # Ridge as extra rows, then bounded so every weight stays a real MakeHuman
     # setting between off and fully applied.
-    ridge = np.array([REGULARISE] * t + [EXPRESSION_REGULARISE] * len(shown))[used]
+    ridge = np.concatenate([ridges, [EXPRESSION_REGULARISE] * len(shown)])[used]
     upper = np.array([1.0] * t + [ceiling[k] for k in shown])[used]
     a = np.vstack([a[:, used], np.diag(np.sqrt(ridge))])
     b = np.concatenate([b, np.zeros(len(ridge))])
@@ -301,6 +333,35 @@ def fit(base: np.ndarray, corr: np.ndarray, person: np.ndarray, average: np.ndar
     for k, w in zip(shown, weights[t:]):
         expression[names[k]] = float(w)
     return weights[:t], [name for name, _, _ in targets], expression
+
+
+def reference(base: np.ndarray, corr: np.ndarray, average: np.ndarray) -> np.ndarray:
+    """Where the fit measures the photo's landmarks from: the skull's own, in
+    the picture's plane.
+
+    Measured from MediaPipe's average face, the fit carried only how the photo
+    differs from average, and wherever MakeHuman's base differs from that
+    average stayed in every result: its chin sits 6% of the eye spacing higher
+    and its jaw corners 5% further in. Depth is still measured from the
+    average: the landmarks snap to the nearest skin, a centimetre off at the
+    eyelids, and photo depth is a guess anyway.
+    """
+    at = average[:len(corr)].copy()
+    at[:, :2] = base[corr][:, :2]
+    return at
+
+
+def proportion_rows(base: np.ndarray, corr: np.ndarray, person: np.ndarray,
+                    basis: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Each of PROPORTIONS as a least-squares row: how every column of `basis`
+    lengthens it, in the picture's plane, and how much longer the photo's is."""
+    rows, want = [], []
+    for i, j in PROPORTIONS:
+        span = (base[corr[j]] - base[corr[i]]) * [1.0, 1.0, 0.0]
+        length = np.linalg.norm(span)
+        rows.append((span / length) @ (basis[3 * j:3 * j + 3] - basis[3 * i:3 * i + 3]))
+        want.append(np.linalg.norm((person[j] - person[i])[:2]) - length)
+    return np.array(rows), np.array(want)
 
 
 def _landmark_motion(base: np.ndarray, at: np.ndarray, target) -> np.ndarray:
@@ -356,10 +417,158 @@ def explained(base: np.ndarray, corr: np.ndarray, person: np.ndarray,
     """How much of the face's difference from average the fit accounts for,
     identity and expression together, 0-1."""
     n = len(corr)
-    want = (person[:n] - average[:n])
+    want = person[:n] - reference(base, corr, average)
     got = apply(base, weights)[corr] - base[corr]
     if expression:
         got = got + expression_offsets(base, corr if front is None else front, expression)
     before = np.linalg.norm(want)
     after = np.linalg.norm(want - got)
     return float(1.0 - after / before) if before > 0 else 0.0
+
+
+# Apple ARKit's 52 face blendshapes, in its own order. MediaPipe's
+# FaceLandmarker scores the same names, and audio-to-expression models emit
+# them, so an avatar carrying these is driven by either without a remap.
+# "Left" is the subject's own left, which on this mesh is +x.
+ARKIT_NAMES = [
+    "eyeBlinkLeft", "eyeLookDownLeft", "eyeLookInLeft", "eyeLookOutLeft", "eyeLookUpLeft",
+    "eyeSquintLeft", "eyeWideLeft",
+    "eyeBlinkRight", "eyeLookDownRight", "eyeLookInRight", "eyeLookOutRight", "eyeLookUpRight",
+    "eyeSquintRight", "eyeWideRight",
+    "jawForward", "jawLeft", "jawRight", "jawOpen",
+    "mouthClose", "mouthFunnel", "mouthPucker", "mouthLeft", "mouthRight",
+    "mouthSmileLeft", "mouthSmileRight", "mouthFrownLeft", "mouthFrownRight",
+    "mouthDimpleLeft", "mouthDimpleRight", "mouthStretchLeft", "mouthStretchRight",
+    "mouthRollLower", "mouthRollUpper", "mouthShrugLower", "mouthShrugUpper",
+    "mouthPressLeft", "mouthPressRight", "mouthLowerDownLeft", "mouthLowerDownRight",
+    "mouthUpperUpLeft", "mouthUpperUpRight",
+    "browDownLeft", "browDownRight", "browInnerUp", "browOuterUpLeft", "browOuterUpRight",
+    "cheekPuff", "cheekSquintLeft", "cheekSquintRight", "noseSneerLeft", "noseSneerRight",
+    "tongueOut",
+]
+# The symmetric mouth units, split at the midline into ARKit's sided shapes:
+# (ARKit name, unit, share of the unit).
+SPLIT_UNITS = [("mouthSmile", "mouth-corner-puller", 1.0), ("mouthFrown", "mouth-depression", 1.0),
+               ("mouthDimple", "mouth-retraction", 0.5), ("mouthStretch", "mouth-retraction", 1.0),
+               ("mouthPress", "mouth-compression", 1.0),
+               ("mouthLowerDown", "mouth-depression-retraction", 1.0),
+               ("mouthUpperUp", "mouth-part-later", 1.0)]
+# Half the width, in mesh units (~10 cm each), over which a split unit hands
+# over from one side to the other.
+MIDLINE = 0.08
+# Full eye turns, degrees: up and down, towards and away from the nose.
+EYE_LOOK = {"Up": 20.0, "Down": 25.0, "In": 30.0, "Out": 30.0}
+# The lids follow the gaze: looking up opens them (share of the eye-wide
+# unit), looking down lowers them (share of the blink). Without it, an eye
+# turned up rolled its iris away under a lid that stayed put.
+LID_FOLLOWS = {"Up": ("opened-up", 1.0), "Down": ("closure", 0.3)}
+# Shapes MakeHuman has no unit for, in mesh units at full weight.
+JAW_SHIFT = 0.1          # jaw sideways and forward
+MOUTH_SHIFT = 0.1        # both lips sideways
+LIP_ROLL = (0.02, 0.05)  # a lip rolled in: towards the other lip, and back
+CHEEK_PUFF = (0.08, 0.06)  # along the skin's normal, and outwards
+CHIN_RAISE = (0.0, 0.04, 0.015)  # lower lip and chin pushed up and forward
+# MakeHuman's nostril raise is a twitch beside ARKit's sneer.
+SNEER_GAIN = 2.0
+CHEEK_SQUINT = 0.03      # cheek pushed up under the eye
+TONGUE_OUT = (0.0, -0.04, 0.35)
+
+
+def arkit_shapes(vertices: np.ndarray, corr: np.ndarray, groups: dict) -> np.ndarray:
+    """The 52 ARKit blendshapes as (52, vertices, 3) offsets on the base mesh.
+
+    Built from MakeHuman's CC0 expression units wherever one does the same
+    movement: blink, squint, wide eyes, brows, sneer, jaw open, pucker, funnel
+    as they are, and the symmetric mouth units split at the midline into the
+    sided shapes (SPLIT_UNITS). The rest have no unit and are made here: eye
+    looks as rotations of the eyeballs about their centres, jaw and mouth
+    shifts carried by how much the jaw-open and pucker units move each vertex,
+    lip rolls above and below the mouth's line, the chin raiser, cheek puff and
+    squint round MediaPipe's cheek landmarks (`corr` maps them to vertices),
+    and the tongue slid forward, its tip furthest.
+    """
+    n = len(vertices)
+    unit = {}
+    for name, idx, offsets in load_expressions():
+        dense = np.zeros((n, 3))
+        keep = idx < n
+        dense[idx[keep]] = offsets[keep]
+        unit[name] = dense
+
+    def reach(name):
+        """How much a unit moves each vertex, 0-1."""
+        m = np.linalg.norm(unit[name], axis=1)
+        return m / max(float(m.max()), 1e-12)
+
+    def near(points, radius):
+        d = np.linalg.norm(vertices[:, None, :] - np.atleast_2d(points)[None, :, :], axis=2).min(axis=1)
+        return np.exp(-(d / radius) ** 2)
+
+    smooth = lambda t: (lambda c: c * c * (3.0 - 2.0 * c))(np.clip(t, 0.0, 1.0))
+    left = smooth((vertices[:, 0] + MIDLINE) / (2.0 * MIDLINE))[:, None]
+    lips, jaw = reach("mouth-pursing"), reach("mouth-open")
+    mouth_y = float((vertices[:, 1] * lips).sum() / lips.sum())
+    below = smooth((mouth_y + 0.03 - vertices[:, 1]) / 0.06)[:, None]
+    above = 1.0 - below
+
+    shapes = {
+        "jawOpen": unit["mouth-open"],
+        "jawForward": jaw[:, None] * [0.0, 0.0, JAW_SHIFT],
+        "jawLeft": jaw[:, None] * [JAW_SHIFT, 0.0, 0.0],
+        "jawRight": jaw[:, None] * [-JAW_SHIFT, 0.0, 0.0],
+        "mouthClose": -unit["mouth-open"] * lips[:, None] * below,
+        "mouthFunnel": unit["mouth-protusion"],
+        "mouthPucker": unit["mouth-pursing"],
+        "mouthLeft": lips[:, None] * [MOUTH_SHIFT, 0.0, 0.0],
+        "mouthRight": lips[:, None] * [-MOUTH_SHIFT, 0.0, 0.0],
+        "mouthRollLower": lips[:, None] * below * [0.0, LIP_ROLL[0], -LIP_ROLL[1]],
+        "mouthRollUpper": lips[:, None] * above * [0.0, -LIP_ROLL[0], -LIP_ROLL[1]],
+        # MakeHuman's "elevation" raises the upper lip and leaves the chin:
+        # the lower shrug (the chin raiser) is the jaw's own region pushed up.
+        "mouthShrugLower": jaw[:, None] * below * CHIN_RAISE,
+        "mouthShrugUpper": unit["mouth-elevation"],
+        "browInnerUp": unit["eyebrows-left-inner-up"] + unit["eyebrows-right-inner-up"],
+    }
+    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
+    # Each cheek's middle: halfway from the mouth corner to the face's edge,
+    # clear of the lower lid and the nostril, which a wider puff pushed about.
+    cheeks = (vertices[corr[[61, 291]]] + vertices[corr[[234, 454]]]) / 2.0
+    outwards = np.c_[np.sign(vertices[:, 0]), np.zeros((n, 2))]
+    shapes["cheekPuff"] = near(cheeks, 0.2)[:, None] * (normals * CHEEK_PUFF[0] + outwards * CHEEK_PUFF[1])
+
+    for side, share in (("Left", left), ("Right", 1.0 - left)):
+        s = side.lower()
+        shapes[f"eyeBlink{side}"] = unit[f"eye-{s}-closure"]
+        shapes[f"eyeSquint{side}"] = unit[f"eye-{s}-slit"]
+        shapes[f"eyeWide{side}"] = unit[f"eye-{s}-opened-up"]
+        shapes[f"browDown{side}"] = unit[f"eyebrows-{s}-down"]
+        shapes[f"browOuterUp{side}"] = unit[f"eyebrows-{s}-extern-up"]
+        shapes[f"noseSneer{side}"] = unit[f"nose-{s}-elevation"] * SNEER_GAIN
+        for arkit, name, k in SPLIT_UNITS:
+            shapes[arkit + side] = unit[name] * share * k
+        # Under the eye on this side (MediaPipe 346 and 117, whichever is here).
+        under = [i for i in (346, 117) if (vertices[corr[i], 0] > 0) == (side == "Left")]
+        shapes[f"cheekSquint{side}"] = near(vertices[corr[under]], 0.2)[:, None] * [0.0, CHEEK_SQUINT, 0.01]
+
+        ball = np.unique(groups[f"helper-{s[0]}-eye"])
+        centre = vertices[ball].mean(axis=0)
+        nose = np.array([-np.sign(centre[0]), 0.0, 0.0])
+        for look, towards in (("Up", [0.0, 1.0, 0.0]), ("Down", [0.0, -1.0, 0.0]), ("In", nose), ("Out", -nose)):
+            # Turning the front of the eye (+z) towards `towards`.
+            axis = np.cross([0.0, 0.0, 1.0], towards)
+            turn = trimesh.transformations.rotation_matrix(np.radians(EYE_LOOK[look]), axis)[:3, :3]
+            offsets = np.zeros((n, 3))
+            offsets[ball] = (vertices[ball] - centre) @ turn.T - (vertices[ball] - centre)
+            if look in LID_FOLLOWS:
+                lid, share = LID_FOLLOWS[look]
+                offsets = offsets + share * unit[f"eye-{s}-{lid}"]
+            shapes[f"eyeLook{look}{side}"] = offsets
+
+    tongue = np.unique(groups["helper-tongue"])
+    z = vertices[tongue, 2]
+    tip = ((z - z.min()) / max(float(np.ptp(z)), 1e-9)) ** 1.5
+    shapes["tongueOut"] = np.zeros((n, 3))
+    shapes["tongueOut"][tongue] = tip[:, None] * TONGUE_OUT
+
+    assert len(ARKIT_NAMES) == 52 and set(shapes) == set(ARKIT_NAMES)
+    return np.stack([shapes[name] for name in ARKIT_NAMES]).astype(np.float32)

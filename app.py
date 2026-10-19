@@ -72,6 +72,7 @@ def entries() -> list[dict]:
             "_mtime": glb.stat().st_mtime,
             "expression": list(info.get("expression", {}).items())[:3],
             "size_kb": info.get("size_kb"),
+            "advice": info.get("advice", []),
         })
     # Newest first by when the model was written. Sorting by id looked right
     # while every id began with a timestamp, but anything made from the command

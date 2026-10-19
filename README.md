@@ -157,6 +157,22 @@ window.__avatar.getObjectByName('upperarm01L').rotation.z = -1.1
 
 Bone names lose their dots in three.js, so `upperarm01.L` becomes `upperarm01L`.
 
+The face carries Apple ARKit's 52 blendshapes under ARKit's own names
+(`eyeBlinkLeft`, `jawOpen`, `mouthSmileLeft` … `tongueOut`), on every part
+they move: skin, eyes, teeth, tongue, lashes. iPhone face tracking, MediaPipe's
+FaceLandmarker and audio-to-expression models all emit those names, so their
+output drives the avatar as it is. "Left" is the subject's own left. They are
+built from MakeHuman's CC0 expression units (`morph.arkit_shapes`), and the
+shapes MakeHuman has no unit for are made there too.
+
+```js
+// Every part the shape moves: skin, teeth and tongue open together.
+window.__avatar.traverse((o) => {
+  const i = o.morphTargetDictionary?.jawOpen;
+  if (i !== undefined) o.morphTargetInfluences[i] = 1;
+});
+```
+
 Bones are translation-only: the rest pose is whatever stance the base mesh is in,
 and the roll angles in the file's rotation planes are not read. That deforms
 correctly and takes simple retargeted poses; animation authored against
@@ -165,6 +181,42 @@ MakeHuman's own bone axes would need the planes too.
 Writes `name.glb` (mesh plus embedded texture) and `name.json` (source photo,
 landmark and triangle counts, detected expression). Anything made this way also
 shows up in the studio gallery.
+
+## Synthetic training data
+
+`synth.py` makes the training set for the learned head-shape correction that
+`adr/ADR-001-head-geometry-model.md` plans: random heads built from the same
+MakeHuman CC0 face targets the fit uses, rendered as photos, each with the exact
+shape behind it.
+
+```bash
+cd avatar-engine && .venv/Scripts/python.exe synth.py -n 200 --check
+```
+
+This writes `data/synth/NNNNNN.png` (512x512, `--size` to change) with a
+`NNNNNN.json` beside each one. `data/` is gitignored, and a second run adds to the
+folder instead of overwriting it. The JSON holds every non-zero face-target
+weight (names as in `morph.load_targets()`; a missing name means 0), the
+male/female macro blend, and the camera: yaw, pitch, focal length, position and
+look-at in model units. It also records the lighting, exposure, skin, lips, hair,
+iris and outfit that were drawn. `synth.vertices_for(female, weights)` rebuilds
+the exact mesh. `--check` runs MediaPipe over the folder and fails if it finds a
+face in fewer than 95% of the images.
+
+Per head: about 40% of the face sliders move, each towards one end only, with
+left and right nearly symmetric. Skin runs from very dark to very light, lips
+are tinted where MakeHuman's lip-volume targets act, and hair is one of the
+catalogue's seven cuts (or bald) in a natural colour. Yaw is within ±20° and
+pitch within ±10°, at 24–85 mm equivalent. Key, fill, rim and environment light
+and exposure are all randomised, over a gradient backdrop. Worker processes build
+the heads (`--workers`, half the cores by default). `synth.html` renders them in
+headless Chrome or Edge, using the studio's own lighting code, so three.js is
+fetched from unpkg as in the studio and needs the network. No new dependencies.
+
+On this PC (GTX 1660, 12 threads, 6 workers), 200 samples took 2 min 16 s, or
+0.68 s each (about 5,300 an hour). Building heads on the CPU is the limit, not
+the GPU render. MediaPipe found a face in 198 of 200. Both misses were the
+`bob01` cut, whose fringe falls across a turned face.
 
 ## Set up
 
@@ -238,6 +290,8 @@ haircut, a pair of glasses or a blendshape set made once fit every avatar.
 | `rig.py` | the skeleton: bone hierarchy, joint positions, per-vertex weights |
 | `skinned_glb.py` | writes the GLB, because trimesh cannot export a skin |
 | `test_rig.py` | the check that the rig is sound; run it after touching any of the above |
+| `synth.py` | synthetic training data: random heads with known shape, rendered as photos, plus a MediaPipe check |
+| `synth.html` | the headless render page `synth.py` drives, using the studio's lighting |
 | `fetch_assets.py` | fetches the MakeHuman assets the catalogue names, without the whole 280 MB pack |
 | `ARCHITECTURE.md` | target architecture, the licence audit behind it, and what is built versus next |
 | `adr/` | architecture decisions, starting with why the head model is MakeHuman and not FLAME |
@@ -252,18 +306,18 @@ haircut, a pair of glasses or a blendshape set made once fit every avatar.
 - **No bone roll and no animations.** Two stances (relaxed, rest), set by hand.
 - **A small wardrobe.** Four MakeHuman outfits and two pairs of shoes; any
   outfit can be dyed per part (`"recolour": {"top": [r, g, b], "bottom": ...}`
-  in `catalogue.json`). Jeans come in a men's cut only, and are long on a
-  woman's figure, pooling at the ankle; the one women's cut is a blouse and
-  skirt.
+  in `catalogue.json`) and taken in (`"slim": {"bottom": 0.6}`). Jeans come in
+  a men's cut only, slimmed for the women's default; the one women's cut is a
+  blouse and skirt.
 - **Seven haircuts, chosen by four measurements.** The photo's hair mask picks
-  close crop, short, fringe, bob or long, or none when bald; the long-hair rule
-  has not yet been checked on a real long-haired photo. The cards' front edge is
-  a hard line on the forehead.
+  close crop, short, fringe, bob or long, or none when bald. Checked on real
+  photos for short and close-cropped hair, and on rendered avatars for long hair,
+  bob and fringe; not yet on a real long-haired photo.
 - **The face is textured onto the skull, not wrapped.** Its edge fades into
   generated skin built to the face's own colour. The photo's broad lighting,
-  shine and over-exposure are taken out first (`delight.py`), but not its white
-  balance or the shadow inside nostrils and eye corners, and a dark photo is not
-  brightened.
+  shine, over-exposure and crevice shadows are taken out first (`delight.py`),
+  and a cast that puts skin outside the natural range is pulled back; a milder
+  cast stays, and a dark photo is not brightened.
 - **Two body shapes.** Male and female are MakeHuman's own macro targets; nothing
   reads height, build or age from the photo.
 - **Front projection only.** Anything the camera could not see is unpainted, and

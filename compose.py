@@ -49,11 +49,31 @@ FACE_FORWARD_BIAS = 0.05
 # How far the eyeballs sit behind the eyelid surface, in mesh units (~10 cm each).
 EYE_RECESS = 0.06
 
-# How strongly the generated pore map bumps the skin, per texture. The head has
-# a 1024 map of its own, so a texel is a fraction of a millimetre. The body
-# shares one 1024 map from neck to toe, a texel is millimetres across, and the
-# same grain magnified there read as bark on the neck.
-PORE_STRENGTH = {"head": 0.5, "body": 0.2}
+# How strongly the generated pore map bumps the skin, per texture. The head's
+# own map puts a texel at a fraction of a millimetre; the body's runs neck to
+# toe, a texel is millimetres across, and the same grain at full strength read
+# as bark on the neck.
+PORE_STRENGTH = {"head": 0.5, "body": 0.25}
+# Head and body skin textures, texels a side.
+SKIN_SIZE = 2048
+# How much a full crease darkens generated skin (appearance.skin_cavity).
+CAVITY_DEPTH = 0.35
+# Skin's index of refraction: about 1.4, a reflectance of 2.8% head on.
+SKIN_IOR = 1.4
+# How far the normals under the brows are smoothed (neighbour-averaging
+# rounds), so the 3D light adds the face's form there but not the socket's
+# hollow, which the photo already shows.
+PHOTO_NORMAL_ROUNDS = 120
+# Skin's stand-in for subsurface glow: sheen colour (linear RGB) and roughness.
+SKIN_SHEEN = ((0.20, 0.07, 0.04), 0.55)
+# How far teeth and tongue sit back from where the model puts them (mesh units).
+TEETH_RECESS = 0.05
+# Cloth sheen: colour (linear RGB) and roughness. At 0.35 it washed navy out
+# to slate grey.
+CLOTH_SHEEN = ((0.12, 0.12, 0.12), 0.8)
+# Hair: anisotropy strength, and its direction (radians from the texture's u
+# axis, which the strands run across).
+HAIR_ANISOTROPY = (0.7, np.pi / 2)
 
 # Surface finish, written into the file itself so Blender, Unity and Unreal show
 # what the studio shows. Everything used to go out at 0.85, which is right for
@@ -171,17 +191,52 @@ def rest_pose() -> dict:
     translation-only with world-aligned axes, so these are plain world-axis
     rotations.
     """
-    pose = {}
+    pose = finger_curls()
     # Bring the arms down towards the body. Mirrored, hence the sign flip.
     for side, sign in (("L", 1.0), ("R", -1.0)):
         pose[f"upperarm01.{side}"] = skinned_glb.axis_angle([0, 0, 1], -22.0 * sign)
         pose[f"lowerarm01.{side}"] = skinned_glb.axis_angle([0, 0, 1], -10.0 * sign)
-        # A hand at rest curls; splayed fingers look like a shop dummy.
-        for finger in range(1, 6):
-            for joint in range(1, 4):
-                pose[f"finger{finger}-{joint}.{side}"] = skinned_glb.axis_angle(
-                    [0, 1, 0], 12.0 * sign
-                )
+        # The model's upper lids sit at the top of the iris: a stare. At rest
+        # they cover its top edge. (orbicularis03 is the upper lid, pivoting
+        # at the eye's centre; a turn about +x lowers it.)
+        pose[f"orbicularis03.{side}"] = skinned_glb.axis_angle([1, 0, 0], UPPER_LID_DROP)
+    return pose
+
+
+# Degrees the upper lids come down from the model's: 4 covers the iris's top
+# edge, judged on renders against the stare it replaces (7 hid nearly half of
+# it: sleepy).
+UPPER_LID_DROP = 4.0
+
+
+# Degrees each finger joint bends towards the palm at rest, knuckle to tip,
+# thumb to little finger. A relaxed hand curls more towards the little finger.
+# (Half as much again, 52 to 84 degrees down a finger, turned the hanging
+# hands' fingertips and thumbs in across the thighs towards the fly.)
+FINGER_CURL = {1: (0, 5, 5), 2: (8, 18, 8), 3: (10, 22, 10), 4: (12, 26, 12), 5: (15, 30, 14)}
+
+
+def finger_curls() -> dict:
+    """Each finger bone bent towards its palm, from the base mesh's bind pose.
+
+    A hand at rest curls; straight fingers read as a shop dummy's paddle. No
+    world axis does it: the fingers hang down and forward and the palm faces in
+    and down, so the first version's turn about y swung them sideways instead.
+    The palm faces across the knuckles and along the middle finger, on the
+    side the thumb sits.
+    """
+    skeleton = load_skeleton(load_base()[0])
+    head = lambda name: skeleton.heads[skeleton.index[name]]
+    tail = lambda name: skeleton.tails[skeleton.index[name]]
+    pose = {}
+    for side in ("L", "R"):
+        knuckles = (head(f"finger2-1.{side}"), head(f"finger5-1.{side}"))
+        palm = np.cross(knuckles[1] - knuckles[0], tail(f"finger3-3.{side}") - head(f"finger3-1.{side}"))
+        palm *= np.sign(palm @ (tail(f"finger1-3.{side}") - (knuckles[0] + knuckles[1]) / 2))
+        for finger, angles in FINGER_CURL.items():
+            for joint, degrees in enumerate(angles, 1):
+                bone = f"finger{finger}-{joint}.{side}"
+                pose[bone] = skinned_glb.axis_angle(np.cross(tail(bone) - head(bone), palm), degrees)
     return pose
 
 
@@ -208,18 +263,165 @@ def relaxed_pose() -> dict:
     pose["root"] = turn(z=-hip)                       # right hip up
     pose["spine05"] = turn(z=hip + 2.0)               # torso back up, shoulders tilt left-down
     pose["neck01"] = turn(z=-2.0, y=4.0)              # head level, a slight turn
-    # Weight leg: back to vertical and in under the body's centre.
-    pose["upperleg01.R"] = turn(z=hip + 2.0)
-    pose["foot.R"] = turn(z=-(hip + 2.0))
-    # Free leg: out a little, knee forward, foot flat and turned out.
-    pose["upperleg01.L"] = turn(z=hip + 5.0, x=-10.0)
+    # The base mesh stands with its ankles twice its hip width apart; at ease
+    # they are about hip width (measured: 2.7 against hips of 2.2).
+    # Weight leg: in under the body's centre.
+    pose["upperleg01.R"] = turn(z=hip + 8.0)
+    pose["foot.R"] = turn(z=-(hip + 8.0))
+    # Free leg: in a little too, knee forward, foot flat and turned out.
+    pose["upperleg01.L"] = turn(z=hip - 4.0, x=-10.0)
     pose["lowerleg01.L"] = turn(x=17.0)
-    pose["foot.L"] = turn(z=-(hip + 5.0), x=-7.0, y=12.0)
-    # Arms closer to the body than the rest pose, elbows soft.
+    pose["foot.L"] = turn(z=-(hip - 4.0), x=-7.0, y=12.0)
+    # Arms closer to the body than the rest pose, elbows soft. The base mesh
+    # is modelled with its forearms reaching forward, about 46 degrees off
+    # vertical once the upper arm hangs; +44 brings them down to ~14, hands at
+    # the sides of the thighs rather than in front of them (measured: the
+    # upper arm leans a little forward too).
+    # (This was -16 at first, which pushed them out to about 62: sleepwalking,
+    # then +31, which still held the hands out in front: ~24.)
+    # The forearm-twist bone then sets the palms on the thighs, thumbs a little
+    # forward, twisted about the forearm's own length.
     for side, sign in (("L", 1.0), ("R", -1.0)):
-        pose[f"upperarm01.{side}"] = turn(z=-38.0 * sign, x=-4.0)
-        pose[f"lowerarm01.{side}"] = turn(z=-4.0 * sign, x=-16.0)
+        pose[f"upperarm01.{side}"] = turn(z=-33.0 * sign, x=-4.0)
+        pose[f"lowerarm01.{side}"] = turn(z=-4.0 * sign, x=44.0)
+        forearm = np.array([0.503 * sign, -0.481, 0.718])
+        forearm /= np.linalg.norm(forearm)
+        pose[f"lowerarm02.{side}"] = [float(c) for c in Rotation.from_rotvec(
+            forearm * np.radians(PALM_TWIST * sign)).as_quat()]
+
+    # The model's thumb sticks out forward and in; hanging, it pointed across
+    # the thigh at the fly. Turned at its root towards straight down, as the
+    # arm now hangs: worked out on the posed skeleton, since "down" depends on
+    # everything above the hand.
+    from garments import skinning_matrices
+    skeleton = load_skeleton(load_base()[0])
+    matrices = skinning_matrices(skeleton, pose)
+    for side in ("L", "R"):
+        root, tip = skeleton.index[f"finger1-1.{side}"], skeleton.index[f"finger1-3.{side}"]
+        start = (matrices[root] @ np.append(skeleton.heads[root], 1.0))[:3]
+        end = (matrices[tip] @ np.append(skeleton.tails[tip], 1.0))[:3]
+        thumb = (end - start) / np.linalg.norm(end - start)
+        axis = np.cross(thumb, [0.0, -1.0, 0.0])
+        # Bones are world-aligned at rest, so the parent's skinning rotation
+        # takes the posed frame back to the thumb's own.
+        local = matrices[skeleton.parents[root]][:3, :3].T @ (axis / np.linalg.norm(axis))
+        turn_down = Rotation.from_rotvec(local * np.radians(THUMB_DROP))
+        pose[f"finger1-1.{side}"] = [float(c) for c in (
+            turn_down * Rotation.from_quat(pose[f"finger1-1.{side}"])).as_quat()]
     return pose
+
+
+# Degrees the thumb is turned down from where the model holds it: from 28 to
+# about 50 below horizontal, still 24 from the index finger.
+THUMB_DROP = 25.0
+
+
+def expression_morphs(mesh, shapes: np.ndarray):
+    """Blendshapes on one part: (shapes, vertices, 3) offsets, or None if none
+    of them moves it.
+
+    `shapes` are offsets on the base mesh (morph.arkit_shapes: ARKit's 52,
+    built from MakeHuman's CC0 expression units). A part cut from the base mesh
+    takes them by its base index; a part hung from it by MHCLO (brows, lashes,
+    teeth, garments) by the same three vertices and weights it hangs from, so
+    brows follow a raised brow and the tongue a tongue put out.
+    """
+    if "base_index" in mesh.metadata:
+        moved = shapes[:, mesh.metadata["base_index"]]
+    elif "mhclo_idx" in mesh.metadata:
+        idx, blend = mesh.metadata["mhclo_idx"], mesh.metadata["mhclo_blend"]
+        moved = (shapes[:, idx] * blend[None, :, :, None]).sum(axis=2)
+    else:
+        return None
+    return moved if np.abs(moved).max() > 1e-6 else None
+
+
+# Below this many pixels across, a photo's face cannot carry a close likeness:
+# MediaPipe reads the face at a fixed resolution, so enlarging a small photo
+# adds nothing (measured: landmarks wander as much at 4x as at 1x).
+GOOD_FACE_PX = 250
+
+
+def photo_advice(landmarks, photo_size, expression: dict) -> list[str]:
+    """What would make this photo give a closer avatar, in plain words."""
+    w, h = photo_size
+    advice = []
+    face_px = abs(landmarks[454].x - landmarks[234].x) * w
+    if face_px < GOOD_FACE_PX:
+        advice.append(f"The face is only {face_px:.0f} pixels across; a closer or sharper photo "
+                      f"(face {GOOD_FACE_PX}+ pixels wide) gives a much closer likeness.")
+    smile = max((expression.get(k, 0.0) for k in morph.MOUTH_SCORES), default=0.0)
+    if smile > 0.5:
+        advice.append("The photo is smiling broadly, so the resting mouth is estimated; "
+                      "a relaxed, closed-mouth photo shows the lips' real shape.")
+    return advice
+
+
+ARM_CHAIN = ("clavicle", "shoulder", "upperarm", "lowerarm", "wrist", "metacarpal", "finger")
+
+
+def _skin(part, rows, matrices) -> np.ndarray:
+    """Linear-blend-skinned positions of some of a part's vertices."""
+    v = np.c_[part.vertices[rows], np.ones(int(np.count_nonzero(rows)) if rows.dtype == bool else len(rows))]
+    out = np.zeros((len(v), 3))
+    for k in range(part.joints.shape[1]):
+        m = matrices[part.joints[rows, k]]
+        out += part.weights[rows, k:k + 1] * np.einsum("nij,nj->ni", m, v)[:, :3]
+    return out
+
+
+def hand_clearance(pose: dict, skeleton, body) -> dict:
+    """Per side, how far the hand stands off the hip and thigh skin beside it:
+    the median of each hand vertex's distance along the nearest skin's outward
+    normal, everything skinned into the pose. Negative is inside the body.
+
+    Measured against the skin, not the clothes: garment normals are not
+    reliably outward, the body's are. Clothes sit about 0.08 off the skin.
+    """
+    from scipy.spatial import cKDTree
+    from garments import skinning_matrices
+    matrices = skinning_matrices(skeleton, pose)
+    dominant = body.joints[np.arange(len(body.joints)), body.weights.argmax(axis=1)]
+    on_hip = np.array([n.startswith(("root", "spine01", "pelvis", "upperleg")) for n in skeleton.names])[dominant]
+    skin = _skin(body, on_hip, matrices)
+    outward = np.einsum("nij,nj->ni", matrices[dominant[on_hip]][:, :3, :3], body.normals[on_hip])
+    tree = cKDTree(skin)
+    clear = {}
+    for side in ("L", "R"):
+        on_hand = np.array([n.endswith("." + side) and n.startswith(("wrist", "metacarpal", "finger"))
+                            for n in skeleton.names])[dominant]
+        h = _skin(body, on_hand, matrices)
+        nearest = tree.query(h)[1]
+        clear[side] = float(np.median(((h - skin[nearest]) * outward[nearest]).sum(axis=1)))
+    return clear
+
+
+def arms_clear(pose: dict, skeleton, body, need: float = 0.12, step: float = 2.0,
+               most: float = 20.0) -> dict:
+    """The pose with each arm swung out until its hand clears the hip.
+
+    The arm pose is set on the male base body. A fuller figure, wider at the
+    hips, put the woman's hands inside her trouser legs (median 0.25 inside the
+    thigh). Each arm turns out from the shoulder a step at a time until its
+    hand stands `need` off the skin, enough for the clothes over it.
+    """
+    from scipy.spatial.transform import Rotation
+    pose = dict(pose)
+    for side, sign in (("L", 1.0), ("R", -1.0)):
+        rest = Rotation.from_quat(pose.get(f"upperarm01.{side}", [0.0, 0.0, 0.0, 1.0]))
+        for extra in np.arange(0.0, most + step / 2, step):
+            pose[f"upperarm01.{side}"] = [float(c) for c in (
+                Rotation.from_euler("z", extra * sign, degrees=True) * rest).as_quat()]
+            if hand_clearance(pose, skeleton, body)[side] >= need:
+                break
+    return pose
+
+
+# Degrees the forearm twists, measured on the posed palm normal: at 0 the palm
+# already faces the thigh, -20 brings the thumb a little forward as a hanging
+# hand does. (It was -70, judged on renders of straight fingers where palm and
+# back look alike, and it turned the palms up and forward: begging hands.)
+PALM_TWIST = -20.0
 
 
 POSES = {"relaxed": relaxed_pose, "rest": rest_pose}
@@ -264,6 +466,132 @@ def hairline_for(face: trimesh.Trimesh, vertices: np.ndarray, groups: dict, lift
     return line
 
 
+def brows_to_photo(card: trimesh.Trimesh, sheet: np.ndarray, depth: np.ndarray,
+                   vertices: np.ndarray, groups: dict) -> trimesh.Trimesh:
+    """Move the brow cards onto the photo's own brows, which the bake paints on.
+
+    The cards hang from the template's brow, which MakeHuman sits lower than
+    MediaPipe does: on the average face 3.6 mm below the middle of MediaPipe's
+    brow for a woman, 9 mm for a man. The shape fit cannot close that, since
+    it fits how a face differs from average, so the cards drew a second, thin
+    brow under the photo's darker one. Each card's centre line is bent onto the
+    line where the photo's brow is darkest, `depth` of the way down its
+    landmark contours (facetexture.brow_depth), as quadratics in x so it takes
+    the arch too. Then it is brought back in depth to its own height off the
+    skin: the brow ridge bulges above the template's brow, and a card moved
+    straight up sank into it.
+    """
+    from scipy.spatial import cKDTree
+
+    # BROW_LANDMARKS is right then left, upper contour then lower, outer to inner.
+    upper, lower = np.moveaxis(sheet[np.array(facetexture.BROW_LANDMARKS).reshape(2, 2, 5)], 1, 0)
+    brows = upper + np.asarray(depth, dtype=np.float64)[:, None, None] * (lower - upper)
+    skin = body_mesh(vertices)
+    tree = cKDTree(skin.vertices)
+
+    def off_skin(p):
+        """Height above the skin, on the plane of the nearest skin vertex."""
+        i = tree.query(p)[1]
+        return ((p - skin.vertices[i]) * skin.vertex_normals[i]).sum(axis=1), skin.vertex_normals[i]
+
+    v = card.vertices.copy()
+    height, _ = off_skin(v)
+    for line, own in zip(brows, (v[:, 0] < 0, v[:, 0] > 0)):   # +x is the subject's left
+        x = v[own, 0]
+        v[own, 1] += (np.polyval(np.polyfit(line[:, 0], line[:, 1], 2), x)
+                      - np.polyval(np.polyfit(x, v[own, 1], 2), x))
+    # Back onto the skin along the line of sight only, so the front view keeps
+    # the placement. Where the tail wraps round the temple the skin faces
+    # sideways and depth barely matters, hence the floor on the normal's z.
+    for _ in range(4):
+        now, normal = off_skin(v)
+        v[:, 2] -= (now - height) / np.maximum(normal[:, 2], 0.3)
+    card.vertices = v
+    return card
+
+
+def gltf_uv(uv):
+    return np.column_stack([uv[:, 0], 1.0 - uv[:, 1]]).astype(np.float32)
+
+
+def island_uv(uv_all: np.ndarray, faces_uv: np.ndarray) -> np.ndarray:
+    """Stretch an island's texture coordinates to fill the unit square."""
+    idx = np.unique(faces_uv)
+    lo, hi = uv_all[idx].min(axis=0), uv_all[idx].max(axis=0)
+    remapped = uv_all.copy()
+    remapped[idx] = (uv_all[idx] - lo) / np.maximum(hi - lo, 1e-9)
+    return remapped
+
+
+def head_island(vertices: np.ndarray, groups: dict, faces: np.ndarray,
+                uv_faces: np.ndarray) -> np.ndarray:
+    """Which body triangles make up the head's UV island, found from the nose
+    by connectivity."""
+    used = np.unique(faces)
+    nose_vertex = used[np.linalg.norm(
+        vertices[used] - facetexture.head_features(vertices, groups)["nose"], axis=1).argmin()]
+    nose_uv = uv_faces.reshape(-1)[np.where(faces.reshape(-1) == nose_vertex)[0][0]]
+    return facetexture.uv_island(uv_faces, nose_uv)
+
+
+def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray):
+    """Generated eyeballs with this iris colour: (mesh, uv, texture).
+
+    Painting the photo's eye region onto the eyeball put eyelid and brow on a
+    sphere, which reads as skin, not an eye.
+    """
+    uv_all, uv_groups = load_base_uv()
+    eye_faces = np.vstack([groups["helper-l-eye"], groups["helper-r-eye"]])
+    eye_uv_faces = np.vstack([uv_groups["helper-l-eye"], uv_groups["helper-r-eye"]])
+    eye_uv_all = island_uv(uv_all, eye_uv_faces)
+    eye_centres = np.array([vertices[np.unique(groups["helper-l-eye"])].mean(axis=0),
+                            vertices[np.unique(groups["helper-r-eye"])].mean(axis=0)])
+    texture = facetexture.bake_eyes(vertices, eye_faces, eye_uv_all, eye_uv_faces,
+                                    eye_centres, iris)
+    eyes, eye_uv = submesh_uv(eye_faces, eye_uv_faces, vertices, uv=eye_uv_all)
+    # Seat the eyeballs a few millimetres behind the lids. Where they sat level
+    # with the lid surface they drew over it, the whole iris showed ringed by
+    # white, and the avatar stared.
+    eyes.vertices = eyes.vertices - np.array([0.0, 0.0, EYE_RECESS])
+    return eyes, eye_uv, texture
+
+
+def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_count):
+    """A catalogue piece, skinned to the rig.
+
+    Cut garments look their weights up by the base-mesh vertex they came
+    from. Imported ones have no such vertices and borrow weights from the
+    body underneath them instead.
+    """
+    if "base_index" in mesh.metadata:
+        source = mesh.metadata["base_index"]
+        part_joints, part_weights = joints[source], weights[source]
+    elif "mhclo_idx" in mesh.metadata:
+        part_joints, part_weights = garments.mhclo_weights(
+            mesh.metadata["mhclo_idx"], mesh.metadata["mhclo_blend"],
+            joints, weights, bone_count)
+    else:
+        part_joints, part_weights = garments.weights_for(
+            mesh, mesh.metadata.get("fit", "tight"), vertices, groups,
+            joints, weights, bone_count,
+        )
+    if mesh.metadata.get("texture") is not None:
+        # Authored asset: its own texture, normal map and alpha cut-out.
+        # No vertex colour, which glTF would multiply into the texture.
+        return skinned_glb.Part(
+            name, mesh.vertices, mesh.faces, part_joints, part_weights,
+            uv=gltf_uv(mesh.metadata["uv"]), texture=mesh.metadata["texture"],
+            normal_texture=mesh.metadata.get("normal_texture"),
+            alpha_mask=mesh.metadata.get("alpha_mask", False),
+            normals=mesh.vertex_normals, roughness=roughness,
+        )
+    return skinned_glb.Part(
+        name, mesh.vertices, mesh.faces, part_joints, part_weights,
+        colour=mesh.visual.vertex_colors.astype(np.float32) / 255.0,
+        normals=mesh.vertex_normals, roughness=roughness,
+    )
+
+
 def outfit_for(gender: str, chosen: list[str] | None) -> list[dict]:
     """The wearables to put on, by id, falling back to the catalogue default."""
     index = items_by_id()
@@ -299,8 +627,17 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The photo's expression is fitted alongside, so a smile is not taken for
     # a wide mouth, and the mesh is built from identity alone: a resting face.
     front = morph.front_of(base, groups["body"], corr)
+    pw, ph = photo.size
+    photo_rgb = np.asarray(photo.convert("RGB"))
+    cheeks = np.array([[landmarks[i].x * pw, landmarks[i].y * ph]
+                       for i in SKIN_LANDMARKS if i < len(landmarks)])
+    # A jaw outline drawn round a beard is not the jaw, and a laugh spreads the
+    # mouth and nostrils: trust those landmarks less.
+    outline_trust, jaw_beard = appearance.outline_trust(photo_rgb, landmarks, cheeks,
+                                                        expression_of(result))
     shape_weights, shape_names, expression = morph.fit(base, corr, person, average,
-                                                       expression_of(result), front)
+                                                       expression_of(result), front,
+                                                       outline_trust)
     vertices = morph.apply(base, shape_weights)
     shape_fit = morph.explained(base, corr, person, average, shape_weights, expression, front)
 
@@ -314,29 +651,54 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     face = face.copy()
     face.vertices = morph.close_lips(face.vertices - relax)
 
-    pw, ph = photo.size
-    photo_rgb = np.asarray(photo.convert("RGB"))
-    cheeks = np.array([[landmarks[i].x * pw, landmarks[i].y * ph]
-                       for i in SKIN_LANDMARKS if i < len(landmarks)])
     # The skin is read and baked from the photo with its lighting divided out
     # and its exposure capped; hair, brow and iris colour still come from the
     # photo as shot.
-    skin_rgb, lighting, face_mask = delight.delight(photo_rgb, landmarks, load_canonical_faces(), cheeks)
+    # Everything measured from the face's skin is measured without its beard: a
+    # beard is a third of some faces, read as shadow by the lighting fit and
+    # as darker skin by the skin statistics.
+    facial_hair = facetexture.facial_hair(photo_rgb, landmarks, cheeks)
+    skin_rgb, lighting, face_mask = delight.delight(photo_rgb, landmarks, load_canonical_faces(), cheeks,
+                                                    exclude=facial_hair)
+    bare_skin = face_mask & (facial_hair < 0.2)
+    # The mouth is closed on the avatar; paint the photo's open mouth over in
+    # lip colour so no teeth get baked across the lips.
+    skin_rgb, mouth_filled = appearance.fill_mouth(skin_rgb, landmarks, cheeks)
+    skin_rgb = appearance.fill_eyes(skin_rgb, landmarks)
+    # A colour cast that puts skin outside the natural range is pulled back.
+    skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
-    placed = trim_face_border(place_face(face, vertices, groups))
+    full_face = place_face(face, vertices, groups)
+    placed = trim_face_border(full_face)
 
     # The hair as the photo shows it, from a segmentation of the photo: its
     # colour, and — unless an outfit was chosen by hand — which haircut.
-    hair_reading = appearance.read_hair(photo_rgb, landmarks, appearance.segment(photo_rgb))
+    parts = appearance.segment(photo_rgb)
+    hair_reading = appearance.read_hair(photo_rgb, landmarks, parts)
+    top_rgb = None
     outfit = outfit_for(gender, wear)
     if wear is None:
         default_cut = next((i["id"] for i in outfit if i["category"] == "hair" and "mhclo" in i), None)
         cut = appearance.hair_style(hair_reading, default_cut)
-        # Bald: no haircut and no underlayer. Otherwise swap in the chosen cut.
-        outfit = [items_by_id()[cut] if i["category"] == "hair" and "mhclo" in i else i
-                  for i in outfit if i["category"] != "hair" or cut is not None]
+        # Bald: no hair at all. Otherwise the chosen cut over the underlayer.
+        rest = [i for i in outfit if i["category"] != "hair"]
+        # No scalp layer under a real haircut: the head texture is tinted in
+        # the hair colour under the cards (hairline_tint), and the layer,
+        # 0.055 off the skin, stood in front of cards that lie closer than
+        # that at the back of the head: a flat bald patch.
+        outfit = rest if cut is None else rest + [items_by_id()[cut]]
+        # The default top dyed the colour of the one in the photo.
+        top_rgb = appearance.clothing_colour(photo_rgb, landmarks, parts)
+        if top_rgb is not None:
+            outfit = [{**i, "recolour": {**i["recolour"], "top": [int(c) for c in top_rgb]}}
+                      if i.get("recolour") else i for i in outfit]
+
+    # Teeth and tongue go in every mouth, whatever is worn: hidden at rest,
+    # and what an opened jaw shows.
+    outfit = outfit + [items_by_id()[i] for i in ("teeth", "tongue") if i not in {o["id"] for o in outfit}]
 
     worn, hair_rgb = [], None
+    brow_depth = facetexture.brow_depth(photo_rgb, landmarks)
     for item in outfit:
         colour = None
         if item.get("colour") == "from_photo":
@@ -351,7 +713,24 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             item = {**item, "hairline": hairline_for(placed, vertices, groups,
                                                      float(item.get("hairline_lift", 0.0)))}
             item.pop("y_min", None)
-        worn.append((item, build_item(item, colour, vertices)))
+        mesh = build_item(item, colour, vertices)
+        if item["category"] == "brows":
+            mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
+        if item["category"] in ("teeth", "tongue"):
+            # Set back from the lips: the model's resting lips leave a slit,
+            # and teeth 1 to 3 mm behind it showed as a white line across a
+            # closed mouth. An opened jaw still shows them.
+            mesh.vertices = mesh.vertices - np.array([0.0, 0.0, TEETH_RECESS])
+        worn.append((item, mesh))
+
+    # Trousers down to the ankle make the shoes' socks redundant, and posed they
+    # poke through the fabric; drop them.
+    ankle = float(vertices[np.unique(groups["joint-l-ankle"])][:, 1].mean())
+    if any(item["category"] in ("outfit", "bottom") and m.vertices[:, 1].min() < ankle + 0.3
+           for item, m in worn):
+        for item, m in worn:
+            if item["category"] == "shoes" and "mhclo" in item:
+                garments.drop_socks(m, ankle)
 
     # Only clothing hides skin; hair sits on top of it.
     covering = [(item, m) for item, m in worn if item["category"] in ("top", "bottom", "shoes", "outfit")]
@@ -364,24 +743,50 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                                     [m for _, m in covering])
     for _, m in covering:
         # MakeHuman garments list the body vertices their author made sure
-        # are under cloth; hide exactly those too.
+        # are under cloth; hide those too — but not within 3 cm of the
+        # garment's edge. On a body shaped to a person and posed, some of the
+        # listed neck sits just in front of the collar, and hiding it cut
+        # windows in the neck through to the inside of the collar: green
+        # patches below the jaw. Near an edge, coverage_alpha decides.
         hides = m.metadata.get("hides")
         if hides is not None and len(hides):
-            skin_alpha[hides[hides < len(skin_alpha)]] = 0.0
+            from scipy.spatial import cKDTree
+            hides = hides[hides < len(skin_alpha)]
+            rim = m.vertices[garments.open_rim(m)]
+            if len(rim):
+                hides = hides[cKDTree(rim).query(vertices[hides])[0] > 0.3]
+            skin_alpha[hides] = 0.0
+    # The neck is never cut away. A collar wraps it but never covers it from
+    # the front, and cutting it where a collar passes close behind left holes
+    # under the ears through which the collar's inside showed. Skin poking
+    # through a collar on a hard head turn is the smaller fault.
+    collarbone = float(vertices[np.unique(groups["joint-l-clavicle"])][:, 1].mean())
+    neck = (vertices[:, 1] > collarbone + 0.05) & (np.abs(vertices[:, 0]) < 0.75)
+    skin_alpha[neck] = 1.0
+    # A foot inside a shoe is never seen, and where it is fuller than the shoe
+    # it came through: a toe under the sole. Below the collar's lowest point
+    # the shoe encloses the foot, so the skin there is hidden outright; the
+    # distance test above kept most of it, being near the sole's open edges.
+    for item, m in worn:
+        if item["category"] == "shoes":
+            skin_alpha[garments.enclosed_by_shoe(m, vertices)] = 0.0
     uv_all, uv_groups = load_base_uv()
     uv_faces = uv_groups["body"]
 
     # Dense landmark sampler: every point on the head is looked up through the
     # anatomically placed landmark sheet, so the photo's mouth lands on the
     # skull's mouth and its chin on the skull's chin.
-    full_face = place_face(face, vertices, groups)
     landmark_pixels = np.array([[lm.x * pw, lm.y * ph] for lm in landmarks])
     rim_edges, rim_counts = np.unique(full_face.edges_sorted, axis=0, return_counts=True)
     rim = np.unique(rim_edges[rim_counts == 1])
+    beard_map = facetexture.facial_hair(skin_rgb, landmarks, cheeks)
+    # The forehead up to the hairline, which the landmarks stop short of.
+    forehead = appearance.forehead_skin(parts, landmarks)
     sampler = facetexture.FaceSampler(full_face.vertices, landmark_pixels, rim,
-                                      keep=facetexture.facial_hair(skin_rgb, landmarks, cheeks),
+                                      keep=beard_map,
                                       lips=([78] + morph.INNER_UPPER + [308],
-                                            [78] + morph.INNER_LOWER + [308]))
+                                            [78] + morph.INNER_LOWER + [308]),
+                                      beyond=forehead)
     face_centre = full_face.vertices.mean(axis=0)
     face_radius = float(np.linalg.norm(full_face.vertices - face_centre, axis=1).max())
 
@@ -389,28 +794,16 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # is about 130 pixels across, which is why fine features came out blurred
     # however carefully they were placed. Its UV island is found by connectivity
     # and stretched to fill a 1024 map, around eight times the texels.
-    used_vertices = np.unique(body_faces)
-    nose_vertex = used_vertices[np.linalg.norm(
-        vertices[used_vertices] - facetexture.head_features(vertices, groups)["nose"], axis=1).argmin()]
-    nose_uv = uv_faces.reshape(-1)[np.where(body_faces.reshape(-1) == nose_vertex)[0][0]]
-    in_head = facetexture.uv_island(uv_faces, nose_uv)
-
-    def island_uv(faces_uv):
-        """Stretch an island's texture coordinates to fill the unit square."""
-        idx = np.unique(faces_uv)
-        lo, hi = uv_all[idx].min(axis=0), uv_all[idx].max(axis=0)
-        remapped = uv_all.copy()
-        remapped[idx] = (uv_all[idx] - lo) / np.maximum(hi - lo, 1e-9)
-        return remapped
-
+    in_head = head_island(vertices, groups, body_faces, uv_faces)
     head_faces, head_uv_faces = body_faces[in_head], uv_faces[in_head]
     rest_faces, rest_uv_faces = body_faces[~in_head], uv_faces[~in_head]
-    head_uv_all = island_uv(head_uv_faces)
+    head_uv_all = island_uv(uv_all, head_uv_faces)
 
     # A skin texture built to the person's own cheek statistics, so skin is
     # mottled rather than one flat colour.
-    stats = skin.face_stats(skin_rgb, face_mask)
+    stats = skin.face_stats(skin_rgb, bare_skin)
     skin_mean, skin_spread = stats if stats is not None else skin.cheek_stats(skin_rgb, cheeks)
+    # The pore map stays 1024: it is noise, and at 2048 it cost 885 KB.
     skin_normals = Image.fromarray(skin.pore_normals(1024))
 
     def finish(texture_rgb, base, faces_, uv_all_, uv_faces_):
@@ -431,98 +824,143 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # Face feathered in rather than Poisson-blended: Poisson solves the face's
     # colours to match the generated skin around it, which dragged the whole
     # face towards that tone and washed the likeness out.
-    # The face fills about 42% of the head texture's width. When the photo's
-    # face is wider than that in pixels, a 1024 map throws detail away, so a
-    # real selfie gets a 2048 head; a small or upscaled photo has nothing more
-    # to give and stays at 1024, keeping the file small.
-    face_px = abs(landmarks[454].x - landmarks[234].x) * pw
-    head_size = 2048 if face_px > 480 else 1024
+    # Always 2048. The photo covers only the face; ears, scalp, neck, the
+    # carried beard and the hairline are generated, and at 1024 they were
+    # soft even when the photo itself had nothing more to give.
+    head_size = SKIN_SIZE
     head_base = skin.albedo(head_size, skin_mean, skin_spread, seed=3)
-    head_texture = finish(
-        facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces,
-                         sampler, face_centre, face_radius, skin_rgb, head_base,
-                         size=head_size, blend="none"),
-        head_base, head_faces, head_uv_all, head_uv_faces)
-    rest_base = skin.albedo(1024, skin_mean, skin_spread, seed=7)
+    # The head stays opaque. Its only covered skin is the top of the neck under
+    # a collar, which the collar hides anyway, and cutting it out forced the
+    # head texture to PNG: 1.4 MB at 2048 instead of a few hundred KB as JPEG.
+    head_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces,
+                                    sampler, face_centre, face_radius, skin_rgb, head_base,
+                                    size=head_size, blend="none")
+    # The haircut's cards if there are any, else a buzz cut's scalp layer.
+    hair_meshes = [(("mhclo" in item), m) for item, m in worn if item["category"] == "hair"]
+    haircut = max(hair_meshes, key=lambda pair: pair[0])[1] if hair_meshes else None
+    if haircut is not None and hair_rgb is not None:
+        # A soft hairline painted on the skin, so the hair cards do not end on
+        # bare forehead in a hard line.
+        head_texture = appearance.hairline_tint(head_texture, vertices, head_faces, head_uv_all,
+                                                head_uv_faces, appearance.opaque_hair(haircut), hair_rgb,
+                                                spare=sampler.sample(vertices)[1])
+    # The body's one map runs neck to toe; at 1024 a nail was 8 texels wide.
+    rest_base = skin.albedo(SKIN_SIZE, skin_mean, skin_spread, seed=7)
+
+    # Creases shaded from the mesh's own shape: ears, nostrils, eye corners,
+    # knuckles. On the face only where the photo is not, as the photo already
+    # carries its own.
+    photo_strength = sampler.sample(vertices)[1]
+    cavity = appearance.skin_cavity(vertices, body_faces)
+    shade = lambda image, faces_, uv_, uv_faces_, values: np.clip(
+        np.asarray(image, dtype=np.float64) * (1.0 - CAVITY_DEPTH * facetexture.rasterize(
+            values, faces_, uv_, uv_faces_, np.asarray(image).shape[0], fill=0.0))[..., None], 0, 255
+    ).astype(np.uint8)
+    head_texture = Image.fromarray(shade(head_texture.convert("RGB"), head_faces, head_uv_all, head_uv_faces,
+                                         cavity * (1.0 - photo_strength)))
+    # Ears: warmer and redder than the skull's generated skin.
+    ears = appearance.ear_weight(len(vertices)) * (1.0 - photo_strength)
+    head_texture = Image.fromarray(appearance.warm_ears(
+        np.asarray(head_texture), facetexture.rasterize(ears, head_faces, head_uv_all, head_uv_faces,
+                                                        head_texture.size[0], fill=0.0)))
+    rest_base = shade(rest_base, rest_faces, uv_all, rest_uv_faces, cavity)
+
+    # Fingernails: the base mesh's fingertips are smooth skin to the end. The
+    # nail is found from the rig (appearance.nail_weight), painted lighter and
+    # pinker with a faint fold, and given a glossier finish.
+    skeleton = load_skeleton(vertices)
+    joints, weights = weight_table(skeleton, len(vertices))
+    nails = appearance.nail_weight(vertices, trimesh.Trimesh(vertices, body_faces, process=False).vertex_normals,
+                                   skeleton, joints, weights)
+    on_nail = nails[rest_faces].max(axis=1) > 0
+    nail_map = facetexture.rasterize(nails, rest_faces[on_nail], uv_all, rest_uv_faces[on_nail],
+                                     rest_base.shape[0], fill=0.0)
+    rest_base = appearance.paint_nails(rest_base, nail_map)
+    body_rough = appearance.SKIN_ROUGHNESS["skin"] + (appearance.NAIL_ROUGHNESS - appearance.SKIN_ROUGHNESS["skin"]) * nail_map
+    body_roughness = Image.fromarray(np.dstack([np.full_like(body_rough, 255), body_rough * 255,
+                                                np.zeros_like(body_rough)]).astype(np.uint8))
     rest_texture = finish(Image.fromarray(rest_base), rest_base, rest_faces, uv_all, rest_uv_faces)
+
+    # Roughness by region on the face: the T-zone oilier, the lips glossier,
+    # cheeks matte; off the face, plain skin.
+    regional = appearance.skin_roughness(landmarks, (pw, ph))
+    pixels = sampler.sample(vertices)[0]
+    at_photo = regional[np.clip(pixels[:, 1].astype(int), 0, ph - 1), np.clip(pixels[:, 0].astype(int), 0, pw - 1)]
+    rough = appearance.SKIN_ROUGHNESS["skin"] * (1.0 - photo_strength) + at_photo * photo_strength
+    rough_map = facetexture.rasterize(rough, head_faces, head_uv_all, head_uv_faces, 512,
+                                      fill=appearance.SKIN_ROUGHNESS["skin"])
+    head_roughness = Image.fromarray(np.dstack([np.full_like(rough_map, 255), rough_map * 255,
+                                                np.zeros_like(rough_map)]).astype(np.uint8))
 
     head, head_uv = submesh_uv(head_faces, head_uv_faces, vertices, uv=head_uv_all)
     body, body_uv = submesh_uv(rest_faces, rest_uv_faces, vertices)
+    # A full beard carried round under the jaw, where the photo never sees it,
+    # and on down the neck, which is the body's texture: by the same rule on
+    # both, so it does not stop on the seam between them.
+    if jaw_beard > 0.4:
+        photo_head = head_texture
+        head_texture = appearance.beard_underside(head, head_uv, photo_head, sampler, beard_map,
+                                                  landmarks, (pw, ph))
+        rest_texture = appearance.beard_underside(head, head_uv, photo_head, sampler, beard_map,
+                                                  landmarks, (pw, ph), onto=(body, body_uv, rest_texture))
 
-    # Eyes: generated, with only the iris colour taken from the photo. Painting
-    # the photo's eye region onto the eyeball put eyelid and brow on a sphere,
-    # which reads as skin, not an eye.
-    eye_faces = np.vstack([groups["helper-l-eye"], groups["helper-r-eye"]])
-    eye_uv_faces = np.vstack([uv_groups["helper-l-eye"], uv_groups["helper-r-eye"]])
-    eye_uv_all = island_uv(eye_uv_faces)
-    eye_centres = np.array([vertices[np.unique(groups["helper-l-eye"])].mean(axis=0),
-                            vertices[np.unique(groups["helper-r-eye"])].mean(axis=0)])
-    # Judged against the whites of the eyes, as a person sees it, and snapped
-    # halfway to a natural eye colour (appearance.iris_colour).
+    # Eyes: generated, with only the iris colour taken from the photo, judged
+    # against the whites of the eyes, as a person sees it, and snapped halfway
+    # to a natural eye colour (appearance.iris_colour).
     iris, eye_colour = appearance.iris_colour(photo_rgb, landmarks)
-    eye_texture = facetexture.bake_eyes(vertices, eye_faces, eye_uv_all, eye_uv_faces,
-                                        eye_centres, iris)
-    eyes, eye_uv = submesh_uv(eye_faces, eye_uv_faces, vertices, uv=eye_uv_all)
-    # Seat the eyeballs a few millimetres behind the lids. Where they sat level
-    # with the lid surface they drew over it, the whole iris showed ringed by
-    # white, and the avatar stared.
-    eyes.vertices = eyes.vertices - np.array([0.0, 0.0, EYE_RECESS])
+    eyes, eye_uv, eye_texture = build_eyes(vertices, groups, iris)
 
-    # --- rig it ---
-    skeleton = load_skeleton(vertices)
-    joints, weights = weight_table(skeleton, len(vertices))
-
-    def skinned_part(name, mesh, roughness=0.8):
-        """A catalogue piece, skinned to the rig.
-
-        Cut garments look their weights up by the base-mesh vertex they came
-        from. Imported ones have no such vertices and borrow weights from the
-        body underneath them instead.
-        """
-        if "base_index" in mesh.metadata:
-            source = mesh.metadata["base_index"]
-            part_joints, part_weights = joints[source], weights[source]
-        elif "mhclo_idx" in mesh.metadata:
-            part_joints, part_weights = garments.mhclo_weights(
-                mesh.metadata["mhclo_idx"], mesh.metadata["mhclo_blend"],
-                joints, weights, len(skeleton))
-        else:
-            part_joints, part_weights = garments.weights_for(
-                mesh, mesh.metadata.get("fit", "tight"), vertices, groups,
-                joints, weights, len(skeleton),
-            )
-        if mesh.metadata.get("texture") is not None:
-            # Authored asset: its own texture, normal map and alpha cut-out.
-            # No vertex colour, which glTF would multiply into the texture.
-            return skinned_glb.Part(
-                name, mesh.vertices, mesh.faces, part_joints, part_weights,
-                uv=gltf_uv(mesh.metadata["uv"]), texture=mesh.metadata["texture"],
-                normal_texture=mesh.metadata.get("normal_texture"),
-                alpha_mask=mesh.metadata.get("alpha_mask", False),
-                normals=mesh.vertex_normals, roughness=roughness,
-            )
-        return skinned_glb.Part(
-            name, mesh.vertices, mesh.faces, part_joints, part_weights,
-            colour=mesh.visual.vertex_colors.astype(np.float32) / 255.0,
-            normals=mesh.vertex_normals, roughness=roughness,
-        )
-
-    def gltf_uv(uv):
-        return np.column_stack([uv[:, 0], 1.0 - uv[:, 1]]).astype(np.float32)
+    # --- rig it --- (skeleton and weights made above, with the nails)
 
     parts = []
+    face_shapes = morph.arkit_shapes(vertices, corr, groups)
+    # Normals from the whole skin, not from each part's own triangles: split
+    # at the neck, each side averaged only its own, and light broke along the
+    # seam in angular patches under the ear.
+    skin_normal = trimesh.Trimesh(vertices, body_faces, process=False).vertex_normals
+    # Under the brows the photo already carries its own shading, and
+    # MakeHuman's eye socket is deeper than most faces': its skin below the
+    # brow faces the floor, every studio light is above, and that band came out
+    # twice as dark as the photo's (56 L* under the forehead against 25), read
+    # as eyeshadow that swamped the brows. There the normals keep the face's
+    # broad form only. Smoothing the whole face instead tipped cheeks and chin
+    # towards the neck and darkened them.
+    broad = appearance.broad_normals(body_faces, skin_normal, PHOTO_NORMAL_ROUNDS)
+    socket = (appearance.under_brow(vertices, corr) * photo_strength)[:, None]
+    skin_normal = skin_normal * (1.0 - socket) + broad * socket
+    skin_normal /= np.maximum(np.linalg.norm(skin_normal, axis=1, keepdims=True), 1e-12)
     for name, mesh, uv, texture in (("head", head, head_uv, head_texture),
                                     ("body", body, body_uv, rest_texture)):
         source = mesh.metadata["base_index"]
         parts.append(skinned_glb.Part(
             name, mesh.vertices, mesh.faces, joints[source], weights[source],
-            uv=gltf_uv(uv), texture=texture, normals=mesh.vertex_normals,
+            uv=gltf_uv(uv), texture=texture, normals=skin_normal[source],
             normal_texture=skin_normals, alpha_mask=texture.mode == "RGBA",
-            roughness=ROUGHNESS["skin"], normal_scale=PORE_STRENGTH[name],
+            roughness=appearance.SKIN_ROUGHNESS["skin"], normal_scale=PORE_STRENGTH[name],
         ))
+        parts[-1].morphs = expression_morphs(mesh, face_shapes)
+        # Skin reflects less than the glTF default (IOR 1.5): with it the
+        # face wore a pale sheen of reflected room that read as grey.
+        parts[-1].ior = SKIN_IOR
+        # Light passes into skin and comes back out warm, brightest where the
+        # surface turns away: glTF has no subsurface scattering, and without
+        # it faces looked waxy. A faint red-orange sheen gives the same warm
+        # edge glow at grazing angles.
+        parts[-1].sheen = SKIN_SHEEN
+        parts[-1].roughness_texture = head_roughness if name == "head" else body_roughness
     for item, mesh in worn:
         finish = item.get("roughness", ROUGHNESS.get(item["category"], 0.8))
-        parts.append(skinned_part(item["id"], mesh, finish))
+        parts.append(rigged_part(item["id"], mesh, finish, vertices, groups,
+                                 joints, weights, len(skeleton)))
+        parts[-1].morphs = expression_morphs(mesh, face_shapes)
+        if item["category"] in ("outfit", "top", "bottom"):
+            # Cloth scatters light at grazing angles: a soft rim along folds
+            # and edges that plain roughness does not give (KHR_materials_sheen).
+            parts[-1].sheen = CLOTH_SHEEN
+        if item["category"] == "hair" and "mhclo" in item:
+            # Hair's highlight runs across the strands, a band rather than a
+            # spot; the strands lie along the texture's v axis.
+            parts[-1].anisotropy = HAIR_ANISOTROPY
 
     eye_base = eyes.metadata["base_index"]
     parts.append(skinned_glb.Part(
@@ -531,6 +969,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         texture=eye_texture, normals=eyes.vertex_normals,
         roughness=ROUGHNESS["eyes"],                 # wet, so the highlight shows
     ))
+    parts[-1].morphs = expression_morphs(eyes, face_shapes)
 
     if face_patch:
         # The fitted landmark patch laid over the head. Opt-in: once the skull
@@ -549,9 +988,14 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             normal_texture=skin_normals, normal_scale=0.6,
         ))
 
-    skinned_glb.export(parts, skeleton, out_path, pose=POSES[pose]())
+    # The arms are posed on the male base body; on a fuller figure they are
+    # swung out until the hands clear the hips.
+    body_part = next(p for p in parts if p.name == "body")
+    skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
+                       morph_names=morph.ARKIT_NAMES)
 
     info = {
+        "advice": photo_advice(landmarks, (pw, ph), expression_of(result)),
         "source_photo": photo_path.name,
         "photo_size": list(photo.size),
         "kind": "full-body",
@@ -574,6 +1018,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "face": "dense landmark bake + patch" if face_patch else "dense landmark bake",
         "iris_colour": [int(c) for c in iris],
         "eye_colour": eye_colour,
+        "mouth_filled": mouth_filled,
+        "top_colour": None if top_rgb is None else [int(c) for c in top_rgb],
+        "jaw_beard": jaw_beard,
+        "cast_corrected": list(cast_shift),
         "hair_reading": None if hair_reading is None else
             {k: v for k, v in hair_reading.items() if k != "colour"},
         "lighting": lighting,

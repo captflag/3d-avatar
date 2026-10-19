@@ -97,6 +97,11 @@ def skin_tone_lab(rgb: np.ndarray, pixels: np.ndarray) -> np.ndarray:
 
 # --------------------------------------------------------------- sampler -----
 
+# Share of the sheet's fade band (0.18 of the face's width) over which a kept
+# beard fades out at the sheet's edge: about 6% of the face.
+KEEP_EDGE = 0.35
+
+
 class FaceSampler:
     """Map points on the head to pixels in the photo, through every landmark.
 
@@ -114,7 +119,8 @@ class FaceSampler:
 
     def __init__(self, patch_vertices: np.ndarray, pixels: np.ndarray,
                  border: np.ndarray, depth_tolerance: float = 0.6,
-                 keep: np.ndarray | None = None, lips=None):
+                 keep: np.ndarray | None = None, lips=None,
+                 beyond: np.ndarray | None = None):
         xy = patch_vertices[:, :2]
         self._pixels = LinearNDInterpolator(xy, pixels)
         # A closed mouth's lips sit a hair apart on the sheet, and a
@@ -142,9 +148,44 @@ class FaceSampler:
         # Photo-space map of pixels to keep at full strength even inside the
         # fade: a beard lives in exactly that outer band of the face.
         self._keep = keep
+        # The landmarks stop a finger's width short of the hairline, and the
+        # forehead above them was generated skin: a grey band under the hair.
+        # `beyond` is a photo-space map of skin the photo does show there; past
+        # the sheet, points are mapped by an affine fitted to the upper face,
+        # which expression barely moves, and taken where that map says skin.
+        self._beyond = beyond
+        # The sheet's outline, in 3D and in the photo: where the photo stops.
+        self.rim_points = np.asarray(patch_vertices)[border]
+        self.rim_pixels = np.asarray(pixels)[border]
+        if beyond is not None:
+            upper = xy[:, 1] > np.percentile(xy[:, 1], 66)
+            self._affine = np.linalg.lstsq(np.c_[xy[upper], np.ones(upper.sum())], pixels[upper],
+                                           rcond=None)[0]
+            from scipy.spatial import cKDTree
+            self._rim = cKDTree(xy[border])
+            self._rim_depth = patch_vertices[border, 2]
+            # A few centimetres: the forehead between the landmarks and the
+            # hairline; `facing` in sample() stops it where the head turns away.
+            self._reach = 0.3 * width
 
-    def sample(self, points: np.ndarray):
-        """Pixels for `points`, and how strongly each should take the photo (0-1)."""
+    def trust(self, points: np.ndarray) -> np.ndarray:
+        """How far the photo can say what is at each point, 0-1: 1 well inside
+        the sheet, falling to 0 at its edge over the same band a kept beard
+        fades over, 0 off it."""
+        xy = points[:, :2]
+        depth = self._depth(xy)
+        inside = np.nan_to_num(self._inside(xy))
+        valid = ~np.isnan(depth) & (np.abs(points[:, 2] - np.nan_to_num(depth)) < self.depth_tolerance)
+        return np.where(valid, np.clip(inside / KEEP_EDGE, 0.0, 1.0), 0.0)
+
+    def sample(self, points: np.ndarray, facing: np.ndarray | float | None = None):
+        """Pixels for `points`, and how strongly each should take the photo (0-1).
+
+        `facing` is how squarely each point's surface faces the camera (the
+        normal's z). Past the sheet only a surface facing the camera takes the
+        photo: where the head turns away over the top, a front view crushes
+        the scalp onto a few rows of pixels at the hairline and smeared them.
+        """
         xy = points[:, :2]
         pixels = self._pixels(xy)
         if self._lips is not None:
@@ -156,17 +197,41 @@ class FaceSampler:
                     pixels[chosen] = side(xy[chosen])
         depth = self._depth(xy)
         inside = self._inside(xy)
-        valid = (~np.isnan(pixels).any(axis=1) & ~np.isnan(depth)
+        off_sheet = np.isnan(pixels).any(axis=1)
+        valid = (~off_sheet & ~np.isnan(depth)
                  & (np.abs(points[:, 2] - depth) < self.depth_tolerance))
         strength = np.where(valid, np.nan_to_num(inside), 0.0)
         # Smoothstep, so the fade has no visible start or end.
         strength = strength * strength * (3.0 - 2.0 * strength)
         pixels = np.nan_to_num(pixels)
+        # Both maps are in photo pixels.
+        h, w = next((m.shape for m in (self._keep, self._beyond) if m is not None), (1, 1))
+        kx = np.clip(pixels[:, 0].astype(int), 0, w - 1)
+        ky = np.clip(pixels[:, 1].astype(int), 0, h - 1)
         if self._keep is not None:
-            h, w = self._keep.shape
-            kx = np.clip(pixels[:, 0].astype(int), 0, w - 1)
-            ky = np.clip(pixels[:, 1].astype(int), 0, h - 1)
-            strength = np.maximum(strength, np.where(valid, self._keep[ky, kx], 0.0))
+            # Full strength through the fade band, but not up to the sheet's
+            # very edge: a beard kept to the edge stopped there in a hard line
+            # from the ear down the jaw. It fades over the outer 6% of the face.
+            edge = np.clip(np.nan_to_num(inside) / KEEP_EDGE, 0.0, 1.0)
+            strength = np.maximum(strength, np.where(valid, self._keep[ky, kx] * edge, 0.0))
+        if self._beyond is not None:
+            # Forehead skin the photo shows is taken in full on the sheet too:
+            # the sheet's top edge is not the hairline.
+            strength = np.maximum(strength, np.where(valid, self._beyond[ky, kx], 0.0))
+        if self._beyond is not None and off_sheet.any():
+            out = np.nonzero(off_sheet)[0]
+            pixels[out] = np.c_[xy[out], np.ones(len(out))] @ self._affine
+            distance, nearest = self._rim.query(xy[out])
+            # Near the sheet's rim and not behind it: the scalp's top and back
+            # also fall over the forehead in a front view.
+            near = ((distance < self._reach)
+                    & (np.abs(points[out, 2] - self._rim_depth[nearest]) < self.depth_tolerance))
+            fade = np.clip((self._reach - distance) / (0.3 * self._reach), 0.0, 1.0)
+            h, w = self._beyond.shape
+            bx = np.clip(pixels[out, 0].astype(int), 0, w - 1)
+            by = np.clip(pixels[out, 1].astype(int), 0, h - 1)
+            square = 1.0 if facing is None else np.clip((np.broadcast_to(facing, len(points))[out] - 0.5) / 0.2, 0.0, 1.0)
+            strength[out] = np.where(near, self._beyond[by, bx] * fade * square, 0.0)
         return pixels, strength
 
 
@@ -211,7 +276,7 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
     `faces` and `uv_faces` are parallel: same triangle, one indexing positions
     and the other texture coordinates.
     """
-    ph, pw = photo_rgb.shape[:2]
+    photo32 = np.ascontiguousarray(photo_rgb, dtype=np.float32)
     skin = np.asarray(skin, dtype=np.float64)
     # `skin` is either one colour or a whole skin texture to paint the face into.
     textured_base = skin.ndim == 3
@@ -221,10 +286,16 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
 
     centroids = vertices[faces].mean(axis=1)
     candidates = np.where(np.linalg.norm(centroids - face_centre, axis=1) < face_radius * 2.0)[0]
+    # How squarely the surface faces the camera, smooth across triangles.
+    corners = vertices[faces]
+    face_normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    vertex_normals = np.zeros_like(vertices, dtype=np.float64)
+    np.add.at(vertex_normals, faces, face_normals[:, None, :].repeat(3, axis=1))
+    toward = vertex_normals[:, 2] / np.maximum(np.linalg.norm(vertex_normals, axis=1), 1e-12)
 
     for fi in candidates:
         tri = vertices[faces[fi]]
-        if np.cross(tri[1] - tri[0], tri[2] - tri[0])[2] <= 0:
+        if face_normals[fi, 2] <= 0:
             continue                            # facing away from the camera
 
         tri_uv = uv[uv_faces[fi]]
@@ -252,12 +323,16 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
 
         position = w0[..., None] * tri[0] + w1[..., None] * tri[1] + w2[..., None] * tri[2]
         flat = position[inside]
-        pixels, strength = sampler.sample(flat)
-        ix = np.clip(pixels[:, 0].astype(int), 0, pw - 1)
-        iy = np.clip(pixels[:, 1].astype(int), 0, ph - 1)
+        f0, f1, f2 = toward[faces[fi]]
+        pixels, strength = sampler.sample(flat, (w0 * f0 + w1 * f1 + w2 * f2)[inside])
 
         ty, tx = ys[inside], xs[inside]
-        painted[ty, tx] = photo_rgb[iy, ix]
+        # Bilinear, not the nearest pixel: a small photo's face is a few
+        # dozen pixels wide, spread over hundreds of texels, and nearest
+        # lookups painted it as visible squares.
+        painted[ty, tx] = cv2.remap(photo32, (pixels[:, :1] - 0.5).astype(np.float32),
+                                    (pixels[:, 1:] - 0.5).astype(np.float32),
+                                    cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)[:, 0]
         weight[ty, tx] = np.maximum(weight[ty, tx], strength)
 
     base = skin if textured_base else np.tile(skin, (size, size, 1))
@@ -378,19 +453,42 @@ BROW_LANDMARKS = [70, 63, 105, 66, 107, 46, 53, 52, 65, 55,
                   300, 293, 334, 296, 336, 276, 283, 282, 295, 285]
 
 
+def brow_depth(photo_rgb: np.ndarray, landmarks) -> np.ndarray:
+    """How far down each brow's hair lies across its landmarks: 0 on the upper
+    contour, 1 on the lower, right brow then left.
+
+    MediaPipe's brow contours run high. Halfway between them is often the
+    brow's top edge: on the test photos the hair is darkest 0.64 to 1.05 of the
+    way down. Each brow is read where it is darkest, across the contours and a
+    little past the lower one, and the median over its five landmark pairs kept.
+    """
+    h, w = photo_rgb.shape[:2]
+    light = cv2.cvtColor(np.ascontiguousarray(photo_rgb, dtype=np.uint8), cv2.COLOR_RGB2LAB)[..., 0]
+    light = cv2.GaussianBlur(light.astype(np.float32), (0, 0), max(w / 600, 0.7))
+    px = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in BROW_LANDMARKS]).reshape(2, 2, 5, 2)
+    t = np.linspace(0.0, 1.5, 61)
+    along = px[None, :, 0] + t[:, None, None, None] * (px[None, :, 1] - px[None, :, 0])
+    dark = light[np.clip(along[..., 1].astype(int), 0, h - 1), np.clip(along[..., 0].astype(int), 0, w - 1)]
+    return np.clip(np.median(t[dark.argmin(axis=0)], axis=1), 0.3, 1.2)
+
+
 def brow_colour(photo_rgb: np.ndarray, landmarks, default=(60, 44, 34)) -> np.ndarray:
     """The colour of the eyebrows, for tinting the brow cards.
 
-    The brow landmarks trace the brow's outline, so a small patch round each is
-    part brow, part skin; the darker half of the patch is the brow.
+    Read in small patches along the line where each brow is darkest
+    (`brow_depth`), and the darker half of them kept. Round the landmarks
+    themselves, which run high, half the patch was forehead: a light brown brow
+    read as (198, 147, 121), next to skin of (250, 204, 182), and the cards
+    came out as pale streaks over the photo's darker brow.
     """
     if len(landmarks) <= max(BROW_LANDMARKS):
         return np.array(default, dtype=np.float64)
     h, w = photo_rgb.shape[:2]
     reach = max(int(0.004 * w), 1)
+    px = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in BROW_LANDMARKS]).reshape(2, 2, 5, 2)
+    line = px[:, 0] + brow_depth(photo_rgb, landmarks)[:, None, None] * (px[:, 1] - px[:, 0])
     patches = []
-    for i in BROW_LANDMARKS:
-        x, y = int(landmarks[i].x * w), int(landmarks[i].y * h)
+    for x, y in line.reshape(-1, 2).astype(int):
         patch = photo_rgb[max(y - reach, 0):y + reach + 1, max(x - reach, 0):x + reach + 1]
         patches.append(patch.reshape(-1, 3))
     pixels = np.vstack(patches).astype(np.uint8).reshape(-1, 1, 3)
@@ -401,22 +499,37 @@ def brow_colour(photo_rgb: np.ndarray, landmarks, default=(60, 44, 34)) -> np.nd
 
 
 def bake_eyes(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.ndarray,
-              centres: np.ndarray, iris: np.ndarray, size: int = 512) -> Image.Image:
-    """Generated eyeballs: white sclera, the person's iris colour, a pupil.
+              centres: np.ndarray, iris: np.ndarray, size: int = 1024) -> Image.Image:
+    """Generated eyeballs: sclera, the person's iris colour, a pupil.
 
     The photo's eye region cannot be painted onto an eyeball: it includes the
     eyelids and brow, and on a sphere it reads as skin. Avatar eyes are
     synthetic for that reason; only the iris colour comes from the photo.
     Each texel's direction from its eyeball's centre decides what it is, so the
     iris is a true circle however coarse the eyeball mesh.
+
+    A flat disc of iris colour round a black pupil read as a doll's eye at any
+    distance. Real ones carry radial fibres, a lighter collarette ring part way
+    out, a dark limbal ring at the edge; the white dims and warms towards the
+    corners, and the upper lid shades the top of the eye.
     """
     sclera = np.array([236.0, 232.0, 226.0])
+    corner = np.array([214.0, 178.0, 170.0])             # pinkish, towards the lids' corners
     pupil = np.array([14.0, 12.0, 12.0])
     image = np.tile(sclera, (size, size, 1))
     forward = np.array([0.0, 0.0, 1.0])
+    rng = np.random.default_rng(11)
+    # Fibres: high-frequency ripples round the gaze axis, a little wavy with
+    # distance out, so they read as strands rather than spokes.
+    spokes = [(int(rng.integers(18, 70)), rng.uniform(0, 2 * np.pi), rng.uniform(0.3, 1.0), rng.uniform(-0.15, 0.15))
+              for _ in range(14)]
 
     def band(angle, edge, soft=1.5):
         return np.clip((edge + soft - angle) / (2 * soft), 0.0, 1.0)
+
+    def fibres(phi, angle):
+        wave = sum(amp * np.sin(freq * phi + phase + bend * angle) for freq, phase, amp, bend in spokes)
+        return wave / sum(amp for _, _, amp, _ in spokes)
 
     for fi in range(len(faces)):
         tri = vertices[faces[fi]]
@@ -444,11 +557,24 @@ def bake_eyes(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces:
         angle = np.degrees(np.arccos(np.clip(direction @ forward, -1.0, 1.0)))[:, None]
 
         # Sizes from anatomy: an iris about 11.7 mm across on a 24 mm eyeball
-        # subtends roughly 29 degrees either side of the gaze, a relaxed pupil
-        # about 10. Smaller, and too much white shows, which reads as a stare.
-        rim_shade = 1.0 - 0.45 * np.clip((angle - 19.0) / 10.0, 0.0, 1.0)
-        colour = sclera * (1.0 - band(angle, 28.5)) + iris * rim_shade * band(angle, 28.5)
-        colour = colour * (1.0 - band(angle, 10.0)) + pupil * band(angle, 10.0)
+        # subtends roughly 29 degrees either side of the gaze. The pupil is
+        # set for daylight, about 8 (10, a relaxed pupil, looked dilated next
+        # to a flat iris). Smaller iris, and too much white shows: a stare.
+        phi = np.arctan2(direction[:, 1], direction[:, 0])[:, None]
+        streak = fibres(phi, angle)
+        shade = (1.0 + 0.28 * streak
+                 + 0.12 * np.exp(-((angle - 15.0) / 2.0) ** 2)                 # collarette
+                 - 0.55 * np.clip((angle - 25.5) / 3.0, 0.0, 1.0)               # limbal ring
+                 - 0.12 * np.clip((11.0 - angle) / 3.0, 0.0, 1.0))              # darker by the pupil
+        out = np.clip((angle - 40.0) / 45.0, 0.0, 1.0)
+        white = sclera * (1.0 - 0.15 * out) * (1.0 - 0.3 * out * np.abs(np.cos(phi))) \
+            + corner * 0.3 * out * np.abs(np.cos(phi))
+        colour = white * (1.0 - band(angle, 28.5)) + iris * shade * band(angle, 28.5)
+        colour = colour * (1.0 - band(angle, 8.0, soft=0.8)) + pupil * band(angle, 8.0, soft=0.8)
+        # The upper lid's shadow over the top of the eye, a little under the lower.
+        up = direction[:, 1:2]
+        colour = colour * (1.0 - 0.4 * np.clip((up - 0.12) / 0.35, 0.0, 1.0)
+                           - 0.12 * np.clip((-up - 0.35) / 0.3, 0.0, 1.0))
         image[ys[inside], xs[inside]] = colour
 
     return Image.fromarray(np.clip(image, 0, 255).astype(np.uint8), mode="RGB")

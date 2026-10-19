@@ -17,6 +17,7 @@ import struct
 
 import numpy as np
 import pygltflib as gl
+from PIL import Image
 
 COMPONENT = {
     np.dtype(np.float32): gl.FLOAT,
@@ -46,6 +47,15 @@ class Part:
         self.roughness = roughness      # written into the file, so every engine agrees
         self.normal_scale = normal_scale
         self.normals = None if normals is None else np.asarray(normals, dtype=np.float32)
+        # Blendshapes: (targets, vertices, 3) offsets in the order export() is
+        # given their names, or None where none of them moves this part.
+        self.morphs = None
+        # Optional extras: a roughness texture (PIL, roughness in green, as
+        # glTF reads it) and a cloth sheen (KHR_materials_sheen) colour/roughness.
+        self.roughness_texture = None
+        self.sheen = None
+        self.ior = None                 # KHR_materials_ior, where not glTF's 1.5
+        self.anisotropy = None          # (strength, rotation in radians): KHR_materials_anisotropy
 
 
 class _Buffer:
@@ -82,6 +92,50 @@ class _Buffer:
         if minmax:
             accessor.min = array.min(axis=0).tolist()
             accessor.max = array.max(axis=0).tolist()
+        self.accessors.append(accessor)
+        return len(self.accessors) - 1
+
+    def add_quantised(self, array: np.ndarray, kind: str) -> int:
+        """Normals as signed bytes or texture coordinates as unsigned shorts,
+        both normalised (KHR_mesh_quantization): a quarter and a half the size
+        of floats, with no visible loss. Byte normals are padded to four bytes
+        a vertex, as vertex attributes must be."""
+        array = np.asarray(array, dtype=np.float64)
+        if kind == "normal":
+            q = np.zeros((len(array), 4), np.int8)
+            q[:, :3] = np.clip(np.rint(array * 127.0), -127, 127).astype(np.int8)
+            view, component, accessor_type = self.add_view(q.tobytes(), gl.ARRAY_BUFFER), gl.BYTE, gl.VEC3
+            self.views[view].byteStride = 4
+        else:
+            q = np.clip(np.rint(np.clip(array, 0.0, 1.0) * 65535.0), 0, 65535).astype(np.uint16)
+            view, component, accessor_type = self.add_view(q.tobytes(), gl.ARRAY_BUFFER), gl.UNSIGNED_SHORT, gl.VEC2
+        self.accessors.append(gl.Accessor(bufferView=view, componentType=component, count=int(len(array)),
+                                          type=accessor_type, normalized=True))
+        return len(self.accessors) - 1
+
+    def add_offsets(self, offsets: np.ndarray) -> int:
+        """A morph target's offsets, stored sparse: only the vertices it moves.
+
+        An accessor with no buffer view reads as zeros, so a part a target does
+        not touch costs nothing, and a face target moving a few hundred of the
+        body's eleven thousand vertices stores only those.
+        """
+        offsets = np.asarray(offsets, dtype=np.float32)
+        # Below 10 micrometres (1e-4 units) a move is the far tail of a smooth
+        # falloff, not a movement: kept, the cheek puff alone stored the whole head.
+        offsets = np.where(np.abs(offsets).max(axis=1, keepdims=True) > 1e-4, offsets, 0.0).astype(np.float32)
+        moved = np.nonzero(np.abs(offsets).max(axis=1) > 0)[0]
+        accessor = gl.Accessor(componentType=gl.FLOAT, count=int(len(offsets)), type=gl.VEC3,
+                               min=offsets.min(axis=0).tolist() if len(offsets) else [0.0] * 3,
+                               max=offsets.max(axis=0).tolist() if len(offsets) else [0.0] * 3)
+        if len(moved):
+            index_type = np.uint16 if len(offsets) < 65536 else np.uint32
+            accessor.sparse = gl.Sparse(
+                count=int(len(moved)),
+                indices=gl.AccessorSparseIndices(bufferView=self.add_view(moved.astype(index_type).tobytes()),
+                                                 componentType=COMPONENT[np.dtype(index_type)]),
+                values=gl.AccessorSparseValues(bufferView=self.add_view(np.ascontiguousarray(offsets[moved]).tobytes())),
+            )
         self.accessors.append(accessor)
         return len(self.accessors) - 1
 
@@ -122,7 +176,23 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None)
         return _seen[id(image)]
     data = io.BytesIO()
     if image.mode == "RGBA":
-        # JPEG has no alpha channel, and an alpha-masked texture needs one.
+        # Every RGBA texture here is a cut-out (alpha MASK at 0.5), so its alpha
+        # is one transparent palette slot and its colour 255 entries, median
+        # cut and dithered: the body's skin went from 947 to 432 KB at about
+        # 1.4 delta-E as seen, below what shows.
+        rgba = np.asarray(image)
+        shown = rgba[..., 3] >= 128
+        palette = Image.fromarray(np.ascontiguousarray(rgba[..., :3])).quantize(
+            255, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG)
+        index = np.asarray(palette).copy()
+        index[~shown] = 255
+        out = Image.fromarray(index.astype(np.uint8), "P")
+        out.putpalette(palette.getpalette()[:255 * 3] + [0, 0, 0])
+        out.save(data, format="PNG", optimize=True, transparency=255)
+        mime = "image/png"
+    elif image.mode == "P":
+        # A palette image (alpha kept per palette entry) is a recoloured
+        # single-hue texture such as hair, a quarter the size of full RGBA.
         image.save(data, format="PNG", optimize=True)
         mime = "image/png"
     else:
@@ -138,12 +208,16 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None)
 
 
 def export(parts: list[Part], skeleton, out_path: pathlib.Path,
-           pose: dict[str, list[float]] | None = None) -> None:
+           pose: dict[str, list[float]] | None = None, morph_names: list[str] | None = None) -> None:
     """Write the avatar and its skeleton to `out_path` as a GLB.
 
     `pose` rotates named bones in the rest pose. The base mesh is modelled in a
     mannequin stance, arms out and fingers splayed, which is the first thing that
     says 'not a person'.
+
+    `morph_names` names the blendshapes each part's `morphs` holds. glTF wants
+    every primitive of a mesh to carry the same targets, so a part without
+    them gets empty ones.
     """
     buf = _Buffer()
     gltf = gl.GLTF2()
@@ -187,12 +261,13 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
             "WEIGHTS_0": buf.add(_quantise_weights(part.weights), gl.ARRAY_BUFFER, normalized=True),
         }
         if part.normals is not None:
-            attributes["NORMAL"] = buf.add(part.normals, gl.ARRAY_BUFFER)
+            unit = part.normals / np.maximum(np.linalg.norm(part.normals, axis=1, keepdims=True), 1e-9)
+            attributes["NORMAL"] = buf.add_quantised(unit, "normal")
         if part.colour is not None:
             colour = np.rint(np.clip(part.colour, 0.0, 1.0) * 255.0).astype(np.uint8)
             attributes["COLOR_0"] = buf.add(colour, gl.ARRAY_BUFFER, normalized=True)
         if part.uv is not None:
-            attributes["TEXCOORD_0"] = buf.add(part.uv, gl.ARRAY_BUFFER)
+            attributes["TEXCOORD_0"] = buf.add_quantised(part.uv, "uv")
 
         index_type = np.uint16 if len(part.vertices) < 65536 else np.uint32
         indices = buf.add(part.faces.reshape(-1).astype(index_type), gl.ELEMENT_ARRAY_BUFFER)
@@ -220,13 +295,46 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
                 index=_add_texture(gltf, buf, part.normal_texture, quality=85, _seen=embedded),
                 scale=float(part.normal_scale)
             )
+        if part.roughness_texture is not None:
+            # glTF multiplies the factor by the texture's green channel.
+            material.pbrMetallicRoughness.roughnessFactor = 1.0
+            material.pbrMetallicRoughness.metallicRoughnessTexture = gl.TextureInfo(
+                index=_add_texture(gltf, buf, part.roughness_texture, quality=90, _seen=embedded))
+        if part.ior is not None:
+            material.extensions["KHR_materials_ior"] = {"ior": float(part.ior)}
+            if "KHR_materials_ior" not in gltf.extensionsUsed:
+                gltf.extensionsUsed.append("KHR_materials_ior")
+        if part.anisotropy is not None:
+            strength, rotation = part.anisotropy
+            material.extensions["KHR_materials_anisotropy"] = {
+                "anisotropyStrength": float(strength), "anisotropyRotation": float(rotation)}
+            if "KHR_materials_anisotropy" not in gltf.extensionsUsed:
+                gltf.extensionsUsed.append("KHR_materials_anisotropy")
+        if part.sheen is not None:
+            colour, sheen_roughness = part.sheen
+            material.extensions["KHR_materials_sheen"] = {
+                "sheenColorFactor": [float(c) for c in colour], "sheenRoughnessFactor": float(sheen_roughness)}
+            if "KHR_materials_sheen" not in gltf.extensionsUsed:
+                gltf.extensionsUsed.append("KHR_materials_sheen")
+
+        targets = []
+        if morph_names:
+            count = len(part.vertices)
+            targets = [gl.Attributes(POSITION=buf.add_offsets(part.morphs[t] if part.morphs is not None
+                                                             else np.zeros((count, 3), np.float32)))
+                       for t in range(len(morph_names))]
 
         gltf.materials.append(material)
         mesh.primitives.append(gl.Primitive(attributes=gl.Attributes(**attributes),
-                                            indices=indices,
+                                            indices=indices, targets=targets,
                                             material=len(gltf.materials) - 1))
 
+    if morph_names:
+        mesh.weights = [0.0] * len(morph_names)
+        mesh.extras = {"targetNames": list(morph_names)}
     gltf.meshes.append(mesh)
+    gltf.extensionsUsed.append("KHR_mesh_quantization")
+    gltf.extensionsRequired.append("KHR_mesh_quantization")
     mesh_node = len(gltf.nodes)
     gltf.nodes.append(gl.Node(name="avatar", mesh=0, skin=0))
 

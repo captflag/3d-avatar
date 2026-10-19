@@ -200,24 +200,50 @@ def build_item(item: dict, colour=None, vertices: np.ndarray | None = None) -> t
         if vertices is None:
             vertices, _ = load_base()
         mesh = load_mhclo(ASSET_DIR / item["mhclo"], vertices)
+        if item.get("slim"):
+            # Take a garment part in: each vertex moves towards the point on the
+            # body it hangs from, so legs narrow and folds flatten. A men's cut
+            # of jeans on a woman's figure is loose and stacks at the ankle.
+            from garments import garment_regions
+            top_faces = garment_regions(mesh, vertices, load_base()[1])
+            anchor = (mesh.metadata["mhclo_blend"][:, :, None] * vertices[mesh.metadata["mhclo_idx"]]).sum(axis=1)
+            moved = mesh.vertices.copy()
+            for part, keep in item["slim"].items():
+                faces = mesh.faces[top_faces if part == "top" else ~top_faces]
+                idx = np.unique(faces)
+                moved[idx] = anchor[idx] + (moved[idx] - anchor[idx]) * float(keep)
+            mesh.vertices = moved
+        if item.get("short_sides"):
+            from garments import short_sides
+            short_sides(mesh, vertices, load_base()[1], **item["short_sides"])
+        if item.get("lower_lashes"):
+            from garments import shorten_lower_lashes
+            shorten_lower_lashes(mesh, float(item["lower_lashes"]))
         rgb = colour if colour is not None else item.get("colour")
         if isinstance(rgb, str):
             rgb = None                            # asked for a photo colour nobody supplied
         material = mesh.metadata["material"]
         texture = normal = None
         if mesh.metadata["uv"] is not None and material is not None and material.exists():
-            texture, normal, transparent = material_textures(material, rgb)
+            # Clothes keep their authored 2048 maps: halved, buttons and stitching
+            # smeared into smudges. Hair, brows and shoes are fine at 1024.
+            clothes = item.get("category") in ("outfit", "top", "bottom")
+            # Teeth and tongue are inside a closed mouth most of the time.
+            inside = item.get("category") in ("teeth", "tongue")
+            texture, normal, transparent = material_textures(material, rgb, size=2048 if clothes else 512 if inside else 1024,
+                                                             derive_normal=item.get("category") == "hair")
             if texture is not None and item.get("recolour"):
                 # One outfit file, any colours: dye the shirt and the trousers
                 # separately, keeping the fabric's own shading.
                 from garments import garment_regions, recolour
                 top = garment_regions(mesh, vertices, load_base()[1])
                 for part, dye in item["recolour"].items():
-                    texture = recolour(texture, mesh, top if part == "top" else ~top, dye)
+                    texture = recolour(texture, mesh, top if part == "top" else ~top, dye,
+                                       plain=part in item.get("plain", ()))
         if texture is not None:
             # Authored texture: fabric, stitching, folds, hair strands.
             mesh.metadata.update(texture=texture, normal_texture=normal,
-                                 alpha_mask=texture.mode == "RGBA")
+                                 alpha_mask=texture.mode in ("RGBA", "P"))
         mesh.visual = trimesh.visual.ColorVisuals(
             mesh, vertex_colors=np.tile(np.append(srgb_to_linear(rgb if rgb is not None else (200, 200, 200)), 255),
                                         (len(mesh.vertices), 1))
@@ -299,8 +325,8 @@ def coverage_alpha(points: np.ndarray, covers: list[trimesh.Trimesh],
 
     edges = []
     for cover in covers:
-        unique, counts = np.unique(cover.edges_sorted, axis=0, return_counts=True)
-        rim = np.unique(unique[counts == 1])
+        from garments import open_rim
+        rim = open_rim(cover)
         if len(rim):
             edges.append(cover.vertices[rim])
     from_edge = (nearest_distance(points, np.vstack(edges)) if edges

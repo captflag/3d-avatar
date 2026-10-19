@@ -162,13 +162,89 @@ def remove_shine(linear: np.ndarray, mask: np.ndarray, landmarks, size: tuple[in
     return out, round(float((excess > 0.5).sum() / skin.sum()), 3)
 
 
+# Where the photo's light cannot reach: under the nose, round the nostrils and
+# the alae, and the inner corners of the eyes. Landmark hulls, from the
+# canonical MediaPipe mesh.
+NOSE_BASE = [48, 64, 98, 97, 2, 326, 327, 294, 278, 219, 439, 166, 392, 79, 309]
+EYE_CORNERS = [(133, 243, 244, 189), (362, 463, 464, 413)]
+# The socket above and below each eye: the brow's lower edge, the lid's upper
+# line, the lid's lower line (outer to inner corner), and the brow itself,
+# which is hair and must not be lifted.
+SOCKETS = [
+    {"brow_low": [46, 53, 52, 65, 55], "lid_up": [246, 161, 160, 159, 158, 157, 173],
+     "lid_low": [33, 7, 163, 144, 145, 153, 154, 155, 133], "brow": [70, 63, 105, 66, 107, 55, 65, 52, 53, 46]},
+    {"brow_low": [276, 283, 282, 295, 285], "lid_up": [466, 388, 387, 386, 385, 384, 398],
+     "lid_low": [263, 249, 390, 373, 374, 380, 381, 382, 362], "brow": [300, 293, 334, 296, 336, 285, 295, 282, 283, 276]},
+]
+
+
+def lift_crevices(srgb: np.ndarray, landmarks, size: tuple[int, int], strength: float = 0.6):
+    """Brighten the photo's crevice shadows towards the skin around them.
+
+    Shadow under the nose and in the eye corners is occlusion: no light got
+    there. Baked in, it stays dark whatever the renderer does, and the renderer
+    then darkens the same creases again with its own occlusion, so nostrils and
+    eye corners read as holes. Inside those zones only, each pixel darker than
+    the skin's local median is lifted by `strength` of the difference, so a
+    nostril opening stays darker than skin but no longer black. Brows, lashes,
+    lips and beard lie outside the zones and are left as they are.
+    """
+    w, h = size
+    zone = np.zeros((h, w), np.uint8)
+    hull = cv2.convexHull(np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in NOSE_BASE], np.int32))
+    cv2.fillConvexPoly(zone, hull, 1)
+    eye_w = abs(landmarks[263].x - landmarks[362].x) * w
+    for ring in EYE_CORNERS:
+        for i in ring:
+            cv2.circle(zone, (int(landmarks[i].x * w), int(landmarks[i].y * h)), max(int(0.18 * eye_w), 2), 1, -1)
+
+    def points(ids):
+        return np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in ids])
+
+    for socket in SOCKETS:
+        # Above the eye: the band between brow and lid, kept clear of both.
+        brow, lid = points(socket["brow_low"]), points(socket["lid_up"])
+        gap = float(lid[:, 1].mean() - brow[:, 1].mean())
+        upper = np.vstack([brow + [0, 0.25 * gap], (lid - [0, 0.15 * gap])[::-1]])
+        cv2.fillPoly(zone, [upper.astype(np.int32)], 1)
+        # Below it: the hollow under the lower lid, about half an eye-height deep.
+        low = points(socket["lid_low"])
+        under = np.vstack([low + [0, 0.06 * eye_w], (low + [0, 0.32 * eye_w])[::-1]])
+        cv2.fillPoly(zone, [under.astype(np.int32)], 1)
+    keep_out = np.zeros((h, w), np.uint8)
+    for ring in [EYE_LEFT, EYE_RIGHT, INNER_LIPS] + [s["brow"] for s in SOCKETS]:
+        cv2.fillPoly(keep_out, [points(ring).astype(np.int32)], 1)
+    soft = cv2.GaussianBlur((zone & (1 - keep_out)).astype(np.float64), (0, 0), max(0.08 * eye_w, 1.0))
+    if soft.max() <= 0:
+        return srgb, 0.0
+
+    lab = cv2.cvtColor(srgb, cv2.COLOR_RGB2LAB).astype(np.float64)
+    k = max(int(0.6 * eye_w), 5) | 1
+    local = cv2.medianBlur(lab[..., 0].astype(np.uint8), min(k, 255)).astype(np.float64)
+    deficit = np.clip(local - lab[..., 0], 0.0, None)
+    lift = strength * deficit * soft
+    lab[..., 0] += lift
+    # Write back only what was lifted: an 8-bit LAB round trip nudges every
+    # pixel, and nothing outside the crevices should change at all.
+    out = srgb.copy()
+    changed = lift > 0.5
+    out[changed] = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)[changed]
+    return out, round(float(lift[soft > 0.5].mean()) if (soft > 0.5).any() else 0.0, 1)
+
+
 def delight(photo_rgb: np.ndarray, landmarks, faces: np.ndarray,
-            cheek_pixels: np.ndarray, samples: int = 20000, seed: int = 0):
+            cheek_pixels: np.ndarray, samples: int = 20000, seed: int = 0,
+            exclude: np.ndarray | None = None):
     """The photo with the face's lighting divided out and its exposure capped.
 
     Only the face region changes, faded at its edge; the rest of the photo is
     returned as it was, scaled by the same exposure factor. Returns the new
     image, a small report of what was done, and the mask of face pixels.
+
+    `exclude` (photo-space, 0-1) marks pixels that are not skin, such as a
+    beard, to leave out of the lighting fit: a dark lower face read as shadow
+    tells the fit the light comes from above, and the correction then lifts
+    the beard to grey.
     """
     h, w = photo_rgb.shape[:2]
     linear = to_linear(photo_rgb)
@@ -178,7 +254,10 @@ def delight(photo_rgb: np.ndarray, landmarks, faces: np.ndarray,
     report = {"lit_from": None, "gain_range": [1.0, 1.0]}
     ys, xs = np.nonzero(mask)
     if len(ys) > 500:
-        pick = np.random.default_rng(seed).choice(len(ys), min(samples, len(ys)), replace=False)
+        fit = np.arange(len(ys)) if exclude is None else np.nonzero(exclude[ys, xs] < 0.3)[0]
+        if len(fit) < 500:
+            fit = np.arange(len(ys))
+        pick = np.random.default_rng(seed).choice(fit, min(samples, len(fit)), replace=False)
         coeffs = fit_lighting(normals[ys[pick], xs[pick]], linear[ys[pick], xs[pick]])
         luminance = coeffs @ np.array([0.2126, 0.7152, 0.0722])          # (4,)
         shading = sh_basis(normals[ys, xs]) @ luminance
@@ -208,4 +287,5 @@ def delight(photo_rgb: np.ndarray, landmarks, faces: np.ndarray,
     cheek = np.median(linear[ys_c, xs_c] @ np.array([0.2126, 0.7152, 0.0722]))
     scale = min(1.0, SKIN_CEILING / max(cheek, 1e-6))
     report["exposure"] = round(float(scale), 2)
-    return to_srgb(linear * scale), report, mask
+    out, report["crevices_lifted"] = lift_crevices(to_srgb(linear * scale), landmarks, (w, h))
+    return out, report, mask

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Synthetic renders</title>
+<style>html, body { margin: 0; background: #000; }</style>
+</head>
+<body>
+<!-- Driven by synth.py in headless Chrome: fetch a built head, render it as
+     drawn, post the PNG back, repeat. Same lighting code as the studio. -->
+<canvas id="c"></canvas>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.162.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.162.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { setupRealism, applyMaterials, withOcclusion } from '/lib/scene-setup.js';
+
+const report = (message) => fetch('/log', { method: 'POST', body: String(message) });
+addEventListener('error', (e) => report(e.message));
+addEventListener('unhandledrejection', (e) => report(e.reason?.stack || e.reason));
+
+const size = Number(new URLSearchParams(location.search).get('size') || 512);
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(size, size, false);
+const gl = renderer.getContext();
+const debug = gl.getExtension('WEBGL_debug_renderer_info');
+report('webgl ' + gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 200);
+const { key, fill, rim } = setupRealism(renderer, scene);
+const occlusion = withOcclusion(renderer, scene, camera);
+// The key's shadow covers the head, not the whole figure.
+Object.assign(key.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4, near: 1, far: 60 });
+key.shadow.camera.updateProjectionMatrix();
+const loader = new GLTFLoader();
+
+function aim(light, drawn, centre) {
+  const d = new THREE.Vector3(...drawn.direction);
+  light.position.copy(centre).addScaledVector(d, 25);
+  light.target.position.copy(centre);
+  light.target.updateMatrixWorld();
+  light.color.setRGB(...drawn.colour.map((c) => c / 255), THREE.SRGBColorSpace);
+  light.intensity = drawn.intensity;
+}
+
+function backdrop({ top, bottom }) {
+  const c = Object.assign(document.createElement('canvas'), { width: 2, height: 256 });
+  const g = c.getContext('2d');
+  const ramp = g.createLinearGradient(0, 0, 0, 256);
+  ramp.addColorStop(0, `rgb(${top})`);
+  ramp.addColorStop(1, `rgb(${bottom})`);
+  g.fillStyle = ramp;
+  g.fillRect(0, 0, 2, 256);
+  const texture = new THREE.CanvasTexture(c);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function dispose(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.geometry.dispose();
+    o.skeleton?.dispose();
+    for (const m of [].concat(o.material)) {
+      for (const value of Object.values(m)) if (value?.isTexture) value.dispose();
+      m.dispose();
+    }
+  });
+}
+
+for (;;) {
+  const job = await (await fetch('/next')).json();
+  if (!job) break;
+  const model = (await loader.loadAsync(`/glb/${job.id}`)).scene;
+  applyMaterials(model);
+  model.traverse((o) => {
+    if (!o.isMesh) return;
+    o.castShadow = o.receiveShadow = true;
+    o.frustumCulled = false;
+    for (const m of [].concat(o.material)) m.envMapIntensity = job.light.environment;
+  });
+  scene.add(model);
+
+  const centre = new THREE.Vector3(...job.camera.centre);
+  aim(key, job.light.key, centre);
+  aim(fill, job.light.fill, centre);
+  aim(rim, job.light.rim, centre);
+  renderer.toneMappingExposure = job.exposure;
+  scene.background = backdrop(job.background);
+
+  camera.fov = job.camera.fov;
+  camera.position.set(...job.camera.position);
+  camera.up.set(...job.camera.up);
+  camera.lookAt(...job.camera.look_at);
+  camera.updateProjectionMatrix();
+
+  occlusion.render();
+  const png = await new Promise((done) => canvas.toBlob(done, 'image/png'));
+  await fetch(`/result/${job.id}`, { method: 'POST', body: png });
+
+  scene.remove(model);
+  dispose(model);
+  scene.background.dispose();
+}
+</script>
+</body>
+</html>

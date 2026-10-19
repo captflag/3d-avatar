@@ -130,8 +130,15 @@ of that gap later, and B remains available if that residual stalls.
 1. [x] Fit MakeHuman face targets to landmarks (`morph.py`).
 2. [x] Record each avatar's fit in its sidecar (explained fraction, active targets).
 3. [ ] Legal sign-off on every component in ARCHITECTURE.md section 2.
-4. [ ] Build a synthetic data generator: randomise targets, skin, lighting and
-       camera; render paired photo and ground-truth shape.
+4. [x] Build a synthetic data generator: randomise targets, skin, lighting and
+       camera; render paired photo and ground-truth shape. `synth.py -n 200
+       --check` writes PNG and JSON pairs (exact target weights, male/female
+       blend, camera) to `data/synth/`. It renders with the studio's own
+       three.js lighting in headless Chrome and adds no new dependency. On the
+       GTX 1660 it makes about 5,300 samples an hour (0.68 s each, limited by
+       the CPU building the heads). MediaPipe found a face in 198 of 200; the two
+       misses had a fringe across the face. Details in README.md, "Synthetic
+       training data".
 5. [ ] Train a residual displacement model on that data; measure likeness on a
        held-out set of real, consented selfies.
 6. [ ] Re-evaluate Option B only if step 5 plateaus.

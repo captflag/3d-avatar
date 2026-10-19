@@ -141,12 +141,108 @@ def check_alignment():
     print("ok  alignment: nose, mouth and chin within 1 cm of the skull's own")
 
 
+def check_proportions():
+    """A face with a longer lower face and a wider face than the skull, and
+    landmark noise no target can follow, fits back to the distances a face is
+    recognised by. Fitted through the landmarks alone, those few landmarks were
+    outvoted and every avatar came out short-chinned."""
+    import morph
+    from compose import place_face
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    person = morph.reference(vertices, corr, average)
+    nose = person[2, 1]
+    below = person[:, 1] < nose
+    person[below, 1] = nose + (person[below, 1] - nose) * 1.06
+    person[:, 0] *= 1.03
+    # What no target can follow, as on a real photo: among 468 landmarks the
+    # few that set these distances were outvoted by it.
+    spacing = np.linalg.norm(person[33] - person[263])
+    person[:, :2] += np.random.default_rng(1).normal(0, 0.04 * spacing, (len(person), 2))
+    want = {k: np.linalg.norm((person[j] - person[i])[:2]) for k, (i, j) in enumerate(morph.PROPORTIONS)}
+
+    weights, _, _ = morph.fit(vertices, corr, person, average)
+    shaped = morph.apply(vertices, weights)[corr]
+    for k, (name, (i, j)) in enumerate(zip(("eye spacing", "face width", "jaw width", "face height",
+                                            "nose to chin"), morph.PROPORTIONS)):
+        got = np.linalg.norm((shaped[j] - shaped[i])[:2])
+        assert abs(got / want[k] - 1) < 0.015, f"{name} fitted {100 * (got / want[k] - 1):+.1f}% off"
+    print("ok  proportions: eye spacing, widths, height and chin fit within 1.5%")
+
+
+def check_brow_shading():
+    """Under the brows the skin's normals lose the eye socket's hollow, so the
+    3D light stops shading again what the photo already shows there; the rest
+    of the face keeps its own."""
+    import morph
+    import appearance
+    import trimesh
+    from compose import PHOTO_NORMAL_ROUNDS, place_face
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    faces = groups["body"]
+    skin = np.zeros(len(vertices), bool)
+    skin[np.unique(faces)] = True
+    normals = trimesh.Trimesh(vertices, faces, process=False).vertex_normals
+    weight = appearance.under_brow(vertices, corr)[:, None]
+    blended = normals * (1 - weight) + appearance.broad_normals(faces, normals, PHOTO_NORMAL_ROUNDS) * weight
+    blended /= np.maximum(np.linalg.norm(blended, axis=1, keepdims=True), 1e-12)
+    band, away = (weight[:, 0] > 0.5) & skin, (weight[:, 0] < 0.01) & skin
+    before, after = normals[band, 1].mean(), blended[band, 1].mean()
+    assert after > before + 0.03, f"under-brow skin still faces down ({before:.3f} -> {after:.3f})"
+    assert np.abs(blended - normals)[away].max() < 0.01, "normals changed away from the brows"
+    print(f"ok  brow shading: under-brow normals lifted {before:.2f} -> {after:.2f}, rest of the face kept")
+
+
+def check_arkit():
+    """ARKit's 52 blendshapes, each moving the face the way ARKit names it:
+    sided shapes on their own side (the subject's left is +x), the eyes turning
+    about their centres, the jaw carrying the lower teeth, the tongue coming
+    out, and the split mouth units adding back up to the unit they came from."""
+    import morph
+    from compose import place_face
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    shapes = morph.arkit_shapes(vertices, corr, groups)
+    get = dict(zip(morph.ARKIT_NAMES, shapes))
+    assert len(morph.ARKIT_NAMES) == 52 == len(set(morph.ARKIT_NAMES))
+    still = [n for n, s in get.items() if np.abs(s).max() < 1e-3]
+    assert not still, f"blendshapes that move nothing: {still}"
+    for name, s in get.items():
+        if name.endswith(("Left", "Right")) and not name.startswith(("eyeLook", "jaw", "mouthLeft", "mouthRight")):
+            moved = np.linalg.norm(s, axis=1)
+            x = (vertices[:, 0] * moved).sum() / moved.sum()
+            assert (x > 0) == name.endswith("Left"), f"{name} moves the wrong side (x {x:+.3f})"
+    for side, group in (("Left", "helper-l-eye"), ("Right", "helper-r-eye")):
+        ball = np.unique(groups[group])
+        front = ball[np.argsort(vertices[ball, 2])[-8:]]
+        nose = -np.sign(vertices[ball, 0].mean())
+        move = {look: get[f"eyeLook{look}{side}"][front].mean(axis=0) for look in ("Up", "Down", "In", "Out")}
+        assert move["Up"][1] > 0.02 and move["Down"][1] < -0.02, f"{side} eye does not look up and down"
+        assert move["In"][0] * nose > 0.02 and move["Out"][0] * nose < -0.02, f"{side} eye does not look in and out"
+    teeth = np.unique(groups["helper-lower-teeth"])
+    assert get["jawOpen"][teeth, 1].mean() < -0.05, "jawOpen leaves the lower teeth behind"
+    tongue = np.unique(groups["helper-tongue"])
+    assert get["tongueOut"][tongue, 2].max() > 0.2, "tongueOut does not put the tongue out"
+    units = {n: (i, o) for n, i, o in morph.load_expressions()}
+    idx, off = units["mouth-corner-puller"]
+    whole = np.zeros_like(shapes[0]); whole[idx] = off
+    assert np.allclose(get["mouthSmileLeft"] + get["mouthSmileRight"], whole, atol=1e-5), "smile halves do not add up"
+    print("ok  arkit: 52 blendshapes, sided right, eyes turn, jaw carries the teeth, tongue out, halves add up")
+
+
 def check_expression():
     """A smile is fitted as expression, not identity, and comes off the face.
 
-    MediaPipe's average face, smiling and squinting by MakeHuman's own units,
-    must fit back to that expression with next to no change to who it is, and
-    taking the fitted expression off its landmarks must give the average back.
+    The skull's own face, smiling and squinting by MakeHuman's own units, must
+    fit back to that expression with next to no change to who it is, and
+    taking the fitted expression off its landmarks must give that face back.
     """
     import morph
     from compose import place_face
@@ -156,14 +252,15 @@ def check_expression():
     corr = morph.correspondences(vertices, groups["body"], average)
     front = morph.front_of(vertices, groups["body"], corr)
     smile = {"mouth-corner-puller": 0.6, "eye-left-slit": 0.4, "eye-right-slit": 0.4}
-    person = average + morph.expression_offsets(vertices, front, smile)
+    own = morph.reference(vertices, corr, average)
+    person = own + morph.expression_offsets(vertices, front, smile)
     scores = {"mouthSmileLeft": 0.7, "mouthSmileRight": 0.7,
               "eyeSquintLeft": 0.5, "eyeSquintRight": 0.5}
 
     weights, _, expression = morph.fit(vertices, corr, person, average, scores, front)
-    moved = np.linalg.norm(person - average)
+    moved = np.linalg.norm(person - own)
     identity = np.linalg.norm(morph.apply(vertices, weights)[corr] - vertices[corr])
-    left = np.linalg.norm(person - morph.expression_offsets(vertices, front, expression) - average)
+    left = np.linalg.norm(person - morph.expression_offsets(vertices, front, expression) - own)
     assert identity < 0.15 * moved, f"the smile was taken as identity ({identity / moved:.0%})"
     assert left < 0.15 * moved, f"neutralising left {left / moved:.0%} of the smile"
     print(f"ok  expression: a known smile fits back as expression, "
@@ -352,6 +449,19 @@ def check_appearance():
     assert pick({**reading, "bottom": 0.4}, "x") == "hair_long01"
     assert pick({**reading, "amount": 0.02}, "x") is None, "a bald head was given hair"
     assert pick(None, "hair_short02") == "hair_short02", "no segmenter should keep the default"
+    assert pick({**reading, "sides": 0.08}, "x") == "hair_short_sides", "tight sides not read as a short back and sides"
+    assert pick({**reading, "sides": 0.15}, "x") == "hair_short02", "full sides given a short back and sides"
+
+    # The top is the cloth under the chin, not someone else's behind.
+    from types import SimpleNamespace as P
+    marks = [P(x=0.5, y=0.5)] * 455
+    marks[152], marks[234], marks[454] = P(x=0.5, y=0.3), P(x=0.4, y=0.2), P(x=0.6, y=0.2)
+    parts = np.zeros((100, 100), np.uint8)
+    picture = np.zeros((100, 100, 3), np.uint8)
+    parts[40:100, 30:70], picture[40:100, 30:70] = appearance.CLOTHES, (150, 30, 30)
+    parts[0:30, 80:100], picture[0:30, 80:100] = appearance.CLOTHES, (30, 30, 150)
+    top = appearance.clothing_colour(picture, marks, parts)
+    assert top is not None and top[0] > 120 and top[2] < 60, f"read the wrong cloth: {top}"
 
     photo = HERE / "samples" / "portrait.jpg"
     if photo.exists() and appearance.SEGMENTER_TASK.exists():
@@ -382,8 +492,375 @@ def check_appearance():
         lab = cv2.cvtColor(dyed[changed].reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(float)
         want = cv2.cvtColor(np.uint8([[green]]), cv2.COLOR_RGB2LAB)[0, 0].astype(float)
         assert np.linalg.norm(np.median(lab[:, 1:], axis=0) - want[1:]) < 6, "the shirt was not dyed green"
-    print("ok  appearance: haircut rules, hair and eye colour from the photo, shirt and trousers dyed apart")
 
+    if (ASSET_DIR / "mh_system" / "hair" / "short02" / "short02.mhclo").exists():
+        # The short back and sides lies closer to the scalp at the sides than
+        # the cut it is made from, and clears the ears.
+        from scipy.spatial import cKDTree
+        from catalogue import build_item, items_by_id
+        base, groups = load_base()
+        scalp = cKDTree(base[np.unique(groups["body"])])
+
+        def sides(cut):
+            hair = build_item(items_by_id()[cut], np.array([40, 40, 40], np.uint8), base)
+            v = hair.vertices[np.unique(hair.faces)]
+            v = v[(np.abs(v[:, 0]) > 0.75) & (v[:, 1] < 7.9)]
+            return scalp.query(v)[0].mean(), len(v)
+        (full, n_full), (clipped, n_clipped) = sides("hair_short02"), sides("hair_short_sides")
+        assert clipped < 0.8 * full and n_clipped < n_full, \
+            f"sides not clipped: {clipped:.3f} vs {full:.3f} off the scalp, {n_clipped} vs {n_full} vertices"
+    print("ok  appearance: haircut rules, hair and eye colour from the photo, shirt and trousers dyed apart, short sides")
+
+
+def check_finishing():
+    """Teeth painted out of an open mouth, impossible skin casts pulled back,
+    crevices lifted only where they belong, socks gone under trousers,
+    trousers taken in, recoloured hair stored as a palette."""
+    import cv2
+    import appearance
+    import delight
+    from catalogue import ASSET_DIR
+
+    photo = HERE / "samples" / "portrait.jpg"
+    if photo.exists():
+        from PIL import Image
+        from generate import fit_face
+        _, marks, _ = fit_face(photo)
+        rgb = np.asarray(Image.open(photo).convert("RGB"))
+        h, w = rgb.shape[:2]
+        mouth = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(mouth, [np.array([[marks[i].x * w, marks[i].y * h] for i in delight.INNER_LIPS], np.int32)], 1)
+        filled, did = appearance.fill_mouth(rgb, marks)
+        bright = lambda img: int((cv2.cvtColor(img, cv2.COLOR_RGB2LAB)[..., 0][mouth > 0] > 200).sum())
+        assert did and bright(rgb) > 50 and bright(filled) == 0, "teeth were left in the mouth"
+
+        mask = np.zeros((h, w), bool)
+        mask[int(marks[10].y * h):int(marks[152].y * h), int(marks[234].x * w):int(marks[454].x * w)] = True
+        assert appearance.correct_cast(rgb, mask)[1] == (0.0, 0.0), "natural skin was colour-corrected"
+        lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(float)
+        lab[..., 1] -= 16                                            # a green cast
+        green = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+        _, shift = appearance.correct_cast(green, mask)
+        assert shift[0] > 4, f"a green cast was not pulled back (shift {shift})"
+
+        lifted, amount = delight.lift_crevices(rgb, marks, (w, h))
+        corner = (slice(0, h // 10), slice(0, w // 10))
+        assert amount > 0 and np.array_equal(lifted[corner], rgb[corner]), "lift reached outside the face"
+
+    shoes = ASSET_DIR / "mh_system" / "clothes" / "shoes01" / "shoes01.mhclo"
+    if shoes.exists():
+        from garments import drop_socks, load_mhclo, material_textures
+        base, groups = load_base()
+        ankle = float(base[np.unique(groups["joint-l-ankle"])][:, 1].mean())
+        mesh = load_mhclo(shoes, base)
+        removed = drop_socks(mesh, ankle)
+        assert removed > 0 and mesh.vertices[np.unique(mesh.faces)][:, 1].max() < ankle + 0.5, "sock kept"
+        hair = ASSET_DIR / "mh_system" / "hair" / "short02" / "short02.mhmat"
+        texture, _, _ = material_textures(hair, (100, 70, 50))
+        import io
+        from PIL import Image
+        png = io.BytesIO()
+        texture.save(png, format="PNG")
+        alpha = np.asarray(Image.open(png).convert("RGBA"))[..., 3]
+        assert texture.mode == "P" and alpha.min() == 0 and alpha.max() == 255, \
+            "recoloured hair lost its palette or its alpha"
+
+        item = dict(items_by_id()["outfit_light_blue_shirt_navy_trousers"])
+        loose = build_item({**item, "slim": None}, None, base)
+        slim = build_item(item, None, base)
+        gap = lambda m: np.linalg.norm(m.vertices - (m.metadata["mhclo_blend"][:, :, None]
+                                                     * base[m.metadata["mhclo_idx"]]).sum(axis=1), axis=1)
+        legs = loose.vertices[:, 1] < -3.0
+        assert gap(slim)[legs].mean() < 0.75 * gap(loose)[legs].mean(), "the trousers were not taken in"
+    print("ok  finishing: teeth painted out, casts pulled back, crevices lifted, socks dropped, "
+          "trousers slimmed, hair as palette")
+
+
+def check_review_fixes():
+    """Forearms hang instead of reaching forward; a broad smile is not taken as
+    a wide mouth; the neck is never cut away under a collar."""
+    from compose import relaxed_pose
+
+    base, groups = load_base()
+    skeleton = load_skeleton(base)
+    m = skinning_matrices(skeleton, relaxed_pose())
+    at = lambda name: (m[skeleton.index[name]] @ np.append(skeleton.heads[skeleton.index[name]], 1.0))[:3]
+    forearm = at("wrist.L") - at("lowerarm01.L")
+    # Forward lean only (the arm's sideways splay is separate). The base mesh
+    # is modelled with forearms reaching forward ~47 degrees; relaxed is ~24.
+    off_vertical = np.degrees(np.arctan2(forearm[2], -forearm[1]))
+    assert off_vertical < 30, f"forearm leans {off_vertical:.0f} degrees forward: reaching out"
+    # The palm (thumb side of the knuckle plane) faces the thigh, not forward
+    # and up, and the fingers curl towards it.
+    head = lambda name: skeleton.heads[skeleton.index[name]]
+    knuckles = (head("finger2-1.L"), head("finger5-1.L"))
+    palm = np.cross(knuckles[1] - knuckles[0], skeleton.tails[skeleton.index["finger3-3.L"]] - head("finger3-1.L"))
+    palm *= np.sign(palm @ (skeleton.tails[skeleton.index["finger1-3.L"]] - sum(knuckles) / 2))
+    facing = m[skeleton.index["wrist.L"]][:3, :3] @ (palm / np.linalg.norm(palm))
+    assert facing[0] < -0.8, f"left palm faces {facing.round(2)}, not the thigh"
+    tip = lambda pose: (skinning_matrices(skeleton, pose)[skeleton.index["finger3-3.L"]]
+                        @ np.append(skeleton.tails[skeleton.index["finger3-3.L"]], 1.0))[:3]
+    straight = {k: v for k, v in relaxed_pose().items() if not k.startswith("finger")}
+    reach = lambda pose: np.linalg.norm(tip(pose) - at("finger3-1.L"))
+    assert reach(relaxed_pose()) < 0.97 * reach(straight), "the fingers do not curl"
+    # The thumb hangs down beside the index finger, not across the thigh.
+    thumb = (m[skeleton.index["finger1-3.L"]] @ np.append(skeleton.tails[skeleton.index["finger1-3.L"]], 1.0))[:3] \
+        - at("finger1-1.L")
+    drop = np.degrees(np.arcsin(-thumb[1] / np.linalg.norm(thumb)))
+    assert drop > 40, f"the thumb points {drop:.0f} degrees below horizontal: across the thigh"
+
+    photo = HERE / "samples" / "portrait.jpg"
+    if not photo.exists():
+        print(f"ok  review fixes: forearm leans {off_vertical:.0f} deg forward; portrait checks skipped")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "portrait.glb"
+        compose(photo, out)
+        import json
+        info = json.loads(out.with_suffix(".json").read_text(encoding="utf-8"))
+        mouth = [w for name, w in info["shape"]["strongest"] if name.startswith("mouth/")]
+        assert not any(w > 0.6 for w in mouth), f"the smile was taken as mouth shape: {info['shape']['strongest']}"
+        # No scalp layer under a real haircut: standing 0.055 off the skin, it
+        # covered the cards at the back of the head as a flat bald patch.
+        assert "hair_underlayer" not in info["wearing"], "a scalp layer was worn under the haircut"
+
+        import io
+        from PIL import Image
+        gltf = gl.GLTF2().load(str(out))
+        blob = gltf.binary_blob()
+        names = [mat.name for mat in gltf.materials]
+        prim = gltf.meshes[0].primitives[names.index("body")]
+
+        def read(index, width):
+            acc = gltf.accessors[index]
+            view = gltf.bufferViews[acc.bufferView]
+            # Texture coordinates are stored as normalised shorts (KHR_mesh_quantization).
+            if acc.componentType == gl.UNSIGNED_SHORT:
+                raw = np.frombuffer(blob[view.byteOffset:view.byteOffset + view.byteLength], np.uint16)
+                return raw.reshape(-1, width).astype(np.float64) / 65535.0
+            return np.frombuffer(blob[view.byteOffset:view.byteOffset + view.byteLength], np.float32).reshape(-1, width)
+        pos, uv = read(prim.attributes.POSITION, 3), read(prim.attributes.TEXCOORD_0, 2)
+        tex = gltf.materials[names.index("body")].pbrMetallicRoughness.baseColorTexture.index
+        view = gltf.bufferViews[gltf.images[gltf.textures[tex].source].bufferView]
+        alpha = np.asarray(Image.open(io.BytesIO(blob[view.byteOffset:view.byteOffset + view.byteLength])).convert("RGBA"))[..., 3]
+        collarbone = float(base[np.unique(groups["joint-l-clavicle"])][:, 1].mean())
+        neck = (pos[:, 1] > collarbone + 0.15) & (np.abs(pos[:, 0]) < 0.6)
+        px = (uv[neck] * (np.array(alpha.shape[::-1]) - 1)).astype(int)
+        assert neck.any() and (alpha[px[:, 1], px[:, 0]] > 127).mean() > 0.98, "neck skin was cut away"
+
+        # Severity-3 detail: blendshapes on every part, teeth and tongue worn,
+        # skin with its own finish, cloth with sheen, hair with anisotropy.
+        import morph
+        assert gltf.meshes[0].extras.get("targetNames") == morph.ARKIT_NAMES, "ARKit blendshapes missing"
+        assert all(len(p.targets) == 52 for p in gltf.meshes[0].primitives), "a part lacks blendshapes"
+        assert {"teeth", "tongue"} <= set(info["wearing"]), "no teeth or tongue in the mouth"
+        skin_mat = gltf.materials[names.index("head")]
+        assert skin_mat.pbrMetallicRoughness.metallicRoughnessTexture is not None, "skin has one roughness"
+        assert "KHR_materials_ior" in skin_mat.extensions, "skin reflects like plastic"
+        from PIL import Image as _Image
+        for part in ("head", "body"):
+            view = gltf.bufferViews[gltf.images[gltf.textures[
+                gltf.materials[names.index(part)].pbrMetallicRoughness.baseColorTexture.index].source].bufferView]
+            size = _Image.open(io.BytesIO(blob[view.byteOffset:view.byteOffset + view.byteLength])).size
+            assert size == (2048, 2048), f"{part} skin texture is {size}, not 2048"
+        cloth = [m for m in gltf.materials if m.name.startswith("outfit")]
+        assert cloth and all("KHR_materials_sheen" in m.extensions for m in cloth), "cloth has no sheen"
+        hair = [m for m in gltf.materials if m.name.startswith("hair_")]
+        assert hair and all("KHR_materials_anisotropy" in m.extensions and m.normalTexture for m in hair), \
+            "hair has no strand highlight or relief"
+    print(f"ok  review fixes: forearm leans {off_vertical:.0f} deg forward, smile not taken as mouth shape, neck kept")
+
+
+def check_forehead():
+    """Past the landmarks the bake reaches the hairline the segmenter saw, only
+    on surface facing the camera."""
+    from facetexture import FaceSampler
+
+    # A flat 1 x 1 sheet whose pixels are its coordinates x 100, and a photo
+    # that is skin everywhere.
+    grid = np.stack(np.meshgrid(np.linspace(0, 1, 11), np.linspace(0, 1, 11)), -1).reshape(-1, 2)
+    sheet = np.c_[grid, np.zeros(len(grid))]
+    rim = np.nonzero((grid == 0).any(axis=1) | (grid == 1).any(axis=1))[0]
+    sampler = FaceSampler(sheet, grid * 100, rim, beyond=np.ones((200, 200)))
+    above = np.array([[0.5, 1.1, 0.0], [0.5, 1.1, 0.0], [0.5, 2.0, 0.0]])
+    pixels, strength = sampler.sample(above, np.array([1.0, 0.3, 1.0]))
+    assert np.allclose(pixels[0], [50, 110], atol=1), f"forehead mapped to {pixels[0]}"
+    assert strength[0] > 0.9, "the forehead above the landmarks was not baked"
+    assert strength[1] == 0, "a surface turned away from the camera was baked"
+    assert strength[2] == 0, "the bake reached far past the landmarks"
+    print("ok  forehead: baked to the hairline, only on surface facing the camera")
+
+
+def check_details():
+    """The detail audit's faults: feet hidden inside shoes, hands clear of a
+    woman's hips, irises with fibres rather than a flat disc."""
+    import cv2
+    from types import SimpleNamespace
+    from scipy.spatial.transform import Rotation
+    import compose
+    import garments
+    import morph
+    from catalogue import ASSET_DIR, build_item, items_by_id, submesh
+
+    base, groups = load_base()
+
+    # Feet: below the shoe's opening the foot is enclosed and its skin hidden;
+    # a toe fuller than the shoe came through the sole.
+    shoes = build_item(items_by_id()["shoes_black"], None, base)
+    enclosed = garments.enclosed_by_shoe(shoes, base)
+    body = np.unique(groups["body"])
+    soles = body[base[body, 1] < base[body, 1].min() + 0.5]
+    assert enclosed[soles].all(), "foot skin under the sole is still drawn"
+    assert not enclosed[base[:, 1] > shoes.vertices[:, 1].max()].any(), "skin above the shoes was hidden"
+
+    # Hands: the arm pose is set on the male body; on the female body the
+    # hands sat 0.27 inside the thighs. Swung out, they clear the hips, and
+    # neither body's arms turn further than they need.
+    for gender, most in (("female", 10.0), ("male", 4.0)):
+        v = morph.body_for(base, gender)
+        skeleton = load_skeleton(v)
+        joints, weights = weight_table(skeleton, len(v))
+        mesh = submesh(groups["body"], v)
+        source = mesh.metadata["base_index"]
+        part = SimpleNamespace(vertices=np.asarray(mesh.vertices, np.float32), joints=joints[source],
+                               weights=weights[source], normals=np.asarray(mesh.vertex_normals, np.float32))
+        pose = compose.relaxed_pose()
+        posed = compose.arms_clear(pose, skeleton, part)
+        clear = compose.hand_clearance(posed, skeleton, part)
+        turned = max(np.degrees((Rotation.from_quat(posed[f"upperarm01.{s}"])
+                                 * Rotation.from_quat(pose[f"upperarm01.{s}"]).inv()).magnitude()) for s in "LR")
+        assert min(clear.values()) >= 0.12, f"{gender} hands inside the hips: {clear}"
+        assert turned <= most, f"{gender} arms swung out {turned:.0f} degrees"
+        if gender == "female":
+            assert min(compose.hand_clearance(pose, skeleton, part).values()) < 0, "the fault no longer reproduces"
+
+    # Eyes: fibres across the iris, not a flat disc shaded only by radius.
+    _, _, texture = compose.build_eyes(base, groups, np.array([90.0, 120.0, 150.0]))
+    lab = cv2.cvtColor(np.asarray(texture), cv2.COLOR_RGB2LAB).astype(np.float32)
+    iris = cv2.erode((lab[..., 2] < 118).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    detail = lab[..., 0] - cv2.GaussianBlur(lab[..., 0], (0, 0), 3)
+    assert iris.sum() > 1000 and detail[iris].std() > 3, f"the iris is flat (detail {detail[iris].std():.1f})"
+
+    # Brows: a card authored for blending (alpha up to 187) keeps its strands
+    # through the 0.5 cut, not a few clumps.
+    brow = ASSET_DIR / "mh_system" / "eyebrows" / "eyebrow006"
+    if (brow / "eyebrow006.mhmat").exists():
+        from PIL import Image
+        texture, _, _ = garments.material_textures(brow / "eyebrow006.mhmat", (60, 40, 30))
+        authored = np.asarray(Image.open(brow / "eyebrow006.png").convert("RGBA"))[..., 3]
+        kept = np.asarray(texture.convert("RGBA"))[..., 3]
+        assert (kept > 127).sum() > 2 * (authored > 127).sum(), "the thin brow is still cut to clumps"
+
+    # Seams: a kept beard fades out at the face sheet's edge instead of
+    # stopping on it.
+    from facetexture import FaceSampler
+    grid = np.stack(np.meshgrid(np.linspace(0, 1, 11), np.linspace(0, 1, 11)), -1).reshape(-1, 2)
+    rim = np.nonzero((grid == 0).any(axis=1) | (grid == 1).any(axis=1))[0]
+    sampler = FaceSampler(np.c_[grid, np.zeros(len(grid))], grid * 100, rim, keep=np.ones((200, 200)))
+    _, strength = sampler.sample(np.array([[0.5, 0.5, 0.0], [0.5, 0.003, 0.0]]))
+    assert strength[0] > 0.99 and strength[1] < 0.2, f"beard kept to the sheet's edge: {strength.round(2)}"
+    # Plain dye: a pinstripe dyed plain loses its stripes, keeps broad shading.
+    import trimesh
+    from PIL import Image
+    # A sheet of small triangles: the rasteriser skips any spanning half the
+    # texture as a UV seam.
+    cells = 8
+    ij = np.stack(np.meshgrid(np.arange(cells + 1), np.arange(cells + 1), indexing="ij"), -1).reshape(-1, 2)
+    corner = lambda i, j: i * (cells + 1) + j
+    tris = [[corner(i, j), corner(i + 1, j), corner(i + 1, j + 1)] for i in range(cells) for j in range(cells)] +            [[corner(i, j), corner(i + 1, j + 1), corner(i, j + 1)] for i in range(cells) for j in range(cells)]
+    quad = trimesh.Trimesh(np.c_[ij / cells, np.zeros(len(ij))], tris, process=False)
+    quad.metadata["uv"] = ij / cells
+    stripes = np.full((256, 256, 3), 40, np.uint8)
+    stripes[:, ::12] = (200, 30, 60)
+    stripes[:128] = (stripes[:128] * 0.6).astype(np.uint8)          # a broad fold: top half darker
+    dyed = np.asarray(garments.recolour(Image.fromarray(stripes), quad, np.ones(len(tris), bool), (168, 192, 222), plain=True))
+    lightness = dyed.astype(float).mean(axis=2)
+    assert lightness[200, 20:120].std() < 3, f"stripes survived a plain dye (spread {lightness[200, 20:120].std():.1f})"
+    assert lightness[40, 128] < lightness[200, 128] - 8, "a plain dye flattened the fold too"
+
+    # Nails: on the back of each finger's last joint, a patch of tens of vertices.
+    import trimesh as _t
+    import appearance
+    joints, weights = weight_table(load_skeleton(base), len(base))
+    skeleton = load_skeleton(base)
+    nails = appearance.nail_weight(base, _t.Trimesh(base, groups["body"], process=False).vertex_normals,
+                                   skeleton, joints, weights)
+    dominant = joints[np.arange(len(joints)), weights.argmax(axis=1)]
+    for finger in range(2, 6):
+        bone = f"finger{finger}-3.L"
+        rows = dominant == skeleton.index[bone]
+        assert 15 <= (nails[rows] > 0.5).sum() <= 80, f"{bone}: {(nails[rows] > 0.5).sum()} nail vertices"
+    # Seams are not openings: two pieces sewn edge to edge keep no skin band.
+    piece = trimesh.Trimesh([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 0.0, 0], [2, 0, 0], [1, 1, 0]],
+                            [[0, 1, 2], [3, 4, 5]], process=False)
+    rim = set(garments.open_rim(piece).tolist())
+    assert 1 not in rim and 3 not in rim and {0, 2, 4, 5} <= rim, f"seam taken as an opening: {sorted(rim)}"
+
+    # Advice: a small face and a broad smile are both told to the user.
+    import compose as _c
+    from types import SimpleNamespace as P
+    marks = [P(x=0.5, y=0.5)] * 455
+    marks[234], marks[454] = P(x=0.45, y=0.5), P(x=0.55, y=0.5)
+    advice = _c.photo_advice(marks, (600, 800), {"mouthSmileLeft": 0.8})
+    assert len(advice) == 2 and "pixels" in advice[0] and "smiling" in advice[1], advice
+    assert _c.photo_advice(marks, (6000, 8000), {}) == [], "a good photo was given advice"
+
+    # Ears: the mask from the ear targets touches the sides of the head only.
+    ear = appearance.ear_weight(len(base))
+    on = ear > 0.5
+    assert on.sum() > 200 and np.abs(base[on, 0]).min() > 0.4, "ear mask strays off the ears"
+    print("ok  details: feet hidden in shoes, hands clear the hips, irises have fibres, "
+          "thin brows kept, beard fades at the sheet's edge, plain dye, nails, ears")
+
+
+def check_brows():
+    """The brow cards lie on the brows the bake paints, not under them.
+
+    MakeHuman hangs its cards 4 to 9 mm below the middle of MediaPipe's brow,
+    and the bake paints the photo's brows where MediaPipe puts them: a second,
+    thinner brow under the first. MediaPipe's brow also runs high, so the
+    cards go where the photo's brow is darkest. Checked on the average face,
+    where the gap is the template's alone, on both bodies.
+    """
+    import trimesh
+    import morph
+    from compose import body_mesh, brows_to_photo, place_face
+    from facetexture import BROW_LANDMARKS, brow_depth
+
+    # A dark band 0.9 of the way down from the upper contour to the lower.
+    photo = np.full((200, 200, 3), (225, 185, 165), dtype=np.uint8)
+    photo[88:91, 30:170] = (70, 50, 40)
+    contours = np.array(BROW_LANDMARKS).reshape(2, 2, 5)   # side, upper/lower, outer to inner
+    marks = _landmarks({int(i): (x + 0.05 * k, 0.40 + 0.05 * row) for x, side in zip((0.2, 0.6), contours)
+                        for row, ids in enumerate(side) for k, i in enumerate(ids)})
+    depth = brow_depth(photo, marks)
+    assert np.allclose(depth, 0.9, atol=0.1), f"a brow 0.9 of the way down read as {depth}"
+
+    raw, groups = load_base()
+    for gender, item in (("male", "eyebrows"), ("female", "eyebrows_thin")):
+        vertices = morph.body_for(raw, gender)
+        sheet = place_face(morph.canonical_face(), vertices, groups).vertices
+        card = build_item(items_by_id()[item], None, vertices)
+        skin = body_mesh(vertices)
+        band = skin.triangles[np.abs(skin.triangles_center[:, 1] - card.vertices[:, 1].mean()) < 0.3]
+
+        def off_skin(p):
+            """Median distance to the skin's surface, brute force over the brow band."""
+            q = trimesh.triangles.closest_point(np.tile(band, (len(p), 1, 1)), np.repeat(p, len(band), 0))
+            return np.median(np.linalg.norm(q - np.repeat(p, len(band), 0), axis=1).reshape(len(p), -1).min(axis=1))
+
+        before = off_skin(card.vertices)
+        v = brows_to_photo(card, sheet, depth, vertices, groups).vertices
+        upper, lower = np.moveaxis(sheet[contours], 1, 0)
+        for line, own in zip(upper + 0.9 * (lower - upper), (v[:, 0] < 0, v[:, 0] > 0)):
+            line = line[np.argsort(line[:, 0])]
+            span = own & (v[:, 0] > line[0, 0]) & (v[:, 0] < line[-1, 0])
+            off = float((v[span, 1] - np.interp(v[span, 0], line[:, 0], line[:, 1])).mean())
+            assert abs(off) < 0.01, f"{item} sits {off * 100:+.1f} mm off the painted brow"
+        after = off_skin(v)
+        assert after < before + 0.003, f"{item} lifted {(after - before) * 100:.1f} mm off the skin"
+    print(f"ok  brows: read {depth.round(2).tolist()} down the contours; cards on that line "
+          f"within 1 mm, still on the skin")
 
 if __name__ == "__main__":
     try:
@@ -391,6 +868,9 @@ if __name__ == "__main__":
         check_export()
         check_transfer()
         check_alignment()
+        check_proportions()
+        check_brow_shading()
+        check_arkit()
         check_expression()
         check_mhclo()
         check_import()
@@ -398,6 +878,11 @@ if __name__ == "__main__":
         check_bodies_and_assets()
         check_delight()
         check_appearance()
+        check_finishing()
+        check_review_fixes()
+        check_forehead()
+        check_brows()
+        check_details()
     except AssertionError as err:
         print(f"FAIL  {err}", file=sys.stderr)
         raise SystemExit(1)

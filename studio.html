@@ -111,7 +111,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { setupRealism, applyMaterials, groundAndShadow, withOcclusion } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, groundAndShadow, withOcclusion, renderCoverage } from '/lib/scene-setup.js';
 
 const $ = (id) => document.getElementById(id);
 const drop = $('drop'), file = $('file'), go = $('go'), status = $('status'),
@@ -153,7 +153,8 @@ drop.addEventListener('submit', async (ev) => {
     if (!res.ok) throw new Error(data.error || 'Generation failed.');
     current = { model: data.model, id: data.id, fullBody: $('fullbody').checked };
     show(data.review);
-    status.textContent = `Done · ${data.info.triangles} triangles · ${data.info.size_kb} KB`;
+    status.textContent = `Done · ${data.info.triangles} triangles · ${data.info.size_kb} KB` +
+      ((data.info.advice || []).length ? ` · Tip: ${data.info.advice[0]}` : '');
     $('resultmeta').textContent = $('dimension').value === '2d'
       ? 'Download gives a transparent PNG rendered from this avatar.'
       : 'Download gives a GLB: opens in Unity, Unreal, Blender and three.js.';
@@ -287,19 +288,27 @@ async function drawAvatar(url, width, height, focusHead = false) {
   scene.add(model);
   groundAndShadow(scene, model, lights.key);
 
-  const camera = new THREE.PerspectiveCamera(32, width / height, 0.01, 200);
+  // A long lens for the head, as a portrait photographer uses. The face is
+  // shaped from the photo's landmarks, which already carry the photo's own
+  // perspective; at 32 degrees, four head-depths away, the render added its
+  // own and the face's sides, behind the eyes, read 3-4% narrower than the
+  // photo's. Same framing, from four times as far.
+  const fov = focusHead ? 8 : 32;
+  const camera = new THREE.PerspectiveCamera(fov, width / height, 0.01, 400);
   // Fit whichever dimension needs the most room. Fitting width alone clipped the
   // head off every full-body avatar, which is the one thing the card must show.
   const span = focusHead ? size.y * 0.17 : size.y;
   const fit = Math.max(span, size.x / camera.aspect);
   const eye = focusHead ? size.y / 2 - size.y * 0.085 : 0;
-  camera.position.set(0, eye, (fit / (2 * Math.tan((32 * Math.PI) / 360))) * 1.12);
+  camera.position.set(0, eye, (fit / (2 * Math.tan((fov * Math.PI) / 360))) * 1.12);
   camera.lookAt(0, eye, 0);
 
   const renderer = getRenderer(width, height);
-  const occlusion = withOcclusion(renderer, scene, camera);
+  const coverage = renderCoverage(renderer, scene, camera, model);
+  const occlusion = withOcclusion(renderer, scene, camera, { coverage });
   occlusion.render();
   occlusion.dispose();
+  coverage.dispose();
   disposeScene(model);
   return renderer.domElement;
 }
