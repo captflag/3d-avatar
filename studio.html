@@ -111,7 +111,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { setupRealism, applyMaterials, groundAndShadow, withOcclusion, renderCoverage } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, applyPhotoExpression, groundAndShadow, withOcclusion, renderCoverage } from '/lib/scene-setup.js';
 
 const $ = (id) => document.getElementById(id);
 const drop = $('drop'), file = $('file'), go = $('go'), status = $('status'),
@@ -280,6 +280,7 @@ async function drawAvatar(url, width, height, focusHead = false) {
 
   const model = gltf.scene;
   applyMaterials(model);
+  applyPhotoExpression(model);
 
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());

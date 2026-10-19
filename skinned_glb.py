@@ -208,7 +208,8 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None)
 
 
 def export(parts: list[Part], skeleton, out_path: pathlib.Path,
-           pose: dict[str, list[float]] | None = None, morph_names: list[str] | None = None) -> None:
+           pose: dict[str, list[float]] | None = None, morph_names: list[str] | None = None,
+           expression: dict[str, float] | None = None) -> None:
     """Write the avatar and its skeleton to `out_path` as a GLB.
 
     `pose` rotates named bones in the rest pose. The base mesh is modelled in a
@@ -218,6 +219,11 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
     `morph_names` names the blendshapes each part's `morphs` holds. glTF wants
     every primitive of a mesh to carry the same targets, so a part without
     them gets empty ones.
+
+    `expression` ({blendshape: weight}) is the face the photo was making,
+    stored in the mesh's extras as `photoExpression` for a viewer to show. The
+    file's own weights stay at rest, so a rig driven by face tracking or
+    animation starts from a neutral face.
     """
     buf = _Buffer()
     gltf = gl.GLTF2()
@@ -332,6 +338,9 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
     if morph_names:
         mesh.weights = [0.0] * len(morph_names)
         mesh.extras = {"targetNames": list(morph_names)}
+        if expression:
+            mesh.extras["photoExpression"] = {k: round(float(v), 3) for k, v in expression.items()
+                                              if k in morph_names}
     gltf.meshes.append(mesh)
     gltf.extensionsUsed.append("KHR_mesh_quantization")
     gltf.extensionsRequired.append("KHR_mesh_quantization")

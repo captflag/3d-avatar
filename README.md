@@ -165,6 +165,14 @@ output drives the avatar as it is. "Left" is the subject's own left. They are
 built from MakeHuman's CC0 expression units (`morph.arkit_shapes`), and the
 shapes MakeHuman has no unit for are made there too.
 
+The file's own weights rest at zero, so a driven rig starts from a neutral
+face. The face the photo was making is kept beside them, in each mesh's extras
+as `photoExpression` (three.js: `userData.photoExpression`), and the studio
+shows it (`applyPhotoExpression` in `lib/scene-setup.js`). Those weights are
+MediaPipe's scores for the photo, turned back through MediaPipe's measured
+response to our own shapes (`morph.photo_expression`). The eyes are left to
+the shape fit.
+
 ```js
 // Every part the shape moves: skin, teeth and tongue open together.
 window.__avatar.traverse((o) => {

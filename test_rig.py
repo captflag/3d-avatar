@@ -234,7 +234,17 @@ def check_arkit():
     idx, off = units["mouth-corner-puller"]
     whole = np.zeros_like(shapes[0]); whole[idx] = off
     assert np.allclose(get["mouthSmileLeft"] + get["mouthSmileRight"], whole, atol=1e-5), "smile halves do not add up"
-    print("ok  arkit: 52 blendshapes, sided right, eyes turn, jaw carries the teeth, tongue out, halves add up")
+    # A photo's scores, read back through MediaPipe's measured response: a
+    # smile scored 0.65 is half weight, one at rest level is nothing, the eyes
+    # are left to the shape fit, and a shape MediaPipe hardly reads on an
+    # avatar takes its score as it is.
+    face = morph.photo_expression({"mouthSmileLeft": 0.65, "mouthSmileRight": 0.03, "eyeBlinkLeft": 0.9,
+                                   "eyeSquintLeft": 0.5, "browDownLeft": 0.4})
+    assert abs(face.get("mouthSmileLeft", 0) - 0.5) < 0.01, f"smile not read back through the response: {face}"
+    assert not {"mouthSmileRight", "eyeBlinkLeft", "eyeSquintLeft"} & set(face), f"rest or eyes taken from the photo: {face}"
+    assert abs(face.get("browDownLeft", 0) - 0.4) < 1e-6, f"unreadable shape not taken as scored: {face}"
+    print("ok  arkit: 52 blendshapes, sided right, eyes turn, jaw carries the teeth, tongue out, halves add up, "
+          "photo expression read back")
 
 
 def check_expression():

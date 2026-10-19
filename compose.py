@@ -992,7 +992,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # swung out until the hands clear the hips.
     body_part = next(p for p in parts if p.name == "body")
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
-                       morph_names=morph.ARKIT_NAMES)
+                       morph_names=morph.ARKIT_NAMES,
+                       expression=morph.photo_expression(expression_of(result)))
 
     info = {
         "advice": photo_advice(landmarks, (pw, ph), expression_of(result)),

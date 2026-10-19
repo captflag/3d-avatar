@@ -572,3 +572,50 @@ def arkit_shapes(vertices: np.ndarray, corr: np.ndarray, groups: dict) -> np.nda
 
     assert len(ARKIT_NAMES) == 52 and set(shapes) == set(ARKIT_NAMES)
     return np.stack([shapes[name] for name in ARKIT_NAMES]).astype(np.float32)
+
+
+# MediaPipe's score for each blendshape on our own avatars at weights 0, 1/4,
+# 1/2, 3/4 and 1: a woman and a man rendered by the studio, averaged, made
+# monotone. MediaPipe's response is far from a straight line (a smile scores
+# 0.65 at half weight and 0.81 at full), and even a neutral face scores some
+# shapes (browOuterUpLeft 0.45). A photo's score is turned back through this
+# into the weight that makes our avatar score the same.
+ARKIT_RESPONSE = {
+    "eyeSquintLeft": [0.28, 0.37, 0.43, 0.48, 0.51], "eyeSquintRight": [0.13, 0.23, 0.28, 0.36, 0.42],
+    "mouthSmileLeft": [0.03, 0.35, 0.65, 0.77, 0.81], "mouthSmileRight": [0.04, 0.37, 0.69, 0.78, 0.83],
+    "mouthLowerDownLeft": [0.0, 0.0, 0.03, 0.14, 0.36], "mouthLowerDownRight": [0.0, 0.0, 0.03, 0.16, 0.45],
+    "mouthUpperUpLeft": [0.02, 0.21, 0.58, 0.68, 0.78], "mouthUpperUpRight": [0.03, 0.29, 0.71, 0.79, 0.87],
+    "browOuterUpLeft": [0.45, 0.54, 0.59, 0.65, 0.7], "browOuterUpRight": [0.26, 0.34, 0.36, 0.43, 0.52],
+    "jawOpen": [0.0, 0.01, 0.2, 0.36, 0.47], "mouthFunnel": [0.0, 0.01, 0.04, 0.1, 0.19],
+    "mouthPucker": [0.04, 0.05, 0.15, 0.43, 0.65], "mouthShrugLower": [0.06, 0.09, 0.1, 0.15, 0.22],
+    "browInnerUp": [0.22, 0.29, 0.36, 0.44, 0.53],
+}
+# Shapes MediaPipe scores on photos but hardly at all on our avatars (frown,
+# press, brow down, sneer ...): their score is the weight, less what a neutral
+# avatar scores.
+ARKIT_REST = {"mouthStretchLeft": 0.05, "mouthStretchRight": 0.14, "mouthShrugUpper": 0.12}
+# Never taken from a photo: the eyes, which the shape fit already gives the
+# photo's opening (gaze and blink readings were MediaPipe's own lean, and
+# squint, whose response tops out at 0.51, moved the eye landmarks further
+# from the photo on all three test faces), and the tongue, which MediaPipe
+# does not score.
+PHOTO_SKIPS = ("eyeLook", "eyeBlink", "eyeWide", "eyeSquint", "tongueOut")
+
+
+def photo_expression(scores: dict) -> dict:
+    """The blendshape weights that give the avatar the face the photo was
+    making, from MediaPipe's scores for the photo (same 52 names)."""
+    out = {}
+    for name in ARKIT_NAMES:
+        if name.startswith(PHOTO_SKIPS) or name not in scores:
+            continue
+        score = scores[name]
+        if name in ARKIT_RESPONSE:
+            curve = np.asarray(ARKIT_RESPONSE[name]) + np.arange(5) * 1e-6   # strictly rising
+            weight = float(np.interp(score, curve, [0.0, 0.25, 0.5, 0.75, 1.0]))
+        else:
+            rest = ARKIT_REST.get(name, 0.0)
+            weight = (score - rest) / (1.0 - rest)
+        if weight >= SHOWN:
+            out[name] = round(min(weight, 1.0), 3)
+    return out

@@ -1065,6 +1065,37 @@ the fitted mesh checked between the two.
   share of the strip just under the edge fell from 26/33/15% to 10/10/10%, and
   no skin shows between the cards.
 
+## The photo's expression, and the eyes
+
+- *The avatar shows the face the photo was making.* MediaPipe scores every
+  photo under the same 52 names the avatar's blendshapes carry, but those
+  scores can't be used as weights directly. MediaPipe scores a neutral avatar
+  above zero on some shapes (browOuterUp 0.26–0.45, squint 0.13–0.28), and its
+  response to our shapes is far from straight (a smile scores 0.35 at a
+  quarter weight and 0.81 at full). Taken raw, the woman's faint smile came
+  out a broad one. So each shape was rendered at five weights on two neutral
+  avatars and read back, and a photo's score now goes back through that curve
+  (`morph.ARKIT_RESPONSE`). Twenty-three shapes MediaPipe hardly reads on an
+  avatar (frown, press, brow down, sneer …) take the score as it is.
+
+  The eyes are left to the shape fit. Gaze and blink readings on photos were
+  MediaPipe's own lean, and squint moved the eye landmarks further from the
+  photo on all three faces.
+
+  Against the photos, with the expression on: ref-man's landmarks are off
+  2.3 → 2.0% of the eye spacing (mouth 3.4 → 2.0), the woman's are about
+  even (2.9 → 3.0, her smile now 0.41/0.33 against the photo's 0.40/0.28), and
+  photo-10's mouth is 5.0 → 3.6. Photo-10's MediaPipe scores move further from
+  the photo's (0.071 → 0.087), because his "neutral" face already carries the
+  laugh the shape fit let in. The file's own weights stay at rest; the studio
+  applies `photoExpression`.
+- *The eyes match the photos by every measure we have.* Iris size against the
+  eye's width (0.44/0.46/0.42 against 0.45/0.46/0.42), the opening, and the
+  white above and below the iris, read from the pixels: none above, in render
+  or photo. MediaPipe's iris landmarks had suggested the iris sat high, but a
+  3° downward turn of the eyeballs (0.008 units at the iris) did not move them
+  at all, so they track the lid contour on a render, not the iris. Reverted.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.
