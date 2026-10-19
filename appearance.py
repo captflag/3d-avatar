@@ -177,9 +177,11 @@ def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dic
     core = cv2.erode(hair.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool) & near
     pixels = photo_rgb[core] if core.sum() >= 50 else photo_rgb[hair & near]
     lab = cv2.cvtColor(pixels.astype(np.uint8).reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float64)
-    # The darker part of the hair: short hair lets scalp show through and lit
-    # strands catch the key light, and both pull a plain median towards grey.
-    lo, hi = np.percentile(lab[:, 0], [10, 40])
+    # The body of the hair, short of its brightest strands and of the scalp
+    # showing through, which pull a plain median towards grey. The darkest
+    # band (10-40%) read the shadows: rendered hair came out 7 L* darker than
+    # the photo's, and a strawberry blonde, whose shadows are redder, copper.
+    lo, hi = np.percentile(lab[:, 0], [25, 60])
     base = np.median(lab[(lab[:, 0] >= lo) & (lab[:, 0] <= hi)], axis=0)
 
     outline = sorted((landmarks[234].x * w, landmarks[454].x * w))
@@ -751,16 +753,21 @@ def beard_underside(head, head_uv: np.ndarray, head_texture, sampler, facial_hai
 # (canonical MediaPipe mesh): the band of skin under the brow.
 UNDER_BROW = [(46, 161), (53, 160), (52, 159), (65, 158), (55, 157),
               (276, 388), (283, 387), (282, 386), (295, 385), (285, 384)]
+# Each brow's upper edge paired with its lower: the brow itself. The photo
+# shades the brow ridge too; lit again, a light brow came out 0.72 of the
+# forehead's brightness against the photo's (and the texture's) 0.80.
+BROW_LINE = [(70, 46), (63, 53), (105, 52), (66, 65), (107, 55),
+             (300, 276), (293, 283), (334, 282), (296, 295), (336, 285)]
 
 
 def under_brow(vertices: np.ndarray, landmark_vertices: np.ndarray) -> np.ndarray:
-    """Per vertex, 0-1, how far it lies in the skin between brow and upper lid.
+    """Per vertex, 0-1, how far it lies on the brow or the skin below it,
+    down to the upper lid.
 
     `landmark_vertices` maps each MediaPipe landmark to the vertex it sits on.
     """
     at = lambda ids: vertices[landmark_vertices[list(ids)]]
-    brow, lid = zip(*UNDER_BROW)
-    centres = (at(brow) + at(lid)) / 2.0
+    centres = np.vstack([(at(a) + at(b)) / 2.0 for a, b in (zip(*UNDER_BROW), zip(*BROW_LINE))])
     reach = 0.2 * np.linalg.norm(at([33])[0] - at([263])[0])
     near = np.linalg.norm(vertices[:, None, :] - centres[None, :, :], axis=2).min(axis=1)
     return np.exp(-(near / reach) ** 2)

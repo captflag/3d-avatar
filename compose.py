@@ -149,6 +149,56 @@ def face_anchor_points(face: trimesh.Trimesh) -> np.ndarray:
     return np.array([left, right, v[1], (v[13] + v[14]) / 2.0, v[152]])
 
 
+# The hair as rendered came out about a fifth more saturated than the photo's
+# at the same lightness (chroma 34 against 28, and 24 against 21): the dyed
+# texture's strands and highlights add it. The dye is given that much less.
+HAIR_DYE_CHROMA = 0.84
+
+
+def dye_colour(rgb) -> np.ndarray:
+    """The colour to dye hair so it renders as `rgb` was read from the photo."""
+    import cv2
+    lab = cv2.cvtColor(np.uint8([[np.clip(rgb, 0, 255)]]), cv2.COLOR_RGB2LAB).astype(np.float64)
+    lab[..., 1:] = 128.0 + (lab[..., 1:] - 128.0) * HAIR_DYE_CHROMA
+    return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)[0, 0].astype(np.float64)
+
+
+# How far round the mouth the photo is carried with it onto the mesh's
+# mouth, as a share of the mouth's width (Gaussian reach): the skin round the
+# lips, and then the lips themselves exactly.
+MOUTH_CARRY = (0.45, 0.15)
+
+
+def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
+    """The placed landmark sheet with its mouth moved onto the mesh's own.
+
+    The photo is baked through this sheet, so wherever its mouth sits is where
+    the photo's lips are painted. The fitted expression takes most of a smile
+    off it, but MakeHuman's units cannot reach a broad laugh: on one photo the
+    sheet's mouth stayed 15% wider than the avatar's closed one, the grin's
+    corners were painted out on the cheeks, and the neutral face read as
+    smiling (MediaPipe 0.64; its shape alone 0.03). The outer lip line is
+    moved in the picture's plane onto the mesh's, and the skin round it with a
+    falloff, so the photo's lips land on the avatar's.
+    """
+    lips = [61, 291] + morph.OUTER_UPPER + morph.OUTER_LOWER
+    width = float(np.linalg.norm(sheet[61, :2] - sheet[291, :2]))
+    kernel = lambda a, b, reach: np.exp(-(np.linalg.norm(a[:, None, :2] - b[None, :, :2], axis=2) / reach) ** 2)
+    pull = vertices[corr[lips], :2] - sheet[lips, :2]
+    # The skin round the mouth: the lips' pull averaged, fading with distance.
+    w = kernel(sheet, sheet[lips], MOUTH_CARRY[0] * width)
+    field = (w @ pull) / np.maximum(w.sum(axis=1, keepdims=True), 1e-12) * w.max(axis=1, keepdims=True)
+    # The lips exactly: an average dilutes the corners' pull with the lip's
+    # middle, which barely moves, and left a third of a laugh's width. What is
+    # left is fitted by a narrow Gaussian radial basis, damped so it does not
+    # ring between the closely spaced lip points.
+    near = kernel(sheet[lips], sheet[lips], MOUTH_CARRY[1] * width)
+    alpha = np.linalg.solve(near + 1e-2 * np.eye(len(lips)), pull - field[lips])
+    moved = sheet.copy()
+    moved[:, :2] += field + kernel(sheet, sheet[lips], MOUTH_CARRY[1] * width) @ alpha
+    return moved
+
+
 def place_face(face: trimesh.Trimesh, vertices: np.ndarray, groups: dict) -> trimesh.Trimesh:
     """Put the fitted face on the skull by anatomy.
 
@@ -669,6 +719,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
+    full_face.vertices = mouth_onto_mesh(full_face.vertices, vertices, corr)
     placed = trim_face_border(full_face)
 
     # The hair as the photo shows it, from a segmentation of the photo: its
@@ -705,7 +756,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             if hair_rgb is None:
                 read = hair_reading["colour"] if hair_reading else None
                 hair_rgb = read if read is not None else hair_colour(photo, landmarks, cheeks)
-            colour = np.clip(hair_rgb * float(item.get("colour_scale", 1.0)), 0, 255).astype(np.uint8)
+            colour = np.clip(dye_colour(hair_rgb) * float(item.get("colour_scale", 1.0)), 0, 255).astype(np.uint8)
         elif item.get("colour") == "from_brows":
             colour = facetexture.brow_colour(photo_rgb, landmarks)
         if item["category"] == "hair" and "group" in item:

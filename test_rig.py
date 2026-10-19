@@ -235,16 +235,39 @@ def check_arkit():
     whole = np.zeros_like(shapes[0]); whole[idx] = off
     assert np.allclose(get["mouthSmileLeft"] + get["mouthSmileRight"], whole, atol=1e-5), "smile halves do not add up"
     # A photo's scores, read back through MediaPipe's measured response: a
-    # smile scored 0.65 is half weight, one at rest level is nothing, the eyes
+    # smile scored what half weight scores is half weight, one at rest is nothing, the eyes
     # are left to the shape fit, and a shape MediaPipe hardly reads on an
     # avatar takes its score as it is.
-    face = morph.photo_expression({"mouthSmileLeft": 0.65, "mouthSmileRight": 0.03, "eyeBlinkLeft": 0.9,
+    half = morph.ARKIT_RESPONSE["mouthSmileLeft"][2]
+    face = morph.photo_expression({"mouthSmileLeft": half, "mouthSmileRight": 0.0, "eyeBlinkLeft": 0.9,
                                    "eyeSquintLeft": 0.5, "browDownLeft": 0.4})
     assert abs(face.get("mouthSmileLeft", 0) - 0.5) < 0.01, f"smile not read back through the response: {face}"
     assert not {"mouthSmileRight", "eyeBlinkLeft", "eyeSquintLeft"} & set(face), f"rest or eyes taken from the photo: {face}"
     assert abs(face.get("browDownLeft", 0) - 0.4) < 1e-6, f"unreadable shape not taken as scored: {face}"
     print("ok  arkit: 52 blendshapes, sided right, eyes turn, jaw carries the teeth, tongue out, halves add up, "
           "photo expression read back")
+
+
+def check_mouth_bake():
+    """A laughing photo's mouth, wider than the avatar's closed one, is moved
+    onto the avatar's mouth before the bake, and the forehead stays put."""
+    import morph
+    from compose import mouth_onto_mesh, place_face
+
+    vertices, groups = load_base()
+    sheet = place_face(morph.canonical_face(), vertices, groups).vertices
+    corr = morph.correspondences(vertices, groups["body"], sheet[:468])
+    grin = sheet.copy()
+    middle = (grin[61, 0] + grin[291, 0]) / 2
+    lips = [61, 291] + morph.OUTER_UPPER + morph.OUTER_LOWER
+    grin[lips, 0] = middle + (grin[lips, 0] - middle) * 1.15
+    moved = mouth_onto_mesh(grin, vertices, corr)
+    width = lambda v: abs(v[61, 0] - v[291, 0])
+    mesh = abs(vertices[corr[61], 0] - vertices[corr[291], 0])
+    left = abs(width(moved) - mesh) / abs(width(grin) - mesh)
+    assert left < 0.3, f"the laugh's mouth stayed {left:.0%} of the way too wide"
+    assert np.linalg.norm(moved[10] - grin[10]) < 1e-3, "the forehead moved with the mouth"
+    print(f"ok  mouth bake: a laughing mouth moved onto the avatar's ({left:.0%} of the gap left), forehead put")
 
 
 def check_expression():
@@ -881,6 +904,7 @@ if __name__ == "__main__":
         check_proportions()
         check_brow_shading()
         check_arkit()
+        check_mouth_bake()
         check_expression()
         check_mhclo()
         check_import()

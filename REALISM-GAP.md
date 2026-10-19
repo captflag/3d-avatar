@@ -1096,6 +1096,50 @@ the fitted mesh checked between the two.
   3° downward turn of the eyeballs (0.008 units at the iris) did not move them
   at all, so they track the lid contour on a render, not the iris. Reverted.
 
+## The laugh in the neutral face, hair colour, light brows
+
+- *The laugh was in the paint, not the shape.* photo-10's neutral avatar
+  read as smiling (MediaPipe 0.63/0.55), but with the head painted one flat
+  colour its shape read 0.03: the photo's grin was baked onto a closed mouth.
+  The bake's landmark sheet is relaxed by the fitted expression, which cannot
+  reach a broad laugh, so its mouth stayed wider than the mesh's (15% on
+  photo-10, 12% even on ref-man), and the grin's corners were painted out on
+  the cheeks. Now the sheet's lip line is moved onto the mesh's own before the
+  bake (`compose.mouth_onto_mesh`): a wide falloff for the skin round the mouth,
+  then a narrow, damped Gaussian radial-basis fit that lands each lip point.
+  An average alone left a third of a laugh's width. Neutral faces now read
+  0.04 (photo-10) and 0.00 (ref-man), and the photo's expression is no longer
+  doubled. The pale patch in photo-10's chin beard is his own: the photo's
+  chin centre is 21 L* lighter than the beard beside it.
+
+  Cost: the expression view's mouth is narrower than a broad photo smile.
+  MakeHuman's smile unit widens the mouth less than a real one does, and the
+  old leak had widened it for free (ref-man's mouth landmarks 2.0 -> 3.6% of the
+  eye spacing with the expression on). MediaPipe's response to our shapes was
+  measured again after this and the lighting change (it depends on both). One
+  curve averaged over two faces now overshoots the woman's faint smile
+  (0.56/0.52 against 0.40/0.28) and fits the men's.
+- *Hair colour read from the body of the hair.* The base colour came from
+  the darkest band of the photo's hair (10-40%): rendered hair was 7 L* darker
+  than the photo's, and the woman's strawberry blonde, whose shadows are
+  redder, came out copper (hue 55 against 60). Read from 25-60%, and the dye
+  given a sixth less saturation (the dyed texture adds that), the woman's
+  hair renders L* 49.8 / chroma 29.5 / hue 61 against the photo's 48.6 / 27.8 /
+  60, ref-man's 35.3 / 20.8 / 58 against 36.5 / 20.8 / 59. photo-10's black
+  hair stays lighter than his photo (13.7 against 8.2): its own highlights.
+- *Light brows, and the eye sockets, were the room's light.* The brow paint
+  is faithful: ref-man's brow is 0.80 of the forehead's brightness in the
+  texture and in the photo. Lit, it fell to 0.72. Roughness, occlusion, sheen
+  and the normals each changed it by under 1 L*; switching off the
+  environment light brought it to the photo's. The room is lit from the
+  ceiling, which lights the upturned forehead far more than the brow and the
+  sockets. Tipping it 30 degrees towards the face (`environmentRotation`)
+  brings ref-man's brows from 23.5 to 15.3 L* under the forehead (photo
+  17.9), the under-brow band from 38 to 24 (photo 16) and the woman's from 39
+  to 28 (photo 25), and skin colour from dE 5.1 to 3.8. Tipped further it
+  matched better still but flattened nose and lips into a pasted-on look.
+  photo-10's harsh-lit photo fit the overhead room better.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.

@@ -576,24 +576,24 @@ def arkit_shapes(vertices: np.ndarray, corr: np.ndarray, groups: dict) -> np.nda
 
 # MediaPipe's score for each blendshape on our own avatars at weights 0, 1/4,
 # 1/2, 3/4 and 1: a woman and a man rendered by the studio, averaged, made
-# monotone. MediaPipe's response is far from a straight line (a smile scores
+# monotone. It depends on how the avatar is baked and lit: measure it again
+# after changing either. MediaPipe's response is far from a straight line (a smile scores
 # 0.65 at half weight and 0.81 at full), and even a neutral face scores some
 # shapes (browOuterUpLeft 0.45). A photo's score is turned back through this
 # into the weight that makes our avatar score the same.
 ARKIT_RESPONSE = {
-    "eyeSquintLeft": [0.28, 0.37, 0.43, 0.48, 0.51], "eyeSquintRight": [0.13, 0.23, 0.28, 0.36, 0.42],
-    "mouthSmileLeft": [0.03, 0.35, 0.65, 0.77, 0.81], "mouthSmileRight": [0.04, 0.37, 0.69, 0.78, 0.83],
-    "mouthLowerDownLeft": [0.0, 0.0, 0.03, 0.14, 0.36], "mouthLowerDownRight": [0.0, 0.0, 0.03, 0.16, 0.45],
-    "mouthUpperUpLeft": [0.02, 0.21, 0.58, 0.68, 0.78], "mouthUpperUpRight": [0.03, 0.29, 0.71, 0.79, 0.87],
-    "browOuterUpLeft": [0.45, 0.54, 0.59, 0.65, 0.7], "browOuterUpRight": [0.26, 0.34, 0.36, 0.43, 0.52],
-    "jawOpen": [0.0, 0.01, 0.2, 0.36, 0.47], "mouthFunnel": [0.0, 0.01, 0.04, 0.1, 0.19],
-    "mouthPucker": [0.04, 0.05, 0.15, 0.43, 0.65], "mouthShrugLower": [0.06, 0.09, 0.1, 0.15, 0.22],
-    "browInnerUp": [0.22, 0.29, 0.36, 0.44, 0.53],
+    "eyeSquintLeft": [0.14, 0.24, 0.35, 0.39, 0.43], "eyeSquintRight": [0.08, 0.16, 0.27, 0.39, 0.43],
+    "mouthSmileLeft": [0.01, 0.15, 0.43, 0.61, 0.72], "mouthSmileRight": [0.01, 0.15, 0.41, 0.58, 0.68],
+    "mouthLowerDownLeft": [0.0, 0.01, 0.05, 0.23, 0.43], "mouthLowerDownRight": [0.0, 0.01, 0.08, 0.29, 0.54],
+    "mouthUpperUpLeft": [0.06, 0.41, 0.73, 0.75, 0.79], "mouthUpperUpRight": [0.07, 0.46, 0.8, 0.82, 0.85],
+    "browOuterUpLeft": [0.47, 0.55, 0.64, 0.71, 0.76], "browOuterUpRight": [0.3, 0.35, 0.44, 0.51, 0.59],
+    "jawOpen": [0.0, 0.01, 0.16, 0.3, 0.4], "mouthFunnel": [0.0, 0.02, 0.04, 0.05, 0.18],
+    "mouthPucker": [0.17, 0.41, 0.76, 0.92, 0.97], "browInnerUp": [0.33, 0.38, 0.44, 0.51, 0.59],
 }
 # Shapes MediaPipe scores on photos but hardly at all on our avatars (frown,
 # press, brow down, sneer ...): their score is the weight, less what a neutral
 # avatar scores.
-ARKIT_REST = {"mouthStretchLeft": 0.05, "mouthStretchRight": 0.14, "mouthShrugUpper": 0.12}
+ARKIT_REST = {"mouthShrugLower": 0.06, "mouthShrugUpper": 0.18}
 # Never taken from a photo: the eyes, which the shape fit already gives the
 # photo's opening (gaze and blink readings were MediaPipe's own lean, and
 # squint, whose response tops out at 0.51, moved the eye landmarks further
