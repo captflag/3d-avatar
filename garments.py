@@ -590,6 +590,69 @@ def short_sides(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict,
     return int(below.sum())
 
 
+# How far round the head the front of a haircut is swept back with it,
+# degrees from straight ahead: all of it within the first, none past the second.
+SWEEP_SPAN = (30.0, 75.0)
+
+
+def sweep_back(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, edge: np.ndarray,
+               hairline_y: float, floor: float = 0.05) -> float:
+    """Lift a haircut's front up and back over the head until it ends at
+    `hairline_y` mid-forehead, without cutting it. Returns the angle, degrees.
+
+    The stock cuts all bring a fringe down to a third of an eye spacing above
+    the brows; the test photos' hair ends twice that high. The hair is turned
+    about the cranium's centre round the ear-to-ear axis, so it moves along
+    the head as combed-back hair does, by the angle that brings `edge` (the
+    haircut's opaque points; those straight ahead set it) to the hairline, and less
+    towards the sides (SWEEP_SPAN); the back does not move. Hair that would
+    end up nearer the scalp than `floor` is pushed back out. Hair that already
+    ends higher than the photo's is left alone.
+    """
+    from scipy.spatial import cKDTree
+
+    skin = np.unique(groups["body"])
+    eyes = vertices[np.unique(np.r_[groups["joint-l-eye"], groups["joint-r-eye"]])].mean(axis=0)
+    cranium = vertices[skin[vertices[skin, 1] > eyes[1]]]
+    centre = np.array([0.0, cranium[:, 1].mean(), (cranium[:, 2].max() + cranium[:, 2].min()) / 2.0])
+
+    # The hair's lowest visible points straight ahead (within 15 degrees).
+    rel = edge - centre
+    ahead = np.degrees(np.abs(np.arctan2(rel[:, 0], rel[:, 2]))) < 15.0
+    if ahead.sum() < 10:
+        return 0.0
+    edge, rel = edge[ahead], rel[ahead]
+    radius = float(np.median(np.hypot(rel[:, 1], rel[:, 2])))
+    lift = np.arcsin(np.clip((hairline_y - centre[1]) / radius, -1.0, 1.0))
+    now = np.arcsin(np.clip((np.percentile(edge[:, 1], 3) - centre[1]) / radius, -1.0, 1.0))
+    turn = float(lift - now)
+    if turn <= 0.0:
+        return 0.0
+
+    p = hair.vertices - centre
+    angle = np.degrees(np.abs(np.arctan2(p[:, 0], p[:, 2])))
+    t = np.clip((SWEEP_SPAN[1] - angle) / (SWEEP_SPAN[1] - SWEEP_SPAN[0]), 0.0, 1.0)
+    a = turn * t * t * (3.0 - 2.0 * t)
+    y, z = p[:, 1].copy(), p[:, 2].copy()
+    p[:, 1] = y * np.cos(a) + z * np.sin(a)
+    p[:, 2] = -y * np.sin(a) + z * np.cos(a)
+    moved = p + centre
+
+    # The forehead is flatter than the circle the hair turned on, so turned
+    # hair stood off it, and from the side the hair's dark inside showed
+    # through the gap. Each moved point is set back to the distance from the
+    # scalp it had before (never nearer than `floor`).
+    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
+    tree = cKDTree(vertices[skin])
+    gap_of = lambda pts, near: ((pts - vertices[near]) * normals[near]).sum(axis=1)
+    before = skin[tree.query(hair.vertices)[1]]
+    keep = np.maximum(gap_of(hair.vertices, before), floor)
+    near = skin[tree.query(moved)[1]]
+    moved += normals[near] * ((keep - gap_of(moved, near)) * (a > 0))[:, None]
+    hair.vertices = moved
+    return float(np.degrees(turn))
+
+
 def enclosed_by_shoe(shoes: trimesh.Trimesh, points: np.ndarray, margin: float = 0.05) -> np.ndarray:
     """Which points a pair of shoes encloses: within their footprint and below
     the lowest point of the opening the foot goes in by, less `margin`.

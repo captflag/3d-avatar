@@ -272,6 +272,36 @@ def check_mouth_bake():
     print(f"ok  mouth bake: a laughing mouth moved onto the avatar's ({left:.0%} of the gap left), forehead put")
 
 
+def check_hairline_sweep():
+    """A stock fringe swept back to a higher hairline: its front edge rises most
+    of the way there, the back of the hair stays put, and nothing sinks into
+    the scalp."""
+    import appearance
+    import garments
+    import trimesh
+    from scipy.spatial import cKDTree
+
+    vertices, groups = load_base()
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    opaque = appearance.opaque_hair(hair)
+    front = lambda pts: pts[(np.abs(pts[:, 0]) < 0.2) & (pts[:, 2] > np.median(pts[:, 2]))]
+    edge = np.percentile(front(opaque)[:, 1], 3)
+    original = hair.vertices.copy()
+    turned = garments.sweep_back(hair, vertices, groups, opaque, edge + 0.3)
+    assert turned > 0, "the fringe was not swept back"
+    risen = np.percentile(front(appearance.opaque_hair(hair))[:, 1], 3) - edge
+    assert risen > 0.2, f"the hairline rose {risen:.2f} of the 0.3 asked"
+    back = original[:, 2] < np.percentile(original[:, 2], 20)
+    assert np.abs(hair.vertices[back] - original[back]).max() < 1e-6, "the back of the hair moved"
+    skin = np.unique(groups["body"])
+    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
+    near = skin[cKDTree(vertices[skin]).query(hair.vertices)[1]]
+    moved = np.linalg.norm(hair.vertices - original, axis=1) > 1e-6
+    gap = ((hair.vertices - vertices[near]) * normals[near]).sum(axis=1)[moved]
+    assert gap.min() > 0.04, f"swept hair sank to {gap.min():.3f} from the scalp"
+    print(f"ok  hairline sweep: fringe turned back {turned:.0f} deg, edge rose {risen:.2f} of 0.30, back kept, off the scalp")
+
+
 def check_expression():
     """A smile is fitted as expression, not identity, and comes off the face.
 
@@ -907,6 +937,7 @@ if __name__ == "__main__":
         check_brow_shading()
         check_arkit()
         check_mouth_bake()
+        check_hairline_sweep()
         check_expression()
         check_mhclo()
         check_import()

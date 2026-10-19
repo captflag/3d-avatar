@@ -1157,6 +1157,65 @@ the fitted mesh checked between the two.
   laughing mouth stays narrower than the photo's (0.67 against 0.80 of the
   eye spacing): an open laugh is more than a smile.
 
+## Tried and set aside: outline correction, a curved short-cut hairline, 16-bit blendshapes
+
+- *The last face-shape gaps are not in the fit.* Read off the renders, the
+  woman's face is 4.6% narrow and 3-4% short, ref-man's 4% short, photo-10's jaw
+  7% narrow. But the mesh's own landmark vertices match the photo to 0.4% (face
+  width 1.597 against 1.591 of the eye spacing, jaw exactly). MediaPipe itself
+  wanders: the same photo mirrored reads up to 2.6% different. Hiding the hair
+  takes ref-man's face height from -3.5% to -1.4%: the template fringe hides
+  the hairline that landmark 10 sits on. What is left is not systematic (face
+  width -4.5, +0.2, -3.3% on the three faces with the hair hidden), so a fixed
+  correction table would mend one face and break another. Closing it needs a
+  render in the loop: render, read with MediaPipe, adjust, render again.
+  photo-10's jaw is his beard's outline, which the fit rightly trusts little;
+  that is beard volume's to fix.
+- *A curved hairline for the short-sides cut* (lowest mid-forehead, rising at
+  the temples, running down to the sideburn) only made the fringe a narrower
+  tab with the same straight edge. Any cut through hair cards leaves a hard
+  geometric edge; a natural one needs strands that thin out (vertex alpha
+  feathered under alpha-to-coverage) or an authored cut. Reverted.
+- *Blendshapes as normalized 16-bit integers* (KHR_mesh_quantization allows
+  SHORT normalized for morph POSITION; min/max then in integers) cut a file
+  8% (3323 -> 3060 KB), and three.js r162 rendered it exploded: it reads
+  normalized sparse values about 32767 times too large. Valid by the spec,
+  broken in the viewer we ship with; reverted. Revisit with dense accessors or
+  a later three.js.
+- *Feathering the hair's lower edge with vertex alpha* (COLOR_0, fading over
+  the last 0.1 above the edge, under alpha-to-coverage) moves the edge, it
+  does not soften it. three.js turns alpha-to-coverage into a one-pixel ramp at
+  the 0.5 cutoff, and these cards are mostly opaque, so texture × vertex alpha
+  crosses 0.5 on one smooth line: a hard edge, set back, over the painted
+  band beneath (dark band under the edge 6.2 -> 8.5% on the woman, 7.6 -> 12.3%
+  on ref-man). Reverted. Strand-by-strand thinning needs alpha that varies
+  along the strands (texture) or blended hair with sorting.
+- *The bigger hairline gap is where the hair ends, not how.* In all three
+  photos the hair ends 0.57-0.66 eye spacings above the brows; on the avatars
+  0.23-0.33. The template fringe covers a third of an eye spacing of forehead
+  the person shows, which is also part of why face height reads short.
+
+## The fringe swept back to the photo's hairline
+
+`read_hair` now reads the photo's hairline (the lowest hair above the brows,
+mid-forehead, in eye spacings), and `garments.sweep_back` turns the haircut's
+front up and back about the cranium's centre until its visible edge sits that
+high on the shaped head: no cards cut, the turn easing off towards the sides
+(30-75 degrees round) so the back does not move. Turned on a circle, the hair
+stood off the flatter forehead and showed its dark inside from the side;
+each moved point is now set back to its old distance from the scalp. Against
+the photos:
+
+| | hair ends above the brows (photo / before / after) | face height (before -> after) |
+|---|---|---|
+| woman | 0.65 / 0.24 / 0.53 | -3.6% -> -2.6% |
+| ref-man | 0.58 / 0.25 / 0.55 | -4.0% -> -1.9% |
+| photo-10 | 0.58 / 0.34 / 0.46 | -2.6% -> -0.7% |
+
+Whole-face landmark error 3.0 -> 2.7 (woman), 2.7 -> 2.5 (ref-man), photo-10
+unchanged at 3.5% of the eye spacing. photo-10's short-sides block still ends
+in a straight edge: that cut's own front, not the sweep.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.
