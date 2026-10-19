@@ -1140,6 +1140,23 @@ the fitted mesh checked between the two.
   matched better still but flattened nose and lips into a pasted-on look.
   photo-10's harsh-lit photo fit the overhead room better.
 
+## A wider smile, and a response curve over three faces
+
+- *The smile now widens the mouth.* MakeHuman's corner puller alone widened
+  it 3-12% at full weight; ref-man's smiling photo is 20% wider than his
+  neutral mouth and photo-10's laugh 33%. `mouthSmile` now takes the
+  retraction unit too (corners drawn outwards): 8-21% at full weight.
+- *MediaPipe reads the same smile differently per face.* At equal weight both
+  faces' corners rise the same (9.4% of the eye spacing at full), yet a quarter
+  weight scored 0.44 on the woman and 0.09 on ref-man. One curve cannot fit
+  every face; it is now averaged over all three test avatars (photo-10's
+  neutral is neutral since the mouth fix). With the expression on, against the
+  photos: the woman's smile reads 0.47/0.46 (photo 0.40/0.28, was 0.56/0.52), her
+  mouth landmarks 2.2% of the eye spacing (best yet); ref-man's 0.62/0.72
+  (photo 0.64/0.72), mouth 3.6 -> 2.9; photo-10's 0.84/0.84 (photo 0.86/0.80). His
+  laughing mouth stays narrower than the photo's (0.67 against 0.80 of the
+  eye spacing): an open laugh is more than a smile.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.

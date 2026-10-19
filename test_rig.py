@@ -231,8 +231,10 @@ def check_arkit():
     tongue = np.unique(groups["helper-tongue"])
     assert get["tongueOut"][tongue, 2].max() > 0.2, "tongueOut does not put the tongue out"
     units = {n: (i, o) for n, i, o in morph.load_expressions()}
-    idx, off = units["mouth-corner-puller"]
-    whole = np.zeros_like(shapes[0]); whole[idx] = off
+    whole = np.zeros_like(shapes[0])
+    for name, k in dict(morph.SPLIT_UNITS)["mouthSmile"].items():
+        idx, off = units[name]
+        whole[idx] += k * off
     assert np.allclose(get["mouthSmileLeft"] + get["mouthSmileRight"], whole, atol=1e-5), "smile halves do not add up"
     # A photo's scores, read back through MediaPipe's measured response: a
     # smile scored what half weight scores is half weight, one at rest is nothing, the eyes
