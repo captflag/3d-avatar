@@ -765,6 +765,12 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                                      float(item.get("hairline_lift", 0.0)))}
             item.pop("y_min", None)
         mesh = build_item(item, colour, vertices)
+        if item["category"] == "hair" and "mhclo" in item and hair_reading and hair_reading.get("hairline"):
+            # The fringe up to where the photo's hair ends, in eye spacings
+            # above the brows on the shaped head.
+            spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
+            hairline_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["hairline"] * spacing
+            garments.sweep_back(mesh, vertices, groups, appearance.opaque_hair(mesh), hairline_y)
         if item["category"] == "brows":
             mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
         if item["category"] in ("teeth", "tongue"):
