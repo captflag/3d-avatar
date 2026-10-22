@@ -320,6 +320,94 @@ def fill_eyes(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
     return cv2.inpaint(np.ascontiguousarray(skin_rgb), opening, 5, cv2.INPAINT_TELEA)
 
 
+# The lash line drawn back along the upper lid after the eye is painted
+# over: its width as a share of the eye's width, and how far the photo's own
+# lash-line darkness is kept (1 = as dark as the photo's).
+LASH_WIDTH = 0.07
+LASH_KEEP = 1.0
+LOWER_LASH = 0.4          # the lower lid's line, as a share of the upper's width and darkness
+# Brows: pixels darker than the brow's surrounding skin are pulled darker by
+# this gain, so a brow blurred by a small photo keeps its density and edge.
+BROW_GAIN = 1.6
+
+
+def paint_lashes(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks) -> np.ndarray:
+    """The upper lash line, as dark as the photo's, drawn on the lid skin just
+    outside the eye opening after fill_eyes has painted the opening over.
+
+    The lashes are what reads as an eye on a face: on the test photo the
+    line along the upper lid was L* 50-57, and the filled lid 98-105, so the
+    eyeballs sat on bare skin and stared. The photo's own colour along that
+    line is read (its darkest half) and drawn back as a thin band."""
+    if len(landmarks) <= max(max(c) for c in EYE_CONTOURS):
+        return skin_rgb
+    h, w = skin_rgb.shape[:2]
+    out = skin_rgb.copy()
+    for contour in EYE_CONTOURS:
+        pts = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in contour])
+        width = max(np.ptp(pts[:, 0]), 1.0)
+        # The upper lid: the contour's second half runs from the inner corner
+        # back to the outer along the upper lid.
+        upper = np.array(contour[8:] + [contour[0]])
+        line = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in upper], np.int32)
+        thick = max(int(round(LASH_WIDTH * width)), 1)
+        lower = np.array(contour[:9])
+        low_line = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in lower], np.int32)
+        sample = np.zeros((h, w), np.uint8)
+        cv2.polylines(sample, [line], False, 1, max(thick, 2))
+        lab = cv2.cvtColor(np.ascontiguousarray(photo_rgb), cv2.COLOR_RGB2LAB).astype(np.float64)
+        pixels = lab[sample.astype(bool)]
+        if len(pixels) < 10:
+            continue
+        dark = pixels[pixels[:, 0] <= np.percentile(pixels[:, 0], 50)].mean(axis=0)
+        colour = cv2.cvtColor(np.uint8([[dark]]), cv2.COLOR_LAB2RGB)[0, 0].astype(np.float64)
+        # On the rim itself (the lid's own edge is where the lashes root) and
+        # a thinner, fainter line along the lower lid.
+        for pts, width_px, keep in ((line, thick, LASH_KEEP), (low_line, max(int(round(thick * LOWER_LASH)), 1), LASH_KEEP * LOWER_LASH)):
+            band = np.zeros((h, w), np.uint8)
+            cv2.polylines(band, [pts], False, 1, width_px)
+            soft = np.clip(cv2.GaussianBlur(band.astype(np.float64), (0, 0), max(width_px * 0.4, 0.6)) * keep, 0.0, 1.0)[..., None]
+            out = (out * (1.0 - soft) + colour * soft).astype(np.uint8)
+    return out
+
+
+def tighten_brows(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
+    """Each brow's hair pulled darker against the skin round it.
+
+    Painted from a small photo the brow spread into a soft band 40% thicker
+    and 25 L* lighter than the photo's (bilinear resampling of a brow a few
+    pixels tall). Inside a region round each brow's landmarks, pixels darker
+    than the region's skin are pushed darker by BROW_GAIN about that skin
+    level, which tightens the edge and restores the density; pixels at or
+    above skin level are left alone."""
+    from facetexture import BROW_LANDMARKS
+    if len(landmarks) <= max(BROW_LANDMARKS):
+        return skin_rgb
+    h, w = skin_rgb.shape[:2]
+    lab = cv2.cvtColor(np.ascontiguousarray(skin_rgb), cv2.COLOR_RGB2LAB).astype(np.float64)
+    ids = np.array(BROW_LANDMARKS).reshape(2, 10)
+    changed = np.zeros((h, w), bool)
+    for brow in ids:
+        pts = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in brow], np.int32)
+        hull = cv2.convexHull(pts)
+        region = np.zeros((h, w), np.uint8)
+        cv2.fillConvexPoly(region, hull, 1)
+        grow = max(int(0.12 * np.ptp(pts[:, 0])), 2)
+        region = cv2.dilate(region, np.ones((2 * grow + 1,) * 2, np.uint8)).astype(bool)
+        if region.sum() < 20:
+            continue
+        skin = np.percentile(lab[..., 0][region], 80)
+        # No darker than the brow's own darkest hairs: on a sharp photo with
+        # dark brows the gain alone took them to black.
+        floor = np.percentile(lab[..., 0][region], 3)
+        deeper = region & (lab[..., 0] < skin)
+        lab[..., 0][deeper] = np.maximum(skin - (skin - lab[..., 0][deeper]) * BROW_GAIN, floor)
+        changed |= deeper
+    out = skin_rgb.copy()
+    out[changed] = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)[changed]
+    return out
+
+
 def fill_mouth(skin_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray | None = None
                ) -> tuple[np.ndarray, bool]:
     """The photo with an open mouth painted over in lip colour.

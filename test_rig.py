@@ -593,6 +593,46 @@ def check_likeness_details():
           f"thin lips thinned, hairline tint solid under the edge (L {np.mean(dark):.0f})")
 
 
+def check_lashes_and_brows():
+    """After the eye opening is painted over, the lash line is drawn back as
+    dark as the photo's along the upper lid, and a brow blurred by a small
+    photo is pulled back to its density; skin away from both is untouched."""
+    import cv2
+    import appearance
+    from generate import fit_face
+
+    photo = HERE / "samples" / "portrait.jpg"
+    if not photo.exists():
+        print("skip lashes and brows check: samples/portrait.jpg is missing")
+        return
+    _, marks, _, upright = fit_face(photo)
+    rgb = np.asarray(upright)
+    h, w = rgb.shape[:2]
+    L = lambda img: cv2.cvtColor(np.ascontiguousarray(img), cv2.COLOR_RGB2LAB)[..., 0].astype(float)
+    contour = appearance.EYE_CONTOURS[1]
+    line = np.array([[marks[i].x * w, marks[i].y * h] for i in contour[8:] + [contour[0]]], np.int32)
+    band = np.zeros((h, w), np.uint8)
+    cv2.polylines(band, [line], False, 1, 2)
+    band = band.astype(bool)
+    filled = appearance.fill_eyes(rgb, marks)
+    lashed = appearance.paint_lashes(filled, rgb, marks)
+    before, after, photo_line = L(filled)[band].mean(), L(lashed)[band].mean(), L(rgb)[band].mean()
+    assert after < before - 15 and abs(after - photo_line) < 20, f"lash line L {photo_line:.0f} in the photo, {before:.0f} filled, {after:.0f} drawn"
+    cheek = (slice(int(marks[50].y * h) - 4, int(marks[50].y * h) + 4), slice(int(marks[50].x * w) - 4, int(marks[50].x * w) + 4))
+    assert np.array_equal(lashed[cheek], filled[cheek]), "the cheek changed with the lashes"
+    brows = appearance.tighten_brows(lashed, marks)
+    from facetexture import BROW_LANDMARKS
+    pts = np.array([[marks[i].x * w, marks[i].y * h] for i in BROW_LANDMARKS[:10]], np.int32)
+    region = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(region, cv2.convexHull(pts), 1)
+    region = region.astype(bool)
+    dark_before = np.percentile(L(lashed)[region], 20)
+    dark_after = np.percentile(L(brows)[region], 20)
+    assert dark_after < dark_before - 5, f"brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}"
+    assert np.array_equal(brows[cheek], lashed[cheek]), "the cheek changed with the brows"
+    print(f"ok  lashes and brows: lash line L {before:.0f} -> {after:.0f} (photo {photo_line:.0f}), brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}, cheek kept")
+
+
 def check_lip_correction():
     """Lips the targets cannot reach are moved there free-form, smoothly: the
     lip landmarks most of the way, the eyes and forehead not at all."""
@@ -1311,6 +1351,7 @@ if __name__ == "__main__":
         check_hair_tangents()
         check_hair_cap()
         check_lip_correction()
+        check_lashes_and_brows()
         check_eye_carry()
         check_likeness_details()
         check_side_paint()

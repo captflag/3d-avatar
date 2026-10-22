@@ -1374,6 +1374,38 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Eyes and brows against the photo
+
+Measured on photo-16, each eye and brow against the photo's (iris spacing
+as the unit; L* 0-255):
+
+- **The lash line was gone.** Along the upper lid the photo reads L* 50-57;
+  the avatar's lid there read 98-105, bare skin, since fill_eyes paints the
+  opening and the lashes over with lid skin, and the eyeballs sat on it and
+  stared. `appearance.paint_lashes` reads the photo's own colour along the
+  upper lid (the darker half of the pixels there) and draws it back on the
+  rim after the fill, 0.07 of the eye's width wide, with a thinner, fainter
+  line along the lower lid. In the painted photo the line is L* 48; on the
+  render it reads 61-76, the rim's curl and a 2-pixel line in a 214-pixel
+  photo taking the rest.
+- **The brows had spread.** Painted from a photo whose brows are a few
+  pixels tall, they came out 40% thicker (27/32 -> 39/37) and lighter
+  (L* 98 -> 123 on one side). `appearance.tighten_brows` pulls each brow's
+  pixels darker than the surrounding skin by 1.6 about that skin level:
+  L* 123 -> 96 and 106 -> 81 against the photo's 98 / 104. The thickness
+  reads the same (38 / 37), the measure taking in the socket's shadow under
+  the brow, and the brow sits 28 above the lid against the photo's 21-23.
+  The catalogue's brow card worn over the paint changed no number.
+- **The whites were a flat bright ellipse.** The lids' shadow in the eye
+  texture is deeper (0.4 -> 0.6 above, and 0.25 below): sclera L* 158 ->
+  148 on the one side, the other unchanged. The iris highlight was two hard
+  blobs: eye roughness 0.05 -> 0.18.
+- **Under the brow** the lid read 12 L* darker than the photo's relative to
+  the cheek, which merged the brow into a thick band: the crevice lift in
+  delight is 0.8 of the deficit instead of 0.6.
+- Unchanged: the eye tilt (one eye 4 degrees more than the photo's), the
+  hooded fold itself, and the brow's height.
+
 ## Hair: the facets, and the creases under them
 
 The hair rendered as a cap of grey triangles: a highlight patch per

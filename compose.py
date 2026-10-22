@@ -82,7 +82,7 @@ HAIR_ANISOTROPY = (0.7, np.pi / 2)
 # cotton and wrong for everything else: skin read as dry plaster and the eyes
 # had no wet highlight. Our own viewer hid it by overriding the values.
 # A catalogue item can set its own `roughness`; these are the defaults.
-ROUGHNESS = {"skin": 0.5, "eyes": 0.05, "hair": 0.45,
+ROUGHNESS = {"skin": 0.5, "eyes": 0.18, "hair": 0.45,
              "top": 0.85, "bottom": 0.85, "shoes": 0.4}
 
 
@@ -814,6 +814,9 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # lip colour so no teeth get baked across the lips.
     skin_rgb, mouth_filled = appearance.fill_mouth(skin_rgb, landmarks, cheeks)
     skin_rgb = appearance.fill_eyes(skin_rgb, landmarks)
+    # The lash line back on the lids, and the brows as dense as the photo's.
+    skin_rgb = appearance.paint_lashes(skin_rgb, photo_rgb, landmarks)
+    skin_rgb = appearance.tighten_brows(skin_rgb, landmarks)
     # A colour cast that puts skin outside the natural range is pulled back.
     skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
