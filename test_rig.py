@@ -377,6 +377,38 @@ def check_hair_volume():
     print(f"ok  hair volume: top rose {risen:.2f} for 0.20 asked, front edge and back kept")
 
 
+def check_hair_tangents():
+    """A card mesh with an anisotropic material goes out with per-vertex
+    tangents: unit length, across the normal, running along u on the
+    texture, with a handedness in the last place. Without them a viewer
+    derives one tangent per triangle and the hair's sheen broke into facets.
+    And the scalp normal a lift follows is smooth across a card."""
+    import garments
+    from skinned_glb import tangents
+
+    # A flat square with u along x: tangents along +x, w = +1.
+    v = np.array([[0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]])
+    f = np.array([[0, 1, 2], [0, 2, 3]])
+    uv = np.array([[0.0, 0], [1, 0], [1, 1], [0, 1]])
+    n = np.tile([0.0, 0, 1], (4, 1))
+    t = tangents(v, f, uv, n)
+    assert np.allclose(t[:, :3], [1, 0, 0], atol=1e-6) and np.all(t[:, 3] == 1.0), f"tangents {t.tolist()}"
+    # v flipped (as glTF texture coordinates are): the direction holds, the handedness flips.
+    t2 = tangents(v, f, uv * [1, -1] + [0, 1], n)
+    assert np.allclose(t2[:, :3], [1, 0, 0], atol=1e-6) and np.all(t2[:, 3] == -1.0), f"flipped tangents {t2.tolist()}"
+
+    vertices, groups = load_base()
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    scalp = garments.scalp_normals(hair.vertices, vertices, groups)
+    assert np.allclose(np.linalg.norm(scalp, axis=1), 1.0, atol=1e-6), "scalp normals not unit"
+    # Along each card edge the normal turns slowly: no two joined vertices differ by more than 30 degrees.
+    e = hair.edges_unique
+    turn = np.degrees(np.arccos(np.clip((scalp[e[:, 0]] * scalp[e[:, 1]]).sum(axis=1), -1, 1)))
+    assert np.percentile(turn, 99) < 30, f"scalp normal turns {np.percentile(turn, 99):.0f} degrees along an edge"
+    print(f"ok  hair tangents: along u, handedness follows the texture's v; scalp normals turn at most "
+          f"{np.percentile(turn, 99):.0f} degrees along a card edge")
+
+
 def check_hair_width():
     """A cut whose outline is narrower over the temples than the photo's is
     pushed out there to the photo's shape, and no further than WIDEN_LIMIT;
@@ -1231,6 +1263,7 @@ if __name__ == "__main__":
         check_hairline_sweep()
         check_hair_volume()
         check_hair_width()
+        check_hair_tangents()
         check_lip_correction()
         check_eye_carry()
         check_likeness_details()

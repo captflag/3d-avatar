@@ -1374,6 +1374,39 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Hair: the facets, and the creases under them
+
+The hair rendered as a cap of grey triangles: a highlight patch per
+triangle, which no amount of colour or shape work changed. Built with each
+suspect off in turn on photo-16, the facets stayed without the strand
+normal map and without the sweep, lift and widening, and vanished without
+the anisotropic highlight. The file carried no tangents: a viewer then
+derives one per triangle from its texture coordinates, and the highlight,
+which runs along the tangent, broke along them. `skinned_glb.tangents`
+now writes per-vertex tangents (along u, across the normal, with the
+handedness) for every part with an anisotropic material.
+
+What was left after that was creases: the lifts moved each hair vertex
+along the normal of the single nearest skin vertex, so two neighbouring
+points on one card could take two different normals and the card folded
+between them. `garments.scalp_normals` averages the nearest twelve by
+inverse distance (the normal now turns at most 23 degrees along a card
+edge). Hair L* against photo-16's, mean / spread / brightest tenth, with
+the fine-scale noise (L* left after a 3-pixel blur):
+
+| | mean | spread | p90 | fine-scale |
+|---|---|---|---|---|
+| photo | 38 | 29 | 78 | 15.0 |
+| facets (before) | 41 | 31 | 81 | 16.7 |
+| tangents | 29 | 29 | 57 | 18.9 |
+| tangents + smooth lifts | 38 | 31 | 78 | 17.5 |
+| isotropic highlight, roughness 0.5 | 34 | 35 | 78 | 19.0 |
+
+The brown and blonde heads keep their earlier numbers (their variation
+is strand colour, not sheen). Facets remain where cards meet, since each
+card has its own tangents; the next step there is welding the cards'
+shared edges.
+
 ## One face audited to the detail: photo-16
 
 A fifth test photo, a tanned man with heavy upper lids, thin lips and a tall

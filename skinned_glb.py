@@ -140,6 +140,35 @@ class _Buffer:
         return len(self.accessors) - 1
 
 
+def tangents(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, normals: np.ndarray) -> np.ndarray:
+    """Per-vertex tangents (xyz, handedness) from the texture coordinates: the
+    direction on the surface along which u increases, summed over each
+    vertex's triangles, made perpendicular to the normal."""
+    v = np.asarray(vertices, dtype=np.float64)
+    t = np.asarray(uv, dtype=np.float64)
+    f = np.asarray(faces)
+    e1, e2 = v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]
+    d1, d2 = t[f[:, 1]] - t[f[:, 0]], t[f[:, 2]] - t[f[:, 0]]
+    det = d1[:, 0] * d2[:, 1] - d2[:, 0] * d1[:, 1]
+    r = np.where(np.abs(det) > 1e-12, 1.0 / np.where(np.abs(det) > 1e-12, det, 1.0), 0.0)[:, None]
+    face_t = (e1 * d2[:, 1:2] - e2 * d1[:, 1:2]) * r
+    face_b = (e2 * d1[:, 0:1] - e1 * d2[:, 0:1]) * r
+    tangent = np.zeros_like(v)
+    bitangent = np.zeros_like(v)
+    for k in range(3):
+        np.add.at(tangent, f[:, k], face_t)
+        np.add.at(bitangent, f[:, k], face_b)
+    n = np.asarray(normals, dtype=np.float64)
+    n = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
+    tangent = tangent - n * (tangent * n).sum(axis=1, keepdims=True)
+    length = np.linalg.norm(tangent, axis=1, keepdims=True)
+    # A vertex with no usable texture gradient takes any direction across the normal.
+    fallback = np.cross(n, np.where(np.abs(n[:, :1]) < 0.9, [[1.0, 0.0, 0.0]], [[0.0, 1.0, 0.0]]))
+    tangent = np.where(length > 1e-9, tangent / np.maximum(length, 1e-9), fallback / np.maximum(np.linalg.norm(fallback, axis=1, keepdims=True), 1e-9))
+    hand = np.where((np.cross(n, tangent) * bitangent).sum(axis=1) < 0.0, -1.0, 1.0)
+    return np.column_stack([tangent, hand]).astype(np.float32)
+
+
 def axis_angle(axis, degrees: float):
     """A glTF rotation quaternion [x, y, z, w]."""
     axis = np.asarray(axis, dtype=np.float64)
@@ -274,6 +303,12 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
             attributes["COLOR_0"] = buf.add(colour, gl.ARRAY_BUFFER, normalized=True)
         if part.uv is not None:
             attributes["TEXCOORD_0"] = buf.add_quantised(part.uv, "uv")
+        if part.anisotropy is not None and part.uv is not None and part.normals is not None:
+            # An anisotropic highlight runs along the tangent. Without one in
+            # the file a viewer derives tangents from each triangle's texture
+            # coordinates, and the hair's sheen broke into grey facets, a
+            # triangle at a time.
+            attributes["TANGENT"] = buf.add(tangents(part.vertices, part.faces, part.uv, part.normals), gl.ARRAY_BUFFER)
 
         index_type = np.uint16 if len(part.vertices) < 65536 else np.uint32
         indices = buf.add(part.faces.reshape(-1).astype(index_type), gl.ELEMENT_ARRAY_BUFFER)

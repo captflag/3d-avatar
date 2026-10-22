@@ -663,6 +663,25 @@ VOLUME_SPAN = ((0.3, 0.8), (60.0, 150.0))
 VOLUME_RAMP = 0.6
 
 
+# How many skin vertices each hair vertex's scalp normal is averaged over.
+SCALP_NEIGHBOURS = 12
+
+
+def scalp_normals(points: np.ndarray, vertices: np.ndarray, groups: dict) -> np.ndarray:
+    """The scalp's normal under each point, averaged over the nearest skin
+    vertices by inverse distance. Taken from the single nearest vertex, two
+    neighbouring points on a card took two different normals, and the lifts
+    (volumise, widen) bent the cards into creases that the hair's highlight
+    drew as facets."""
+    from scipy.spatial import cKDTree
+    skin = np.unique(groups["body"])
+    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
+    distance, index = cKDTree(vertices[skin]).query(points, k=SCALP_NEIGHBOURS)
+    weight = 1.0 / np.maximum(distance, 1e-6)
+    averaged = (normals[skin[index]] * weight[..., None]).sum(axis=1)
+    return averaged / np.maximum(np.linalg.norm(averaged, axis=1, keepdims=True), 1e-9)
+
+
 def volumise(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, rise_y: float) -> float:
     """Lift a haircut's top and front off the scalp until it stands as high as
     `rise_y` over the middle of the forehead. Returns the lift at full weight.
@@ -682,11 +701,10 @@ def volumise(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, rise_y: 
     eyes = vertices[np.unique(np.r_[groups["joint-l-eye"], groups["joint-r-eye"]])].mean(axis=0)
     crown = vertices[np.unique(groups["joint-head-2"])].mean(axis=0)
     centre = vertices[np.unique(groups["joint-head"])].mean(axis=0)
-    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
-    near = skin[cKDTree(vertices[skin]).query(hair.vertices)[1]]
+    scalp = scalp_normals(hair.vertices, vertices, groups)
 
     (low, high), (full, none) = VOLUME_SPAN
-    height = (vertices[near, 1] - eyes[1]) / max(crown[1] - eyes[1], 1e-6)
+    height = (hair.vertices[:, 1] - eyes[1]) / max(crown[1] - eyes[1], 1e-6)
     angle = np.degrees(np.abs(np.arctan2(hair.vertices[:, 0] - centre[0], hair.vertices[:, 2] - centre[2])))
     middle = np.abs(hair.vertices[:, 0] - centre[0]) < 0.3
     front = middle & (hair.vertices[:, 2] > centre[2])
@@ -701,9 +719,9 @@ def volumise(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, rise_y: 
     if need <= 0.0:
         return 0.0
     # The top rises by the lift times how far its normal points up.
-    up = float(np.median((weight * normals[near, 1])[middle & (hair.vertices[:, 1] >= top - 0.05)]))
+    up = float(np.median((weight * scalp[:, 1])[middle & (hair.vertices[:, 1] >= top - 0.05)]))
     lift = need / max(up, 0.3)
-    hair.vertices = hair.vertices + normals[near] * (lift * weight)[:, None]
+    hair.vertices = hair.vertices + scalp * (lift * weight)[:, None]
     return float(lift)
 
 
@@ -754,14 +772,13 @@ def widen(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, brow_y: flo
     push = np.clip(photo / HAIR_RENDER_SPREAD - own, 0.0, WIDEN_LIMIT * own) * spacing
 
     skin = np.unique(groups["body"])
-    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
-    near = skin[cKDTree(vertices[skin]).query(v)[1]]
+    scalp = scalp_normals(v, vertices, groups)
     height = (v[:, 1] - brow_y) / spacing
     # From the top row up the push holds; below the brows it fades out, so the
     # sideburns and the hair over the ears stay as the cut has them.
     amount = np.interp(height, np.r_[rows[0] - 0.25, rows], np.r_[0.0, push])
-    sideways = np.abs(normals[near, 0])
-    hair.vertices = v + normals[near] * (amount * sideways)[:, None]
+    sideways = np.abs(scalp[:, 0])
+    hair.vertices = v + scalp * (amount * sideways)[:, None]
     return push
 
 
