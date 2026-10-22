@@ -184,7 +184,9 @@ CAP_FADE = 0.06
 CAP_RAISE = 0.1
 # How far round each eye the photo is carried onto the mesh's eye, in eye
 # spacings (Gaussian reach): far enough that the brow comes with it.
-EYE_CARRY = 0.5
+# 0.7, faded out at the nose (see eyes_onto_mesh): brow landmark error
+# 3.29 -> 3.03, 4.00 -> 3.85, 4.23 -> 4.00, 5.18 -> 4.67 against 0.5.
+EYE_CARRY = 0.7
 
 
 def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
@@ -235,6 +237,10 @@ def eyes_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) ->
     w = np.exp(-(np.linalg.norm(sheet[:, None, :2] - sheet[None, marks, :2], axis=2)
                  / (EYE_CARRY * spacing)) ** 2)
     field = (w @ pull) / np.maximum(w.sum(axis=1, keepdims=True), 1e-12) * w.max(axis=1, keepdims=True)
+    # Faded out from the eyes down to the nose tip: the mouth and chin are
+    # placed by mouth_onto_mesh and the anatomy, not by the eyes.
+    eye_y, nose_y = float(sheet[marks, 1].mean()), float(sheet[1, 1])
+    field *= np.clip((sheet[:, 1] - nose_y) / max(eye_y - nose_y, 1e-9), 0.0, 1.0)[:, None]
     moved = sheet.copy()
     moved[:, :2] += field
     return moved

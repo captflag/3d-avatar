@@ -1374,6 +1374,32 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## The last open items, each tried
+
+- **Brow height**: the eye carry widened to 0.7 eye spacings and faded
+  out from the eyes to the nose tip, so the brows come with the eyes and
+  the mouth stays put. Brow landmark error better on all four faces
+  (3.29 -> 3.03, 4.00 -> 3.85, 4.23 -> 4.00, 5.18 -> 4.67); whole-face
+  error a wash. Unfaded, 0.7 improved the whole face on three faces
+  (3.71 -> 3.51, 3.04 -> 2.90), but by carrying the painted mouth with the
+  eyes: a lead that the painted mouth sits a little off, not a fix. The
+  brow still sits 28 above the lid by the render's own landmarks (photo
+  21-23): that is the mesh's brow ridge.
+- **Lower lip roll**: each lip's volume from its own height (edge to
+  seam) instead of both from the pair: photo-16's lips +4.6 -> +6.9,
+  ref-woman's whole face 3.71 -> 4.20. Taken out.
+- **photo-10**: the cheek rows at a third of their weight: 3.66 -> 3.60,
+  ref-man 2.27 -> 2.35. A wash; taken out.
+- **Forehead +24**: the de-lighting gain capped at 1.2 left it at +25 and
+  the brow ridge at +26. On this one person only: the key light from above
+  on the photo's forward-tilted forehead. No lever without relighting.
+- **Nose depth from one photo**: a forward bias on the nose targets took
+  the rendered test head's nose from -7.3 to +1.2 mm, but the test head was
+  made by adding nose depth, so the test cannot tell a better fit from a
+  bigger nose for everyone. Not shipped; turned photos remain the answer.
+- **Ears, the swept-back cut**: no landmarks for the one, no CC0 asset for
+  the other.
+
 ## The lower face: cheeks, lighting, mouth
 
 Seventeen things flagged on photo-16's cheeks, mouth, chin and jaw;
