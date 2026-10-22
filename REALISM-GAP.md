@@ -1475,8 +1475,32 @@ opening instead of 0.2 (still 0.2 below, where the lash rim made the ring),
 so the fold a hooded eye creases at is left in the paint. Under-eye L* and
 the ring unchanged; the crease itself is barely more visible at 214 pixels.
 
-Still open on photo-16: the pompadour (no such cut), the lid fold as a
-shape, the forehead +24 under the key light, the ears, and the 214-pixel face.
+**A swept-back cut from the community packs: none usable.** MakeHuman's
+community "Hair 01" pack (hair01_cc0.zip, 25 cuts, every one listed CC0)
+is mostly bobs, braids and long styles; the two short men's cuts in it are
+`culturalibre_hair_02`, whose own .mhclo header says AGPL3 whatever the
+pack page says (not used), and `culturalibre_hair_05` (CC0 in its header,
+by swift502): a low-poly cut of separate clumps that renders as black spikes
+with scalp between them, at half the photo's height. Overlap with photo-16's
+hair 0.06 against short02's 0.59. The "Hair 02" and "Hair 03" packs are
+CC-BY, outside the licence rule. A pompadour needs a cut modelled for it.
+
+**The two arcs across the forehead, ruled out one by one.** They survive
+with the hairline tint off altogether, with the landmark warp eased into
+the forehead affine at the sheet's rim, and with the crease shading off; a
+flat grey head with no maps shows none, and the mesh's midline profile is a
+smooth bulge. So they are in the colour texture, and the one source left is
+the photo's own forehead through the affine map (its faint lines, or the
+segmenter's eroded skin edge), which a sharper photo would settle. The
+easing and the other two changes were taken out again, having moved nothing.
+
+**Lip depth in the correction** (the one-photo trust for the lip contours,
+so the lower lip's roll would follow the photo's guess): lips +6.2 -> +6.4
+by the detector. Taken out.
+
+Still open on photo-16: the pompadour (no usable cut), the lid fold as a
+shape, the forehead +24 under the key light, the lower lip's roll, the
+arcs, the ears, and the 214-pixel face.
 
 ## Measured gaps: what each turned out to be
 
