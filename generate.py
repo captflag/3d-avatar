@@ -27,7 +27,7 @@ import threading
 
 import numpy as np
 import trimesh
-from PIL import Image
+from PIL import Image, ImageOps
 
 import mediapipe as mp
 from mediapipe.tasks.python import vision
@@ -147,18 +147,41 @@ def build_mesh(landmarks, faces: np.ndarray, photo: Image.Image, matrix=None) ->
     )
 
 
-def fit_face(photo_path: pathlib.Path):
-    """Fit the face in `photo_path` and return (mesh, landmarks, result).
-    Raises NoFaceFound if there is no face. Used by generate_avatar and by the
-    full-body composer."""
+def detect(photo: Image.Image):
     with _landmarker_lock:
-        image = mp.Image.create_from_file(str(photo_path))
-        result = get_landmarker().detect(image)
+        return get_landmarker().detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.asarray(photo)))
+
+
+def stand_up(photo_path: pathlib.Path):
+    """The photo turned so the head is upright, and the landmarks found on it.
+
+    A phone's EXIF orientation is applied, then the photo is turned by whole
+    quarter turns until the forehead (landmark 10) is above the chin (152).
+    Everything downstream reads image rows as up and down, so a photo on its
+    side gave a bald avatar. A head merely tilted is left as it is."""
+    photo = ImageOps.exif_transpose(Image.open(photo_path)).convert("RGB")
+    result = detect(photo)
+    if result.face_landmarks:
+        top, chin = result.face_landmarks[0][10], result.face_landmarks[0][152]
+        w, h = photo.size
+        roll = np.degrees(np.arctan2((top.x - chin.x) * w, (chin.y - top.y) * h))
+        turns = round(roll / 90) % 4
+        if turns:
+            photo = photo.rotate(90 * turns, expand=True)   # counter-clockwise
+            result = detect(photo)
+    return photo, result
+
+
+def fit_face(photo_path: pathlib.Path):
+    """Fit the face in `photo_path` and return (mesh, landmarks, result, photo),
+    `photo` being the upright RGB image the landmarks belong to: read the photo
+    from here, not from the file. Raises NoFaceFound if there is no face. Used
+    by generate_avatar and by the full-body composer."""
+    photo, result = stand_up(photo_path)
 
     if not result.face_landmarks:
         raise NoFaceFound(photo_path.name)
 
-    photo = Image.open(photo_path)
     faces = load_canonical_faces()
     landmarks = result.face_landmarks[0]
     matrix = (
@@ -171,7 +194,7 @@ def fit_face(photo_path: pathlib.Path):
     assert len(mesh.vertices) == len(landmarks), "a vertex per landmark"
     assert faces.max() < len(landmarks), "topology refers to a landmark that exists"
     assert len(mesh.visual.uv) == len(mesh.vertices), "a UV per vertex"
-    return mesh, landmarks, result
+    return mesh, landmarks, result, photo
 
 
 def expression_of(result) -> dict:
@@ -190,8 +213,7 @@ def generate_avatar(photo_path: pathlib.Path, out_path: pathlib.Path) -> dict:
     """Fit a face from `photo_path`, write `out_path` (.glb) and its sidecar
     JSON, and return the sidecar contents. Raises NoFaceFound if there is no
     face in the photo."""
-    mesh, landmarks, result = fit_face(photo_path)
-    photo = Image.open(photo_path)
+    mesh, landmarks, result, photo = fit_face(photo_path)
     faces = load_canonical_faces()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -124,7 +124,7 @@ def check_alignment():
         print("skip alignment check: samples/portrait.jpg is missing")
         return
     vertices, groups = load_base()
-    face, _, _ = fit_face(photo)
+    face, *_ = fit_face(photo)
     average = place_face(morph.canonical_face(), vertices, groups).vertices
     person = place_face(face, vertices, groups).vertices
     corr = morph.correspondences(vertices, groups["body"], average[:468])
@@ -480,9 +480,8 @@ def check_delight():
     if not photo.exists():
         print(f"ok  delight: synthetic lighting removed ({spread:.2%} left); portrait check skipped")
         return
-    from PIL import Image
-    _, marks, _ = fit_face(photo)
-    rgb = np.asarray(Image.open(photo).convert("RGB"))
+    _, marks, _, upright_photo = fit_face(photo)
+    rgb = np.asarray(upright_photo)
     h, w = rgb.shape[:2]
     cheeks = np.array([[marks[i].x * w, marks[i].y * h] for i in SKIN_LANDMARKS])
     out, report, mask = delight.delight(rgb, marks, load_canonical_faces(), cheeks)
@@ -532,13 +531,24 @@ def check_appearance():
     if photo.exists() and appearance.SEGMENTER_TASK.exists():
         from PIL import Image
         from generate import fit_face
-        _, marks, _ = fit_face(photo)
-        rgb = np.asarray(Image.open(photo).convert("RGB"))
+        _, marks, _, upright_photo = fit_face(photo)
+        rgb = np.asarray(upright_photo)
         hair = appearance.read_hair(rgb, marks, appearance.segment(rgb))
         assert pick(hair, "x") == "hair_short01", f"close-cropped hair read as {pick(hair, 'x')}"
         assert max(hair["colour"]) < 140, f"dark grey hair read as {hair['colour'].tolist()}"
         _, family = appearance.iris_colour(rgb, marks)
         assert family in ("dark brown", "brown"), f"brown eyes read as {family}"
+
+        # A photo on its side is stood up before anything reads it: a sideways
+        # head once read as bald.
+        with tempfile.TemporaryDirectory() as tmp:
+            sideways = pathlib.Path(tmp) / "sideways.jpg"
+            Image.open(photo).rotate(-90, expand=True).save(sideways, quality=95)
+            _, marks, _, upright_photo = fit_face(sideways)
+            rgb = np.asarray(upright_photo)
+            turned = appearance.read_hair(rgb, marks, appearance.segment(rgb))
+        assert pick(turned, "x") == "hair_short01", f"a sideways photo's hair read as {pick(turned, 'x')}"
+        assert abs(turned["amount"] - hair["amount"]) < 0.05, f"sideways hair amount {turned['amount']} vs {hair['amount']}"
 
     outfit = ASSET_DIR / "mh_system" / "clothes" / "male_casualsuit01" / "male_casualsuit01.mhclo"
     if outfit.exists():
@@ -588,10 +598,9 @@ def check_finishing():
 
     photo = HERE / "samples" / "portrait.jpg"
     if photo.exists():
-        from PIL import Image
         from generate import fit_face
-        _, marks, _ = fit_face(photo)
-        rgb = np.asarray(Image.open(photo).convert("RGB"))
+        _, marks, _, upright_photo = fit_face(photo)
+        rgb = np.asarray(upright_photo)
         h, w = rgb.shape[:2]
         mouth = np.zeros((h, w), np.uint8)
         cv2.fillPoly(mouth, [np.array([[marks[i].x * w, marks[i].y * h] for i in delight.INNER_LIPS], np.int32)], 1)

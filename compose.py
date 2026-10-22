@@ -661,8 +661,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         )
 
     raw, groups = load_base()
-    face, landmarks, result = fit_face(photo_path)
-    photo = Image.open(photo_path)
+    face, landmarks, result, photo = fit_face(photo_path)
 
     # A man's or a woman's body first, then the face fitted on top of it.
     base = morph.body_for(raw, gender)
