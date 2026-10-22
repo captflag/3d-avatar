@@ -17,8 +17,9 @@ import numpy as np
 from PIL import Image
 import pygltflib as gl
 
-from catalogue import build_item, items_by_id, load_base
+from catalogue import build_item, items_by_id, load_base, load_base_uv
 from compose import compose, rest_pose
+from generate import load_canonical_faces
 from garments import GARMENT_DIR, deform, make_test_vest, skinning_matrices, transfer_weights
 from rig import MAX_INFLUENCES, load_skeleton, weight_table
 from skinned_glb import axis_angle
@@ -428,6 +429,93 @@ def check_eye_carry():
           f"mouth and chin {share([152, 17, 0]):.2f}")
 
 
+def check_likeness_details():
+    """The small things that each cost a likeness on one photo: skin written
+    darker by the renderer's lift and no brighter than the photo; a closed
+    mouth left closed; thin lips thinned at the volume targets; and the
+    hairline tint solid under the hair's edge, not spared for the photo's
+    forehead there."""
+    import cv2
+    import appearance
+    import delight
+    import morph
+    from PIL import Image
+    from compose import place_face
+
+    # Skin: a flat mid-tan face under even light comes back a third darker in
+    # linear luminance, and a bright one no brighter than the ceiling.
+    canon = load_canonical_faces()
+    lab = lambda rgb: cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2LAB)[0, 0, 0]
+    class Mark:
+        def __init__(self, x, y, z=0.0):
+            self.x, self.y, self.z = x, y, z
+    face = morph.canonical_face().vertices
+    xy = face[:, :2] - face[:, :2].min(axis=0)
+    xy = xy / xy.max() * 0.6 + 0.2
+    marks = [Mark(float(x), float(1.0 - y)) for x, y in xy]
+    photo = np.full((300, 300, 3), (190, 150, 125), np.uint8)
+    cheeks = np.array([[m.x * 300, m.y * 300] for m in (marks[50], marks[280], marks[205], marks[425])])
+    out, report, mask = delight.delight(photo, marks, canon, cheeks)
+    shown = delight.to_linear(photo[0, 0].astype(float)) @ [0.2126, 0.7152, 0.0722]
+    got = delight.to_linear(out[mask].astype(float)) @ [0.2126, 0.7152, 0.0722]
+    ratio = float(np.median(got)) / shown
+    assert abs(ratio * delight.RENDER_LIFT - 1.0) < 0.12, f"skin written at {ratio:.2f} of the photo's, lift {delight.RENDER_LIFT}"
+
+    # Mouth: lips 0.7% of the mouth's width apart stay as the photo has them.
+    rgb = np.full((300, 300, 3), (200, 160, 140), np.uint8)
+    closed = [Mark(m.x, m.y) for m in marks]
+    closed[14] = Mark(closed[13].x, closed[13].y)          # inner lips touching
+    filled, was_open = appearance.fill_mouth(rgb, closed, cheeks)
+    assert not was_open, "a closed mouth was taken for open"
+
+    # Lips: a photo whose lips are three quarters the skull's height sets the
+    # thinning targets, and clears the thickening ones.
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    names = [n for n, _, _ in morph.load_targets()]
+    person = vertices[corr].copy()
+    mid = (person[0] + person[17]) / 2
+    person[0] = mid + 0.75 * (person[0] - mid)
+    person[17] = mid + 0.75 * (person[17] - mid)
+    weights = np.zeros(len(names))
+    weights[names.index("mouth/mouth-lowerlip-volume-incr")] = 0.5
+    weights = morph.lip_volume(weights, names, vertices, corr, person)
+    assert weights[names.index("mouth/mouth-lowerlip-volume-decr")] > 0.5, "thin lips did not thin the lower lip"
+    assert weights[names.index("mouth/mouth-lowerlip-volume-incr")] == 0.0, "the thickening target was left on"
+
+    # Hairline: on a head with hair points down to a line, the texels just
+    # below that line are tinted though the photo shows forehead there.
+    uv_all, uv_groups = load_base_uv()
+    from compose import head_island, island_uv
+    body_faces = groups["body"]
+    in_head = head_island(vertices, groups, body_faces, uv_groups["body"])
+    faces, uv_faces = body_faces[in_head], uv_groups["body"][in_head]
+    uv = island_uv(uv_all, uv_faces)
+    brow = vertices[corr[[105, 334]], 1].mean()
+    spacing = np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2])
+    line_y = brow + 0.35 * spacing
+    hair = vertices[np.unique(faces)]
+    hair = hair[hair[:, 1] > line_y] + [0.0, 0.0, 0.05]
+    plain = Image.new("RGB", (512, 512), (200, 160, 140))
+    spare = np.ones(len(vertices))
+    tinted = np.asarray(appearance.hairline_tint(plain, vertices, faces, uv, uv_faces, hair, (30, 25, 24), spare=spare))
+    used = np.unique(faces)
+    ahead = vertices[used, 2] > np.median(vertices[used, 2])
+    front = used[ahead & (np.abs(vertices[used, 0]) < 0.25 * spacing) & (vertices[used, 1] < line_y)
+                 & (vertices[used, 1] > line_y - 0.9 * appearance.HAIRLINE_SOLID)]
+    assert len(front), "no forehead vertex just under the line"
+    rows = [np.nonzero(faces == v) for v in front]
+    dark = []
+    for v, hit in zip(front, rows):
+        i = uv_faces[hit[0][0], hit[1][0]]
+        x, y = int(uv[i, 0] * 511), int((1 - uv[i, 1]) * 511)
+        dark.append(lab(tinted[y, x]))
+    assert np.mean(dark) < lab((200, 160, 140)) - 40, f"under the edge the skin stayed L {np.mean(dark):.0f}"
+    print(f"ok  likeness details: skin at {ratio:.2f} of the photo for lift {delight.RENDER_LIFT}, closed mouth kept, "
+          f"thin lips thinned, hairline tint solid under the edge (L {np.mean(dark):.0f})")
+
+
 def check_lip_correction():
     """Lips the targets cannot reach are moved there free-form, smoothly: the
     lip landmarks most of the way, the eyes and forehead not at all."""
@@ -670,10 +758,18 @@ def check_delight():
     h, w = rgb.shape[:2]
     cheeks = np.array([[marks[i].x * w, marks[i].y * h] for i in SKIN_LANDMARKS])
     out, report, mask = delight.delight(rgb, marks, load_canonical_faces(), cheeks)
-    assert report["exposure"] == 1.0, "skin within the natural range was darkened"
+    # Skin within the natural range keeps the photo's own brightness, less
+    # the renderer's lift (delight.RENDER_LIFT), so it renders as the photo shows it.
+    luma = np.array([0.2126, 0.7152, 0.0722])
+    at = (cheeks[:, 1].astype(int), cheeks[:, 0].astype(int))
+    shown = np.median(delight.to_linear(rgb[at]) @ luma)
+    written = np.median(delight.to_linear(out[at]) @ luma)
+    assert abs(written * delight.RENDER_LIFT / shown - 1.0) < 0.12,         f"cheeks written at {written / shown:.2f} of the photo's for a lift of {delight.RENDER_LIFT}"
     import cv2
     far = cv2.dilate(mask.astype(np.uint8), np.ones((51, 51), np.uint8)) == 0
-    assert np.abs(out[far].astype(int) - rgb[far]).max() <= 1, "pixels away from the face changed"
+    # Away from the face only the exposure factor applies, the same to every pixel.
+    scaled = delight.to_srgb(delight.to_linear(rgb) * report["exposure"])
+    assert np.abs(out[far].astype(int) - scaled[far].astype(int)).max() <= 1, "pixels away from the face changed"
 
     bright = delight.to_srgb(delight.to_linear(rgb) * 1.8)        # an overexposed copy
     out, report, _ = delight.delight(bright, marks, load_canonical_faces(), cheeks)
@@ -1137,6 +1233,7 @@ if __name__ == "__main__":
         check_hair_width()
         check_lip_correction()
         check_eye_carry()
+        check_likeness_details()
         check_side_paint()
         check_expression()
         check_mhclo()

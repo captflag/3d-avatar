@@ -275,11 +275,24 @@ def hair_style(reading: dict | None, default: str) -> str | None:
 # redder. Measured on the four test photos: L -7 to -30, a* +5 to +13, b* 0 to
 # -11.
 LIP_FROM_CHEEK = np.array([-15.0, 9.0, -4.0])
+# A mouth counts as open when the gap between the inner lips at its middle is
+# this share of its width: 0.000-0.007 on four closed test mouths, 0.16-0.19
+# on two laughing ones.
+MOUTH_OPEN = 0.05
 
 
 # MediaPipe's eye contours, each a closed loop round the opening.
 EYE_CONTOURS = ([33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
                 [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466])
+
+
+# How far past the eye opening the lid skin is painted in, as a share of the
+# eye's width: below, the lash line and the lid's rim (at 0.12 a dark rim of
+# lashes was left round each eye and stretched over the mesh's lid as a
+# ring); above, less, so the upper lid's crease a hooded eye folds at stays
+# in the paint.
+EYE_FILL_GROW = 0.2
+EYE_FILL_GROW_UP = 0.1
 
 
 def fill_eyes(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
@@ -297,10 +310,13 @@ def fill_eyes(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
     opening = np.zeros((h, w), np.uint8)
     for contour in EYE_CONTOURS:
         poly = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in contour], np.int32)
-        grow = max(int(0.12 * np.ptp(poly[:, 0])), 1)     # past the lashes, to lid skin
+        grow = max(int(EYE_FILL_GROW * np.ptp(poly[:, 0])), 1)     # past the lashes, to lid skin
+        up = max(int(EYE_FILL_GROW_UP * np.ptp(poly[:, 0])), 1)
         eye = np.zeros((h, w), np.uint8)
         cv2.fillPoly(eye, [poly], 255)
-        opening |= cv2.dilate(eye, np.ones((2 * grow + 1,) * 2, np.uint8))
+        # The kernel reaches `grow` below the eye and `up` above it (image y
+        # runs down, so rows above the anchor grow the mask downwards).
+        opening |= cv2.dilate(eye, np.ones((up + grow + 1, 2 * grow + 1), np.uint8), anchor=(grow, grow))
     return cv2.inpaint(np.ascontiguousarray(skin_rgb), opening, 5, cv2.INPAINT_TELEA)
 
 
@@ -329,7 +345,12 @@ def fill_mouth(skin_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray | None 
     opening = np.zeros((h, w), np.uint8)
     cv2.fillPoly(opening, [poly], 255)
     mouth_w = max(np.ptp(poly[:, 0]), 1)
-    if opening.sum() / 255 < 0.02 * mouth_w * mouth_w:       # lips already together
+    # Lips already together: judged by the gap at the mouth's middle, not the
+    # polygon's area. A closed mouth's inner contour still rasterises to a
+    # line of pixels along its width, which on a 38-pixel mouth passed the
+    # area test, and the closed lips were repainted as parted, flat pink ones.
+    gap = np.hypot((landmarks[13].x - landmarks[14].x) * w, (landmarks[13].y - landmarks[14].y) * h)
+    if gap < MOUTH_OPEN * mouth_w:
         return skin_rgb, False
 
     grow = max(int(0.04 * mouth_w), 1)
@@ -436,9 +457,14 @@ def opaque_hair(mesh, per_face: int = 12) -> np.ndarray:
 HAIR_COVER_REACH = 0.015
 
 
+# How far below the hair's lowest strands the hairline tint stays solid (mesh
+# units, ~10 cm each) before it fades into wisps.
+HAIRLINE_SOLID = 0.06
+
+
 def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray,
                   uv_faces: np.ndarray, hair_points: np.ndarray, hair_rgb,
-                  fade: float = 0.32, strength: float = 0.85, spare: np.ndarray | None = None):
+                  fade: float = 0.15, strength: float = 0.85, spare: np.ndarray | None = None):
     """Paint a soft hairline onto the skin under and just below the hair.
 
     Hair cards end in a row on the forehead, so the hair met the skin in a
@@ -479,11 +505,23 @@ def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarr
     edge = np.interp(np.arange(bins), np.arange(bins)[known], edge[known], period=bins)
     edge = np.convolve(np.r_[edge[-2:], edge, edge[:2]], np.ones(5) / 5, mode="valid")
 
-    line = np.interp(angle(vertices) / (360.0 / bins), np.arange(bins), edge, period=bins)
-    t = np.clip(1.0 - (line - vertices[:, 1]) / fade, 0.0, 1.0)
+    # Per texel, not per vertex: the forehead is four or five vertices tall,
+    # and a tint set at the vertices was interpolated across the triangles
+    # between, so the edge smeared into a 0.3 eye-spacing gradient of pale
+    # skin under the hair. Each texel's place on the head is rasterised and
+    # its tint computed there.
+    size = texture.size[0]
+    at = np.dstack([rasterize(vertices[:, k], faces, uv, uv_faces, size, fill=np.nan) for k in range(3)])
+    on = ~np.isnan(at[..., 1])
+    tex_angle = np.degrees(np.arctan2(at[..., 0] - centre[0], at[..., 2] - centre[1])) % 360.0
+    line = np.interp(tex_angle / (360.0 / bins), np.arange(bins), edge, period=bins)
+    # Solid for HAIRLINE_SOLID below the edge, then fading over `fade`. The
+    # edge is a few of the lowest strands per slice, smoothed round the head;
+    # the cards' coverage thins out well below it.
+    t = np.clip(1.0 - (line - at[..., 1] - HAIRLINE_SOLID) / fade, 0.0, 1.0)
     # Strong under the cards, so gaps between strands show hair colour rather
     # than bare skin, and falling off fastest near the edge's foot.
-    tint = t ** 1.6 * strength
+    weight = np.where(on, t ** 1.6 * strength, 0.0)
     if spare is not None:
         # Only where no hair lies in front, as the camera sees it: under the
         # cards the tint is what fills the gaps between strands, photo skin or
@@ -502,20 +540,28 @@ def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarr
         inside = (vx >= 0) & (vx < shape[0]) & (vy >= 0) & (vy < shape[1])
         covered = np.zeros(len(vertices), bool)
         covered[inside] = front[vy[inside], vx[inside]] > vertices[inside, 2]
-        tint = tint * (1.0 - np.clip(spare, 0.0, 1.0) * ~covered)
-    weight = rasterize(tint, faces, uv, uv_faces, texture.size[0], fill=0.0)
+        bare = rasterize(np.clip(spare, 0.0, 1.0) * ~covered, faces, uv, uv_faces, size, fill=0.0)
+        # Not in the plateau under the edge: the photo's forehead map reaches
+        # up to the segmenter's hairline, which runs through the hair's
+        # sparse lowest strands, and sparing the tint there left pale skin
+        # showing between the cards' tips (a 0.24 eye-spacing band, L* 137,
+        # against the photo's 0.13 and 117).
+        # Eased over 0.12 units: a step of 0.05 drew the cut as a row of dots across the forehead.
+        plateau = np.nan_to_num(np.clip((line - at[..., 1] - HAIRLINE_SOLID) / 0.12, 0.0, 1.0), nan=1.0)
+        weight = weight * (1.0 - bare * plateau)
     # Fine hairs, not a smooth shadow: where the tint fades, it breaks into
     # scattered short strands that thin out downwards, as a real hairline
     # does. A smooth fade under the cards' hard lower edge read as a shelf.
     # The strands run up the head, which on the head's UV island is across the
     # texture: stretched down the image instead, they lay across the forehead
     # as a band of horizontal dashes.
-    size = texture.size[0]
-    tinted = tint[faces].mean(axis=1) > 0.05
+    corners = uv[uv_faces].mean(axis=1)
+    row = np.clip(((1.0 - corners[:, 1]) * (size - 1)).astype(int), 0, size - 1)
+    col = np.clip((corners[:, 0] * (size - 1)).astype(int), 0, size - 1)
+    tinted = weight[row, col] > 0.05
     if tinted.sum() < 3:
         return texture
-    corners = uv[uv_faces[tinted]].mean(axis=1)
-    rise = np.linalg.lstsq(np.c_[corners, np.ones(len(corners))],
+    rise = np.linalg.lstsq(np.c_[corners[tinted], np.ones(int(tinted.sum()))],
                            vertices[faces[tinted], 1].mean(axis=1), rcond=None)[0][:2]
     fine, long = max(size / 1400.0, 0.6), max(size / 350.0, 1.5)
     across = bool(abs(rise[0]) > abs(rise[1]))  # height changes along u: strands run along x
@@ -523,7 +569,7 @@ def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarr
                              sigmaX=long if across else fine, sigmaY=fine if across else long)
     hairs = (hairs - hairs.mean()) / max(float(hairs.std()), 1e-9)
     solid = np.clip((weight / max(strength, 1e-6) - 0.55) / 0.35, 0.0, 1.0)
-    wisps = np.clip(weight * (0.6 + 0.9 * hairs), 0.0, strength)
+    wisps = np.clip(weight * (0.7 + 0.6 * hairs), 0.0, strength)
     weight = solid * weight + (1.0 - solid) * wisps
     root = np.asarray(hair_rgb, dtype=np.float64) * 0.7
     rgb = np.asarray(texture.convert("RGB")).astype(np.float64)

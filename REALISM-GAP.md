@@ -1374,6 +1374,110 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## One face audited to the detail: photo-16
+
+A fifth test photo, a tanned man with heavy upper lids, thin lips and a tall
+slicked-back cut, 214 pixels across the face. Twenty issues were flagged
+against it (shape by feature, colour by region, zoomed crops) and the five
+largest fixed, each measured before and after on all five faces. Shape in %
+of the photo's iris spacing, colour as L* on 0-255.
+
+**Skin written for the renderer's lift.** Every face's cheek rendered at
+L* 197-212 whatever the photo's (173-222): the de-lighting left the
+brightness wherever its gain put it, and the renderer's lights brighten skin
+by a third in linear luminance (a flat grey head rendered at 1.3-1.4 times
+its albedo at the cheek; the sheen adds under 2%). Light faces hit the
+albedo ceiling and happened to come out right; the tan face rendered 33 L*
+light. `delight` now keeps the cheeks at the brightness the photo showed,
+divided by RENDER_LIFT (1.35), then the ceiling. photo-16 cheeks +33 -> +15,
+chin +40 -> +16, under the eyes +38 -> +14; the three light faces unchanged
+(their photos are flash-lit above the ceiling). The forehead stays +24: the
+key light from above.
+
+**Eyelids corrected to the photo's contours.** Every face rendered its eyes
+1-4% more open than the photo's (lower lids low). The eye contours now join
+the lips in the free-form correction. Eye opening, aligned on eye corners
+and nose bridge: ref-man +1.0/+1.5 -> 0.0/+0.1, ref-woman +2.1/+1.8 ->
++0.2/+1.1, photo-10 +1.8/+3.1 -> -0.1/+0.9, photo-16 +3.0/+3.4 -> +1.6/+2.2
+(all before the eye texture darkened, which the detector reads as a smaller
+eye). Treating the photo's eyeSquint (0.57 on a relaxed face) as identity
+instead of expression was tried first and moved nothing: the identity targets
+gave the same lids. Not done: the hooded upper-lid fold itself, which is a
+texture the lid skin never gets.
+
+**Eye texture and rim.** The eye texture is written darker by the same lift
+(the whites rendered at 246 against the photos' 216, the iris a shade light
+for "dark brown"), and the lid skin is painted in 0.2 of the eye's width past
+the opening (0.12 left a rim of lashes that the lid stretched into a dark
+ring: under-eye L* -35 against the photo on one side; now +14).
+
+**Lips.** The mesh's lip contour was already right (20.2 against the photo's
+19.6, in the fit's frame) but the lips rendered as a full, parted pout: (1)
+the closed mouth was taken for open, the inner-lip polygon rasterising to a
+line of pixels that passed the area test on a 38-pixel mouth, and the lips
+repainted flat pink (now judged by the gap at the mouth's middle,
+MOUTH_OPEN 0.05 of the width: 0.000-0.007 closed, 0.16-0.19 laughing); (2)
+the landmarks see no lip bulk, and the fit had set lowerlip-height-decr 0.44
+against -incr 0.38 (`morph.lip_volume` now sets the volume and height
+targets from the lip-height ratio, LIP_GAIN 2.5; at 4.0 ref-man's lips came
+out 2.9 too thin and mouths widened); (3) the inner lips met 1.4 apart and
+teeth showed (`seal_lips`). The detector still reads photo-16's lips 7-10
+taller than the photo's; to the eye they are now thin, with the lower lip's
+roll shaded below. ref-woman's lips read +7 as before.
+
+**Hairline band.** A pale strip of forehead with a few wisps between the
+cards and the painted hairline, 0.28 iris spacings tall against the photo's
+0.13 transition. Three causes, in order found: the tint was computed per
+vertex and the forehead is four vertices tall, so the edge smeared across
+the triangles (now per texel); the fade was 0.32 units from the edge itself
+(now solid for 0.06 below it, fading over 0.15); and the photo-forehead
+sparing reached up through the hair's sparse lowest strands (now off in
+that plateau). Band 0.28 -> 0.16, solid hair starting 1.04 -> 0.90 above
+the brows against the photo's 0.93. The strip that remains is the wisps.
+
+Whole-face landmark error, base -> now: ref-man 2.40 -> 2.48, ref-woman
+3.88 -> 3.61, photo-10 3.25 -> 3.51, photo-14 3.07 -> 3.00. Brows better on
+all four (3.78 -> 2.40, 5.74 -> 4.59, 4.50 -> 3.75, 7.04 -> 4.79); photo-10's
+nose and mouth read worse (4.28 -> 4.61, 2.41 -> 2.79), the laughing mouth
+pulled narrower by the lip targets.
+
+**Tried and taken out: the cut's top fitted column by column to the
+photo's silhouette** (`read_hair` reading the hair's top at eleven columns,
+a `garments.crown` pushing each column's vertices up to it). Measured from
+the vertices the cut's top was already within 0.2 eye spacings of the
+photo's in every column, so the lift was small, and what it did push (along
+the scalp's normals, divided by their upward share) heaped the hair into a
+lopsided mass. The pompadour is not a silhouette problem from the front: it
+is the front-to-back sweep and the strands, which a stock cut's cards have
+no texture for.
+
+The hairline's wisps were drawn along two arcs across the forehead: the
+cut-off of the tint where the photo's forehead takes over stepped in 0.05
+units and left a row of dots, and the wisps' contrast was 0.9. Eased to 0.12
+and 0.6.
+
+A measuring note: aligning render to photo on the eye corners stopped
+working once the lids were corrected to the photo (the corners move), and
+read the whole face 6-10% too large; the scripts now align on the nose
+line, forehead top, chin and face sides. The hair overlap measure, which
+also warps by those points, is unstable on two faces and not quoted here.
+
+**Hair sheen.** The rendered hair had weaker highlights than every photo's:
+the brightest tenth of its pixels at L* 54 against the photo's 78 on the
+black hair, 130 against 150 and 167 against 194 on the brown and blonde.
+The cuts' roughness (0.8 in the catalogue) is now 0.68: black hair's
+brightest tenth 81 (photo 78), spread 31 (29); the lighter heads move only
+4 and 2, their variation being strand colour rather than shine. At 0.55 the
+black hair overshot to 101.
+
+**Lid crease.** The lid skin is painted in 0.1 of the eye's width above the
+opening instead of 0.2 (still 0.2 below, where the lash rim made the ring),
+so the fold a hooded eye creases at is left in the paint. Under-eye L* and
+the ring unchanged; the crease itself is barely more visible at 214 pixels.
+
+Still open on photo-16: the pompadour (no such cut), the lid fold as a
+shape, the forehead +24 under the key light, the ears, and the 214-pixel face.
+
 ## Measured gaps: what each turned out to be
 
 Signed errors, head render against photo, % of eye spacing:

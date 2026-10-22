@@ -401,6 +401,22 @@ def expression_offsets(base: np.ndarray, at: np.ndarray, expression: dict) -> np
     return shaped[at] - base[at]
 
 
+def seal_lips(vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
+    """The mesh's inner lip lines brought together, for a resting mouth.
+
+    After the fit and the lips' correction the mesh's inner lips still met
+    about 1% of the eye spacing apart on a closed-mouthed photo, and a sliver
+    of teeth showed through. Each pair of inner lip vertices, upper and lower
+    at the same place along the mouth, is moved to its midpoint; nothing
+    else moves, and the ARKit mouth shapes open it again as before."""
+    v = vertices.copy()
+    for up, low in zip(INNER_UPPER, INNER_LOWER):
+        mid = (v[corr[up]] + v[corr[low]]) / 2.0
+        v[corr[up]] = mid
+        v[corr[low]] = mid
+    return v
+
+
 def close_lips(vertices: np.ndarray) -> np.ndarray:
     """Landmarks with parted lips brought together, for a resting face.
 
@@ -495,6 +511,40 @@ def correct(vertices: np.ndarray, base: np.ndarray, corr: np.ndarray, person: np
         alpha = np.linalg.solve(near + np.diag(damping), left[:, axis])
         moved[close, axis] += spread @ alpha
     return moved
+
+
+# The lip targets that thin or thicken the lips, and how far they are set
+# by the photo's lip height against the skull's (`lip_volume`).
+LIP_TARGETS = ("mouth/mouth-upperlip-volume-{}", "mouth/mouth-lowerlip-volume-{}",
+               "mouth/mouth-upperlip-height-{}", "mouth/mouth-lowerlip-height-{}")
+LIP_GAIN = 2.5
+
+
+def lip_volume(weights: np.ndarray, names: list[str], base: np.ndarray, corr: np.ndarray,
+               person: np.ndarray) -> np.ndarray:
+    """Lip fullness set by the photo's lip height against the skull's own.
+
+    The landmarks see the lips' outline, not their bulk: fitted to a thin-
+    lipped photo, the fit pulled the outline in with the lip height targets
+    (and set the opposing pair against each other, 0.44 against 0.38) and
+    left the lips as full as the skull's, which under the light read as a
+    pouting mouth; on the render the lips were detected 11% of the eye
+    spacing taller than the photo's. The height ratio (outer upper to outer
+    lower lip, in the picture's plane) sets the volume and height targets
+    outright, the opposing pair cleared.
+    """
+    ratio = (np.linalg.norm((person[0] - person[17])[:2])
+             / max(np.linalg.norm((base[corr[0]] - base[corr[17]])[:2]), 1e-9))
+    amount = float(np.clip(LIP_GAIN * abs(1.0 - ratio), 0.0, 1.0))
+    more, less = ("incr", "decr") if ratio > 1.0 else ("decr", "incr")
+    out = np.asarray(weights, dtype=np.float64).copy()
+    index = {n: i for i, n in enumerate(names)}
+    for pattern in LIP_TARGETS:
+        if pattern.format(more) in index:
+            out[index[pattern.format(more)]] = amount
+        if pattern.format(less) in index:
+            out[index[pattern.format(less)]] = 0.0
+    return out
 
 
 def explained(base: np.ndarray, corr: np.ndarray, person: np.ndarray,

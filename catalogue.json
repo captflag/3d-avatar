@@ -328,7 +328,7 @@
       "label": "Short, cropped",
       "mhclo": "mh_system/hair/short01/short01.mhclo",
       "colour": "from_photo",
-      "roughness": 0.8,
+      "roughness": 0.68,
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
@@ -337,7 +337,7 @@
       "label": "Short, swept back",
       "mhclo": "mh_system/hair/short02/short02.mhclo",
       "colour": "from_photo",
-      "roughness": 0.8,
+      "roughness": 0.68,
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
@@ -346,7 +346,7 @@
       "label": "Short with a fringe",
       "mhclo": "mh_system/hair/short03/short03.mhclo",
       "colour": "from_photo",
-      "roughness": 0.8,
+      "roughness": 0.68,
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
@@ -355,7 +355,7 @@
       "label": "Short, side parting",
       "mhclo": "mh_system/hair/short04/short04.mhclo",
       "colour": "from_photo",
-      "roughness": 0.8,
+      "roughness": 0.68,
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
@@ -370,7 +370,7 @@
         "front": 0.55
       },
       "colour": "from_photo",
-      "roughness": 0.8,
+      "roughness": 0.68,
       "licence": "CC0-1.0 (derived from MakeHuman's short02, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
@@ -379,7 +379,7 @@
       "label": "Bob",
       "mhclo": "mh_system/hair/bob01/bob01.mhclo",
       "colour": "from_photo",
-      "roughness": 0.8,
+      "roughness": 0.68,
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
@@ -388,7 +388,7 @@
       "label": "Bob with a fringe",
       "mhclo": "mh_system/hair/bob02/bob02.mhclo",
       "colour": "from_photo",
-      "roughness": 0.8,
+      "roughness": 0.68,
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
@@ -397,7 +397,7 @@
       "label": "Long",
       "mhclo": "mh_system/hair/long01/long01.mhclo",
       "colour": "from_photo",
-      "roughness": 0.8,
+      "roughness": 0.68,
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {

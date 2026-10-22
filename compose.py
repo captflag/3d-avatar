@@ -625,6 +625,11 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray):
                             vertices[np.unique(groups["helper-r-eye"])].mean(axis=0)])
     texture = facetexture.bake_eyes(vertices, eye_faces, eye_uv_all, eye_uv_faces,
                                     eye_centres, iris)
+    # Written darker by the renderer's lift, as the skin is (delight.RENDER_LIFT):
+    # the whites rendered at 246 against the photos' 216, and the iris a
+    # shade lighter than the colour read from the photo.
+    texture = Image.fromarray(np.clip(delight.to_srgb(
+        delight.to_linear(np.asarray(texture.convert("RGB"))) / delight.RENDER_LIFT), 0, 255).astype(np.uint8))
     eyes, eye_uv = submesh_uv(eye_faces, eye_uv_faces, vertices, uv=eye_uv_all)
     # Seat the eyeballs a few millimetres behind the lids. Where they sat level
     # with the lid surface they drew over it, the whole iris showed ringed by
@@ -741,16 +746,23 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     shape_weights, shape_names, expression = morph.fit(base, corr, person, average,
                                                        expression_of(result), front,
                                                        outline_trust, depth=depth_trust)
+    shape_weights = morph.lip_volume(shape_weights, shape_names, base, corr, person)
     vertices = morph.apply(base, shape_weights)
     shape_fit = morph.explained(base, corr, person, average, shape_weights, expression, front)
-    # The lips' shape the targets could not reach, free-form. Only the lips:
-    # corrected everywhere, the nose followed MediaPipe's own nose points,
-    # which do not sit on the mesh's, and came out further from the photo on
-    # every test face, and the outline's points slide with the silhouette.
+    # The lips' and eyelids' shape the targets could not reach, free-form.
+    # Only those: corrected everywhere, the nose followed MediaPipe's own nose
+    # points, which do not sit on the mesh's, and came out further from the
+    # photo on every test face, and the outline's points slide with the
+    # silhouette. The lids: the mesh's eyes rendered 1-4% of the eye spacing
+    # more open than every test photo's.
     lip_marks = np.zeros(len(corr))
     lip_marks[morph.INNER_UPPER + morph.INNER_LOWER + morph.OUTER_UPPER + morph.OUTER_LOWER + [61, 291, 78, 308]] = 1.0
-    vertices = morph.correct(vertices, base, corr, person, average, shape_weights, expression, front,
-                             np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks)
+    lip_marks[list(appearance.EYE_CONTOURS[0]) + list(appearance.EYE_CONTOURS[1])] = 1.0
+    # Towards the lips closed: the mesh's met 1.4% of the eye spacing apart on
+    # a photo whose own were 0.4 apart, and a sliver of teeth showed.
+    vertices = morph.correct(vertices, base, corr, morph.close_lips(person), average, shape_weights, expression,
+                             front, np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks)
+    vertices = morph.seal_lips(vertices, corr)
 
     # The same expression taken off the landmarks the photo is baked through,
     # and the lips closed, so the photo's smile is warped back onto a relaxed
