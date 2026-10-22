@@ -157,6 +157,7 @@ let current = null;  // the avatar on screen: what Download acts on
 
 function setFile(f) {
   if (!f) return;
+  sides = [];
   file.files = (() => { const dt = new DataTransfer(); dt.items.add(f); return dt.files; })();
   chosen.textContent = f.name;
   go.disabled = false;
@@ -186,10 +187,25 @@ const MAX_SMILE = 0.3;           // MediaPipe score where the shape fit starts d
 const MAX_BLINK = 0.4;
 const MAX_LIGHT_SPLIT = 0.25;    // cheek against cheek, share of the brighter
 const STEADY_FRAMES = 15;
+// After the front photo, up to two turned ones (views.py): the same landmarks
+// moving sideways as the head turns measure how far the nose, lips and chin
+// stand out, which one photo can only guess. The wider the turn the better:
+// on a rendered test head two shots at 50 degrees left a third of the depth
+// error two at 35 did, and two at 20 made it worse than the front alone. So
+// as the head turns, the widest frame that passes is kept, and taken once it
+// is wide enough or the head comes back. MediaPipe reads true turns of 20, 35
+// and 50 degrees as about 20, 29 and 42, and finds no face side-on: these are
+// its readings.
+const SIDE_TURN = [30, 50];
+const SIDE_ENOUGH = 40;
 const VISION = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 
 const video = $('video'), camera = $('camera'), checks = $('checks'), camnote = $('camnote'), shoot = $('shoot');
-let stream = null, steady = 0, looping = false, lastResults = [];
+let stream = null, steady = 0, loop = 0, lastResults = [], lastYaw = 0;
+// The widest turned frame so far that passed: { canvas, yaw } (yaw in degrees).
+let best = null;
+// 0 the front photo, then each turned one; `turned` the first turn's direction.
+let step = 0, turned = 0, sides = [];
 const landmarkers = {};
 
 /** One detector per mode: VIDEO tracks a face from frame to frame, which
@@ -220,8 +236,10 @@ function brightness(source, width, height, x, y, radius) {
   return sum / (data.length / 4);
 }
 
-/** Each check on one frame (`found`: the detector's result for it): [{ ok, text }]. */
-function assess(found, source, width, height) {
+/** Each check on one frame (`found`: the detector's result for it): [{ ok, text }].
+ *  `side`: null for the front photo; for a turned one, the direction wanted
+ *  (+1 or -1), or 0 for either. */
+function assess(found, source, width, height, side = null) {
   const faces = found.faceLandmarks || [];
   const out = [];
   const add = (ok, good, bad) => out.push({ ok, text: ok ? good : bad });
@@ -233,21 +251,35 @@ function assess(found, source, width, height) {
   const at = (i) => [p[i].x * width, p[i].y * height];
   const apart = (a, b) => Math.hypot(at(a)[0] - at(b)[0], at(a)[1] - at(b)[1]);
   const faceWidth = apart(234, 454);
-  add(faceWidth >= GOOD_FACE_PX, 'Face close enough',
-      `Come closer: face ${Math.round(faceWidth)} px across, needs ${GOOD_FACE_PX}`);
+  // Turned, the face shows narrower across the cheeks.
+  const needPx = side === null ? GOOD_FACE_PX : Math.round(0.8 * GOOD_FACE_PX);
+  add(faceWidth >= needPx, 'Face close enough',
+      `Come closer: face ${Math.round(faceWidth)} px across, needs ${needPx}`);
 
   // Head pose from the face's transform (column-major 4x4).
   const m = found.facialTransformationMatrixes[0].data;
   const deg = 180 / Math.PI;
   const pitch = Math.atan2(m[6], m[10]) * deg, yaw = Math.asin(-m[2]) * deg, roll = Math.atan2(m[1], m[0]) * deg;
-  add(Math.abs(yaw) <= MAX_TURN && Math.abs(pitch) <= MAX_TURN, 'Facing the camera',
-      Math.abs(yaw) > MAX_TURN ? 'Turn to face the camera' : 'Keep your chin level');
+  if (side === null) {
+    add(Math.abs(yaw) <= MAX_TURN && Math.abs(pitch) <= MAX_TURN, 'Facing the camera',
+        Math.abs(yaw) > MAX_TURN ? 'Turn to face the camera' : 'Keep your chin level');
+  } else {
+    const wrongWay = side !== 0 && Math.sign(yaw) !== side && Math.abs(yaw) > MAX_TURN;
+    const [least, most] = SIDE_TURN;
+    add(!wrongWay && Math.abs(yaw) >= least && Math.abs(yaw) <= most && Math.abs(pitch) <= MAX_TURN,
+        'Turned well to the side',
+        wrongWay ? 'Now turn the other way' : Math.abs(yaw) < least ? 'Turn your head further to the side'
+          : Math.abs(yaw) > most ? 'Not quite so far' : 'Keep your chin level');
+  }
   add(Math.abs(roll) <= MAX_ROLL, 'Head upright', 'Straighten your head');
 
   const score = Object.fromEntries(found.faceBlendshapes[0].categories.map((c) => [c.categoryName, c.score]));
   add(Math.max(score.mouthSmileLeft, score.mouthSmileRight, score.jawOpen) <= MAX_SMILE, 'Relaxed mouth',
       'Relax your face: mouth closed, no smile');
   add(Math.max(score.eyeBlinkLeft, score.eyeBlinkRight) <= MAX_BLINK, 'Eyes open', 'Open your eyes');
+
+  // A turned face is lit unevenly by its turn, and the hair was checked on the front photo.
+  if (side !== null) return out;
 
   const radius = 0.06 * faceWidth;
   const left = brightness(source, width, height, ...at(50), radius);
@@ -273,33 +305,80 @@ function showChecks(results) {
   }));
 }
 
-function tick() {
-  if (!looping) return;
-  if (video.readyState >= 2) {
-    lastResults = assess(landmarkers.VIDEO.detectForVideo(video, performance.now()), video,
-                         video.videoWidth, video.videoHeight);
-    showChecks(lastResults);
-    const ok = lastResults.every((r) => r.ok);
-    camera.classList.toggle('ready', ok);
-    steady = ok ? steady + 1 : 0;
-    if (steady >= STEADY_FRAMES) { take(); return; }
-  }
-  requestAnimationFrame(tick);
-}
+const wanted = () => (step === 0 ? null : step === 1 ? 0 : -turned);
 
-/** The frame as it is, unmirrored, handed on like a chosen photo. */
-function take() {
-  const passed = lastResults.length > 0 && lastResults.every((r) => r.ok);
+/** The video frame as it is, unmirrored. */
+function grab() {
   const canvas = document.createElement('canvas');
   canvas.width = video.videoWidth; canvas.height = video.videoHeight;
   canvas.getContext('2d').drawImage(video, 0, 0);
-  closeCamera();
-  canvas.toBlob((blob) => {
+  return canvas;
+}
+
+/** One frame of the checks; `id` stops a loop that take or closeCamera ended. */
+function tick(id) {
+  if (id !== loop) return;
+  if (video.readyState >= 2) {
+    const found = landmarkers.VIDEO.detectForVideo(video, performance.now());
+    lastResults = assess(found, video, video.videoWidth, video.videoHeight, wanted());
+    const m = found.facialTransformationMatrixes?.[0];
+    lastYaw = m ? Math.asin(-m.data[2]) * 180 / Math.PI : 0;
+    showChecks(lastResults);
+    const ok = lastResults.every((r) => r.ok);
+    camera.classList.toggle('ready', ok);
+    if (step === 0) {
+      steady = ok ? steady + 1 : 0;
+      if (steady >= STEADY_FRAMES) { take(); return; }
+    } else {
+      // Turning: keep the widest frame that passes; take it once wide enough,
+      // or when the head comes back towards the camera.
+      if (ok && Math.abs(lastYaw) > (best?.yaw ?? 0)) best = { canvas: grab(), yaw: Math.abs(lastYaw), sign: Math.sign(lastYaw) };
+      if (best && (best.yaw >= SIDE_ENOUGH || Math.abs(lastYaw) < MAX_TURN)) { take(best); return; }
+    }
+  }
+  requestAnimationFrame(() => tick(id));
+}
+
+function startLoop() {
+  steady = 0;
+  best = null;
+  const id = ++loop;
+  requestAnimationFrame(() => tick(id));
+}
+
+/** The front photo is handed on like a chosen one, and the camera stays
+ *  open for the turned ones. `kept`: a turned frame kept while turning
+ *  (tick), else the frame now. */
+async function take(kept = null) {
+  ++loop;
+  const passed = kept !== null || (lastResults.length > 0 && lastResults.every((r) => r.ok));
+  const canvas = kept ? kept.canvas : grab();
+  const blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.95));
+  if (step === 0) {
     setFile(new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' }));
     status.className = passed ? '' : 'bad';
-    status.textContent = passed ? 'Photo taken: every check passed. Generate when ready.'
+    status.textContent = passed ? 'Photo taken: every check passed.'
       : 'Photo taken before every check passed: the avatar may look less like you.';
-  }, 'image/jpeg', 0.95);
+  } else {
+    // A turned shot that missed its checks says little about depth: keep trying.
+    if (!passed) { startLoop(); return; }
+    sides.push(new File([blob], `camera-side${step}-${Date.now()}.jpg`, { type: 'image/jpeg' }));
+    if (step === 1) turned = (kept ? kept.sign : Math.sign(lastYaw)) || 1;
+    chosen.textContent = `${file.files[0].name} + ${sides.length} turned`;
+  }
+  step += 1;
+  if (step > 2) { finishCamera(); return; }
+  camnote.textContent = step === 1
+    ? 'Front photo taken. For a truer profile, turn your head slowly to one side, as far as you can still see the screen, then back. Or press Done.'
+    : 'Now the same the other way, or press Done.';
+  $('closecamera').textContent = 'Done';
+  startLoop();
+}
+
+function finishCamera() {
+  closeCamera();
+  if (sides.length) status.textContent += ` With ${sides.length} turned photo${sides.length > 1 ? 's' : ''} for the profile.`;
+  status.textContent += ' Generate when ready.';
 }
 
 async function openCamera() {
@@ -307,6 +386,8 @@ async function openCamera() {
   // still offers its own camera through the file input.
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) { $('snap').click(); return; }
   camera.classList.add('open');
+  step = 0; turned = 0; sides = [];
+  $('closecamera').textContent = 'Cancel';
   status.textContent = '';
   status.className = '';
   camnote.textContent = 'Starting the camera…';
@@ -320,9 +401,7 @@ async function openCamera() {
     await getLandmarker();
     camnote.textContent = 'Hold still once every line is ticked: the photo takes itself.';
     shoot.disabled = false;
-    steady = 0;
-    looping = true;
-    requestAnimationFrame(tick);
+    startLoop();
   } catch (err) {
     closeCamera();
     status.className = 'bad';
@@ -331,7 +410,7 @@ async function openCamera() {
 }
 
 function closeCamera() {
-  looping = false;
+  ++loop;
   stream?.getTracks().forEach((t) => t.stop());
   stream = null;
   video.srcObject = null;
@@ -339,19 +418,19 @@ function closeCamera() {
 }
 
 $('usecamera').addEventListener('click', openCamera);
-$('closecamera').addEventListener('click', closeCamera);
-shoot.addEventListener('click', take);
+$('closecamera').addEventListener('click', () => (step ? finishCamera() : closeCamera()));
+shoot.addEventListener('click', () => take(step ? best : null));
 $('snap').addEventListener('change', () => setFile($('snap').files[0]));
 
 /** The camera checks run on a still photo (for testing them without a camera). */
-async function checkPhoto(url) {
+async function checkPhoto(url, side = null) {
   const still = await getLandmarker('IMAGE');
   // fetch + createImageBitmap: an unattached Image's decode() never settled here.
   const img = await createImageBitmap(await (await fetch(url)).blob());
   const canvas = document.createElement('canvas');
   canvas.width = img.width; canvas.height = img.height;
   canvas.getContext('2d').drawImage(img, 0, 0);
-  return assess(still.detect(canvas), canvas, canvas.width, canvas.height);
+  return assess(still.detect(canvas), canvas, canvas.width, canvas.height, side);
 }
 
 drop.addEventListener('submit', async (ev) => {
@@ -363,6 +442,7 @@ drop.addEventListener('submit', async (ev) => {
 
   const body = new FormData();
   body.append('photo', file.files[0]);
+  sides.forEach((f) => body.append('side', f));
   body.append('mode', $('fullbody').checked ? 'body' : 'face');
   body.append('gender', $('gender').value);
   try {

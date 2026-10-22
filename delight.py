@@ -36,6 +36,14 @@ import numpy as np
 # Brightest skin we let through, as linear luminance: light skin reflects about
 # 0.4 to 0.5 of visible light.
 SKIN_CEILING = 0.45
+# The texture is lit again by the renderer, whose lights brighten skin by
+# about a third in linear luminance (scene-setup; a flat grey skin rendered at
+# 1.3-1.4 times its albedo at the cheek), so the skin is written that much darker than the
+# photo shows it. Before, the de-lighting left the brightness wherever its
+# gain put it and the renderer added its quarter on top: light faces hit the
+# ceiling and happened to come out right, a tan face rendered 33 L* lighter
+# than its photo.
+RENDER_LIFT = 1.35
 # How much of the fitted shading to remove (1 = all of it), and the most any
 # pixel may be brightened or darkened.
 STRENGTH = 0.7
@@ -249,6 +257,10 @@ def delight(photo_rgb: np.ndarray, landmarks, faces: np.ndarray,
     h, w = photo_rgb.shape[:2]
     linear = to_linear(photo_rgb)
     normals, mask = face_normals(landmarks, faces, (w, h))
+    xs_c = np.clip(cheek_pixels[:, 0].astype(int), 0, w - 1)
+    ys_c = np.clip(cheek_pixels[:, 1].astype(int), 0, h - 1)
+    luma = np.array([0.2126, 0.7152, 0.0722])
+    shown = float(np.median(linear[ys_c, xs_c] @ luma))     # the cheeks as the photo shows them
 
     gain = np.ones((h, w))
     report = {"lit_from": None, "gain_range": [1.0, 1.0]}
@@ -281,11 +293,11 @@ def delight(photo_rgb: np.ndarray, landmarks, faces: np.ndarray,
     linear = linear * gain[..., None]
     linear, report["shine_removed"] = remove_shine(linear, mask, landmarks, (w, h))
 
-    # Exposure: cap the cheeks' brightness at what real skin reflects.
-    xs_c = np.clip(cheek_pixels[:, 0].astype(int), 0, w - 1)
-    ys_c = np.clip(cheek_pixels[:, 1].astype(int), 0, h - 1)
-    cheek = np.median(linear[ys_c, xs_c] @ np.array([0.2126, 0.7152, 0.0722]))
-    scale = min(1.0, SKIN_CEILING / max(cheek, 1e-6))
+    # Exposure: the cheeks back to the brightness the photo showed, less the
+    # renderer's lift, and capped at what real skin reflects. The lighting fit
+    # only redistributes shading; the level is the photo's.
+    cheek = float(np.median(linear[ys_c, xs_c] @ luma))
+    scale = min(SKIN_CEILING, shown / RENDER_LIFT) / max(cheek, 1e-6)
     report["exposure"] = round(float(scale), 2)
     out, report["crevices_lifted"] = lift_crevices(to_srgb(linear * scale), landmarks, (w, h))
     return out, report, mask

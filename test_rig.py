@@ -14,10 +14,12 @@ import sys
 import tempfile
 
 import numpy as np
+from PIL import Image
 import pygltflib as gl
 
-from catalogue import build_item, items_by_id, load_base
+from catalogue import build_item, items_by_id, load_base, load_base_uv
 from compose import compose, rest_pose
+from generate import load_canonical_faces
 from garments import GARMENT_DIR, deform, make_test_vest, skinning_matrices, transfer_weights
 from rig import MAX_INFLUENCES, load_skeleton, weight_table
 from skinned_glb import axis_angle
@@ -124,7 +126,7 @@ def check_alignment():
         print("skip alignment check: samples/portrait.jpg is missing")
         return
     vertices, groups = load_base()
-    face, _, _ = fit_face(photo)
+    face, *_ = fit_face(photo)
     average = place_face(morph.canonical_face(), vertices, groups).vertices
     person = place_face(face, vertices, groups).vertices
     corr = morph.correspondences(vertices, groups["body"], average[:468])
@@ -170,6 +172,49 @@ def check_proportions():
         got = np.linalg.norm((shaped[j] - shaped[i])[:2])
         assert abs(got / want[k] - 1) < 0.015, f"{name} fitted {100 * (got / want[k] - 1):+.1f}% off"
     print("ok  proportions: eye spacing, widths, height and chin fit within 1.5%")
+
+
+def check_side_views():
+    """Turned views of a known face fuse back to its depth, though each view's
+    own depth is a flattened guess and its turn is read a sixth short, as
+    MediaPipe reads them; and a fit given measured depth leaves a face alone
+    that differs from the skull only by where it sits in depth."""
+    import morph
+    import views
+    from compose import place_face
+
+    truth = np.asarray(morph.canonical_face().vertices, dtype=np.float64)
+    truth = truth - truth.mean(axis=0)
+    rng = np.random.default_rng(2)
+    spacing = np.linalg.norm(truth[33] - truth[263])
+
+    def turn(degrees):
+        a = np.radians(degrees)
+        return np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
+
+    def view(degrees, scale, shift):
+        points = scale * truth @ turn(degrees).T + shift
+        points[:, 2] *= 0.6                                   # a flattened depth guess
+        points[:, :2] += rng.normal(0, 0.005 * spacing * scale, (len(points), 2))
+        return points, turn(degrees * 29 / 35)                # the turn read short
+
+    front = view(0, 1.0, np.zeros(3))
+    fused, measured, _ = views.fuse([front, view(35, 1.3, np.array([0.2, -0.1, 0.0])),
+                                  view(-35, 0.8, np.array([-0.1, 0.05, 0.0]))])
+    fused = fused - fused.mean(axis=0)
+    error = np.sqrt(((fused[:, 2] - truth[:, 2]) ** 2).mean()) / spacing
+    guessed = np.sqrt(((front[0][:, 2] - truth[:, 2]) ** 2).mean()) / spacing
+    assert error < 0.25 * guessed, f"fused depth off by {100 * error:.1f}% of eye spacing, guessed {100 * guessed:.1f}%"
+    assert measured[1] > 0.5, f"nose tip depth counted as measured only {measured[1]:.2f}"
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    person = morph.reference(vertices, corr, average) + [0.0, 0.0, 0.3 * spacing]
+    weights, _, _ = morph.fit(vertices, corr, person, average, depth=np.ones(len(corr)))
+    assert weights.max() < 0.05, f"a face only sitting further forward bent target {weights.argmax()} to {weights.max():.2f}"
+    print(f"ok  side views: depth fused to {100 * error:.1f}% of eye spacing (one view guessed {100 * guessed:.1f}%); "
+          f"a depth offset bends no target")
 
 
 def check_brow_shading():
@@ -300,6 +345,234 @@ def check_hairline_sweep():
     gap = ((hair.vertices - vertices[near]) * normals[near]).sum(axis=1)[moved]
     assert gap.min() > 0.04, f"swept hair sank to {gap.min():.3f} from the scalp"
     print(f"ok  hairline sweep: fringe turned back {turned:.0f} deg, edge rose {risen:.2f} of 0.30, back kept, off the scalp")
+
+
+def check_hair_volume():
+    """A flat stock cut given a photo's height: its top rises to the height
+    asked, its front edge stays where it was (the lift ramps in behind it, so
+    no shell stands off the forehead), and the back of the hair stays put."""
+    import appearance
+    import garments
+
+    vertices, groups = load_base()
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    # Swept back first, as compose does: that is what puts the front edge
+    # high enough up the head for the lift to reach it.
+    opaque = appearance.opaque_hair(hair)
+    ahead = opaque[(np.abs(opaque[:, 0]) < 0.2) & (opaque[:, 2] > np.median(opaque[:, 2]))]
+    garments.sweep_back(hair, vertices, groups, opaque, np.percentile(ahead[:, 1], 3) + 0.3)
+    original = hair.vertices.copy()
+    middle = np.abs(original[:, 0]) < 0.3
+    top = np.percentile(original[middle, 1], 98)
+    front = middle & (original[:, 2] > np.median(original[:, 2]))
+    edge = np.percentile(original[front, 1], 3)
+    lift = garments.volumise(hair, vertices, groups, top + 0.2)
+    assert lift > 0, "the cut was not lifted"
+    risen = np.percentile(hair.vertices[middle, 1], 98) - top
+    assert 0.12 < risen < 0.3, f"the top rose {risen:.2f} for 0.2 asked"
+    at_edge = front & (original[:, 1] < edge + 0.05)
+    assert np.linalg.norm(hair.vertices[at_edge] - original[at_edge], axis=1).max() < 0.02, "the front edge was lifted off"
+    back = original[:, 2] < np.percentile(original[:, 2], 15)
+    assert np.linalg.norm(hair.vertices[back] - original[back], axis=1).max() < 0.02, "the back of the hair moved"
+    print(f"ok  hair volume: top rose {risen:.2f} for 0.20 asked, front edge and back kept")
+
+
+def check_hair_width():
+    """A cut whose outline is narrower over the temples than the photo's is
+    pushed out there to the photo's shape, and no further than WIDEN_LIMIT;
+    below the brows and at the back of the head it stays put; and a photo
+    whose outline the cut already has moves nothing."""
+    import appearance
+    import garments
+
+    vertices, groups = load_base()
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    original = hair.vertices.copy()
+    brow_y, spacing = float(np.percentile(original[:, 1], 30)), 0.6
+    own = []
+    for above in appearance.HAIR_WIDTH_ROWS:
+        band = np.abs(original[:, 1] - (brow_y + above * spacing)) < 0.05 * spacing
+        own.append(np.ptp(original[band, 0]) / 2 / spacing)
+    own = np.array(own)
+    assert not garments.widen(hair, vertices, groups, brow_y, spacing, list(own)).any(), \
+        "a cut with the photo's own outline was widened"
+    asked = own * garments.HAIR_RENDER_SPREAD * np.array([1.0, 1.05, 1.1, 1.5])
+    push = garments.widen(hair, vertices, groups, brow_y, spacing, list(asked))
+    assert push[0] == 0 and push[1] > 0 and push[2] > push[1], f"pushes {push.round(3)}"
+    assert push[3] <= garments.WIDEN_LIMIT * own[3] * spacing + 1e-9, "widened past the limit"
+    low = original[:, 1] < brow_y - 0.3 * spacing
+    assert np.abs(hair.vertices[low] - original[low]).max() < 1e-6, "hair below the brows moved"
+    print(f"ok  hair width: pushed out {np.round(push / spacing, 2).tolist()} eye spacings up the temples, "
+          f"capped, nothing below the brows")
+
+
+def check_eye_carry():
+    """A sheet whose eyes sit above the mesh's is moved down onto them, its
+    brows with it, and its mouth and chin are left where they were."""
+    import morph
+    from compose import eyes_onto_mesh, place_face
+    import appearance
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    sheet = vertices[corr].copy()
+    spacing = np.linalg.norm(sheet[33, :2] - sheet[263, :2])
+    sheet[:, 1] += 0.05 * spacing                          # the whole sheet a little high
+    moved = eyes_onto_mesh(sheet, vertices, corr)
+    eyes = list(appearance.EYE_CONTOURS[0]) + list(appearance.EYE_CONTOURS[1])
+    share = lambda i: float((sheet[i, 1] - moved[i, 1]).mean() / (0.05 * spacing))
+    assert share(eyes) > 0.6, f"the eyes moved {share(eyes):.2f} of the way"
+    assert share([105, 334]) > 0.4, f"the brows moved {share([105, 334]):.2f} of the way"
+    assert share([152, 17, 0]) < 0.1, f"the mouth and chin moved {share([152, 17, 0]):.2f} of the way"
+    print(f"ok  eye carry: eyes moved {share(eyes):.2f} of the way, brows {share([105, 334]):.2f}, "
+          f"mouth and chin {share([152, 17, 0]):.2f}")
+
+
+def check_likeness_details():
+    """The small things that each cost a likeness on one photo: skin written
+    darker by the renderer's lift and no brighter than the photo; a closed
+    mouth left closed; thin lips thinned at the volume targets; and the
+    hairline tint solid under the hair's edge, not spared for the photo's
+    forehead there."""
+    import cv2
+    import appearance
+    import delight
+    import morph
+    from PIL import Image
+    from compose import place_face
+
+    # Skin: a flat mid-tan face under even light comes back a third darker in
+    # linear luminance, and a bright one no brighter than the ceiling.
+    canon = load_canonical_faces()
+    lab = lambda rgb: cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2LAB)[0, 0, 0]
+    class Mark:
+        def __init__(self, x, y, z=0.0):
+            self.x, self.y, self.z = x, y, z
+    face = morph.canonical_face().vertices
+    xy = face[:, :2] - face[:, :2].min(axis=0)
+    xy = xy / xy.max() * 0.6 + 0.2
+    marks = [Mark(float(x), float(1.0 - y)) for x, y in xy]
+    photo = np.full((300, 300, 3), (190, 150, 125), np.uint8)
+    cheeks = np.array([[m.x * 300, m.y * 300] for m in (marks[50], marks[280], marks[205], marks[425])])
+    out, report, mask = delight.delight(photo, marks, canon, cheeks)
+    shown = delight.to_linear(photo[0, 0].astype(float)) @ [0.2126, 0.7152, 0.0722]
+    got = delight.to_linear(out[mask].astype(float)) @ [0.2126, 0.7152, 0.0722]
+    ratio = float(np.median(got)) / shown
+    assert abs(ratio * delight.RENDER_LIFT - 1.0) < 0.12, f"skin written at {ratio:.2f} of the photo's, lift {delight.RENDER_LIFT}"
+
+    # Mouth: lips 0.7% of the mouth's width apart stay as the photo has them.
+    rgb = np.full((300, 300, 3), (200, 160, 140), np.uint8)
+    closed = [Mark(m.x, m.y) for m in marks]
+    closed[14] = Mark(closed[13].x, closed[13].y)          # inner lips touching
+    filled, was_open = appearance.fill_mouth(rgb, closed, cheeks)
+    assert not was_open, "a closed mouth was taken for open"
+
+    # Lips: a photo whose lips are three quarters the skull's height sets the
+    # thinning targets, and clears the thickening ones.
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    names = [n for n, _, _ in morph.load_targets()]
+    person = vertices[corr].copy()
+    mid = (person[0] + person[17]) / 2
+    person[0] = mid + 0.75 * (person[0] - mid)
+    person[17] = mid + 0.75 * (person[17] - mid)
+    weights = np.zeros(len(names))
+    weights[names.index("mouth/mouth-lowerlip-volume-incr")] = 0.5
+    weights = morph.lip_volume(weights, names, vertices, corr, person)
+    assert weights[names.index("mouth/mouth-lowerlip-volume-decr")] > 0.5, "thin lips did not thin the lower lip"
+    assert weights[names.index("mouth/mouth-lowerlip-volume-incr")] == 0.0, "the thickening target was left on"
+
+    # Hairline: on a head with hair points down to a line, the texels just
+    # below that line are tinted though the photo shows forehead there.
+    uv_all, uv_groups = load_base_uv()
+    from compose import head_island, island_uv
+    body_faces = groups["body"]
+    in_head = head_island(vertices, groups, body_faces, uv_groups["body"])
+    faces, uv_faces = body_faces[in_head], uv_groups["body"][in_head]
+    uv = island_uv(uv_all, uv_faces)
+    brow = vertices[corr[[105, 334]], 1].mean()
+    spacing = np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2])
+    line_y = brow + 0.35 * spacing
+    hair = vertices[np.unique(faces)]
+    hair = hair[hair[:, 1] > line_y] + [0.0, 0.0, 0.05]
+    plain = Image.new("RGB", (512, 512), (200, 160, 140))
+    spare = np.ones(len(vertices))
+    tinted = np.asarray(appearance.hairline_tint(plain, vertices, faces, uv, uv_faces, hair, (30, 25, 24), spare=spare))
+    used = np.unique(faces)
+    ahead = vertices[used, 2] > np.median(vertices[used, 2])
+    front = used[ahead & (np.abs(vertices[used, 0]) < 0.25 * spacing) & (vertices[used, 1] < line_y)
+                 & (vertices[used, 1] > line_y - 0.9 * appearance.HAIRLINE_SOLID)]
+    assert len(front), "no forehead vertex just under the line"
+    rows = [np.nonzero(faces == v) for v in front]
+    dark = []
+    for v, hit in zip(front, rows):
+        i = uv_faces[hit[0][0], hit[1][0]]
+        x, y = int(uv[i, 0] * 511), int((1 - uv[i, 1]) * 511)
+        dark.append(lab(tinted[y, x]))
+    assert np.mean(dark) < lab((200, 160, 140)) - 40, f"under the edge the skin stayed L {np.mean(dark):.0f}"
+    print(f"ok  likeness details: skin at {ratio:.2f} of the photo for lift {delight.RENDER_LIFT}, closed mouth kept, "
+          f"thin lips thinned, hairline tint solid under the edge (L {np.mean(dark):.0f})")
+
+
+def check_lip_correction():
+    """Lips the targets cannot reach are moved there free-form, smoothly: the
+    lip landmarks most of the way, the eyes and forehead not at all."""
+    import morph
+    from compose import place_face
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    lips = morph.INNER_UPPER + morph.INNER_LOWER + morph.OUTER_UPPER + morph.OUTER_LOWER + [61, 291, 78, 308]
+    person = morph.reference(vertices, corr, average)
+    spacing = np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2])
+    # Fuller lips: each lip point 4% of the eye spacing further from the mouth's middle.
+    mouth = person[lips].mean(axis=0)
+    away = person[lips] - mouth
+    person[lips, :2] += 0.04 * spacing * (away / np.linalg.norm(away, axis=1, keepdims=True))[:, :2]
+    marks = np.zeros(len(corr))
+    marks[lips] = 1.0
+    moved = morph.correct(vertices, vertices, corr, person, average, np.zeros(1), reliable=marks)
+    want = person[lips] - morph.reference(vertices, corr, average)[lips]
+    got = moved[corr[lips]] - vertices[corr[lips]]
+    share = float((got * want).sum() / (want * want).sum())
+    assert 0.5 < share < 1.1, f"the lips moved {share:.2f} of the way"
+    still = np.linalg.norm(moved[corr[[33, 263, 10, 151]]] - vertices[corr[[33, 263, 10, 151]]], axis=1).max()
+    assert still < 0.002 * spacing, f"eyes and forehead moved {still / spacing:.4f} eye spacings"
+    print(f"ok  lip correction: lips moved {share:.2f} of the way, eyes and forehead kept")
+
+
+def check_side_paint():
+    """A surface the front photo never saw, facing a turned photo's camera,
+    takes that photo's colour; the texture round it keeps its own."""
+    import trimesh
+    import appearance
+    import views
+
+    # A square facing +x, its texture in the middle of a grey map, and a
+    # turned photo, all red, whose camera looks along -x at it.
+    square = np.array([[1.0, -1, -1], [1, 1, -1], [1, 1, 1], [1, -1, 1]])
+    faces = np.array([[0, 1, 2], [0, 2, 3]])
+    if trimesh.Trimesh(square, faces, process=False).face_normals[0, 0] < 0:
+        faces = faces[:, ::-1]
+    uv = 0.3 + 0.4 * (square[:, 1:] + 1) / 2
+    turn = np.array([[0.0, 0, -1], [0, 1, 0], [1, 0, 0]])     # its third row: towards +x
+    red = np.zeros((100, 100, 3), np.uint8)
+    red[..., 0] = 220
+    real = appearance.segment
+    appearance.segment = lambda photo: np.full(photo.shape[:2], appearance.FACE_SKIN)
+    try:
+        texture, strength = views.paint_sides(Image.new("RGB", (64, 64), (128, 128, 128)), square, faces, uv,
+                                              faces, np.zeros(4), (1.0, np.zeros(3)),
+                                              [(red, (turn, 0.2, np.zeros(3)))])
+    finally:
+        appearance.segment = real
+    rgb = np.asarray(texture)
+    assert tuple(rgb[32, 32]) == (220, 0, 0), f"the middle took {rgb[32, 32]}"
+    assert tuple(rgb[2, 2]) == (128, 128, 128), f"the corner took {rgb[2, 2]}"
+    print("ok  side paint: a surface facing the turned photo took its colour, the rest kept its own")
 
 
 def check_expression():
@@ -480,16 +753,23 @@ def check_delight():
     if not photo.exists():
         print(f"ok  delight: synthetic lighting removed ({spread:.2%} left); portrait check skipped")
         return
-    from PIL import Image
-    _, marks, _ = fit_face(photo)
-    rgb = np.asarray(Image.open(photo).convert("RGB"))
+    _, marks, _, upright_photo = fit_face(photo)
+    rgb = np.asarray(upright_photo)
     h, w = rgb.shape[:2]
     cheeks = np.array([[marks[i].x * w, marks[i].y * h] for i in SKIN_LANDMARKS])
     out, report, mask = delight.delight(rgb, marks, load_canonical_faces(), cheeks)
-    assert report["exposure"] == 1.0, "skin within the natural range was darkened"
+    # Skin within the natural range keeps the photo's own brightness, less
+    # the renderer's lift (delight.RENDER_LIFT), so it renders as the photo shows it.
+    luma = np.array([0.2126, 0.7152, 0.0722])
+    at = (cheeks[:, 1].astype(int), cheeks[:, 0].astype(int))
+    shown = np.median(delight.to_linear(rgb[at]) @ luma)
+    written = np.median(delight.to_linear(out[at]) @ luma)
+    assert abs(written * delight.RENDER_LIFT / shown - 1.0) < 0.12,         f"cheeks written at {written / shown:.2f} of the photo's for a lift of {delight.RENDER_LIFT}"
     import cv2
     far = cv2.dilate(mask.astype(np.uint8), np.ones((51, 51), np.uint8)) == 0
-    assert np.abs(out[far].astype(int) - rgb[far]).max() <= 1, "pixels away from the face changed"
+    # Away from the face only the exposure factor applies, the same to every pixel.
+    scaled = delight.to_srgb(delight.to_linear(rgb) * report["exposure"])
+    assert np.abs(out[far].astype(int) - scaled[far].astype(int)).max() <= 1, "pixels away from the face changed"
 
     bright = delight.to_srgb(delight.to_linear(rgb) * 1.8)        # an overexposed copy
     out, report, _ = delight.delight(bright, marks, load_canonical_faces(), cheeks)
@@ -532,13 +812,24 @@ def check_appearance():
     if photo.exists() and appearance.SEGMENTER_TASK.exists():
         from PIL import Image
         from generate import fit_face
-        _, marks, _ = fit_face(photo)
-        rgb = np.asarray(Image.open(photo).convert("RGB"))
+        _, marks, _, upright_photo = fit_face(photo)
+        rgb = np.asarray(upright_photo)
         hair = appearance.read_hair(rgb, marks, appearance.segment(rgb))
         assert pick(hair, "x") == "hair_short01", f"close-cropped hair read as {pick(hair, 'x')}"
         assert max(hair["colour"]) < 140, f"dark grey hair read as {hair['colour'].tolist()}"
         _, family = appearance.iris_colour(rgb, marks)
         assert family in ("dark brown", "brown"), f"brown eyes read as {family}"
+
+        # A photo on its side is stood up before anything reads it: a sideways
+        # head once read as bald.
+        with tempfile.TemporaryDirectory() as tmp:
+            sideways = pathlib.Path(tmp) / "sideways.jpg"
+            Image.open(photo).rotate(-90, expand=True).save(sideways, quality=95)
+            _, marks, _, upright_photo = fit_face(sideways)
+            rgb = np.asarray(upright_photo)
+            turned = appearance.read_hair(rgb, marks, appearance.segment(rgb))
+        assert pick(turned, "x") == "hair_short01", f"a sideways photo's hair read as {pick(turned, 'x')}"
+        assert abs(turned["amount"] - hair["amount"]) < 0.05, f"sideways hair amount {turned['amount']} vs {hair['amount']}"
 
     outfit = ASSET_DIR / "mh_system" / "clothes" / "male_casualsuit01" / "male_casualsuit01.mhclo"
     if outfit.exists():
@@ -588,10 +879,9 @@ def check_finishing():
 
     photo = HERE / "samples" / "portrait.jpg"
     if photo.exists():
-        from PIL import Image
         from generate import fit_face
-        _, marks, _ = fit_face(photo)
-        rgb = np.asarray(Image.open(photo).convert("RGB"))
+        _, marks, _, upright_photo = fit_face(photo)
+        rgb = np.asarray(upright_photo)
         h, w = rgb.shape[:2]
         mouth = np.zeros((h, w), np.uint8)
         cv2.fillPoly(mouth, [np.array([[marks[i].x * w, marks[i].y * h] for i in delight.INNER_LIPS], np.int32)], 1)
@@ -934,10 +1224,17 @@ if __name__ == "__main__":
         check_transfer()
         check_alignment()
         check_proportions()
+        check_side_views()
         check_brow_shading()
         check_arkit()
         check_mouth_bake()
         check_hairline_sweep()
+        check_hair_volume()
+        check_hair_width()
+        check_lip_correction()
+        check_eye_carry()
+        check_likeness_details()
+        check_side_paint()
         check_expression()
         check_mhclo()
         check_import()

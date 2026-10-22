@@ -25,7 +25,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 UPLOADS = HERE / "uploads"
 OUT = HERE / "out"
 
-ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+# .jfif and .jpe are JPEG too: Windows saves web images as .jfif.
+ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".jfif", ".jpe", ".png", ".webp", ".bmp"}
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 
 app = Flask(__name__, static_folder=None)
@@ -106,11 +107,27 @@ def generate():
         photo_path.unlink(missing_ok=True)
         return jsonify(error="That file is not a readable image."), 400
 
+    # Turned photos from the camera, for the profile (views.py). One that is not
+    # a readable image is dropped rather than failing the front photo's avatar.
+    side_photos = []
+    for k, side in enumerate(request.files.getlist("side")[:2], start=1):
+        side_suffix = pathlib.Path(side.filename or "").suffix.lower()
+        if side_suffix not in ALLOWED_SUFFIXES:
+            continue
+        side_path = UPLOADS / f"{entry_id}-side{k}{side_suffix}"
+        side.save(side_path)
+        try:
+            with Image.open(side_path) as probe:
+                probe.verify()
+            side_photos.append(side_path)
+        except Exception:
+            side_path.unlink(missing_ok=True)
+
     full_body = request.form.get("mode") == "body"
     gender = "female" if request.form.get("gender") == "female" else "male"
     try:
         if full_body:
-            info = compose(photo_path, OUT / f"{entry_id}.glb", gender)
+            info = compose(photo_path, OUT / f"{entry_id}.glb", gender, side_photos=side_photos or None)
         else:
             info = generate_avatar(photo_path, OUT / f"{entry_id}.glb")
     except NoFaceFound:

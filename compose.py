@@ -30,6 +30,7 @@ import facetexture
 import garments
 import morph
 import skin
+import views
 from catalogue import (BODY_OBJ, build_item, catalogue, hair_colour, items_by_id,
                        load_base, load_base_uv, srgb_to_linear, submesh, submesh_uv,
                        coverage_alpha)
@@ -167,6 +168,9 @@ def dye_colour(rgb) -> np.ndarray:
 # mouth, as a share of the mouth's width (Gaussian reach): the skin round the
 # lips, and then the lips themselves exactly.
 MOUTH_CARRY = (0.45, 0.15)
+# How far round each eye the photo is carried onto the mesh's eye, in eye
+# spacings (Gaussian reach): far enough that the brow comes with it.
+EYE_CARRY = 0.5
 
 
 def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
@@ -196,6 +200,29 @@ def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -
     alpha = np.linalg.solve(near + 1e-2 * np.eye(len(lips)), pull - field[lips])
     moved = sheet.copy()
     moved[:, :2] += field + kernel(sheet, sheet[lips], MOUTH_CARRY[1] * width) @ alpha
+    return moved
+
+
+def eyes_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
+    """The placed landmark sheet with its eyes moved onto the mesh's own, and
+    the brows with them.
+
+    The eyelids the avatar shows are the mesh's, and the brows are painted
+    and carded from the sheet. Placed by one scale and shift across eyes,
+    nose, mouth and chin, the sheet's eyes do not land on the mesh's lids,
+    and on the test photos the brows came out 4-8% of the eye spacing higher
+    above the lids than the photo's. Each eye's contour is moved in the
+    picture's plane onto the mesh's, and the skin round it, brows included,
+    by the same pull fading with distance.
+    """
+    marks = list(appearance.EYE_CONTOURS[0]) + list(appearance.EYE_CONTOURS[1])
+    spacing = float(np.linalg.norm(sheet[33, :2] - sheet[263, :2]))
+    pull = vertices[corr[marks], :2] - sheet[marks, :2]
+    w = np.exp(-(np.linalg.norm(sheet[:, None, :2] - sheet[None, marks, :2], axis=2)
+                 / (EYE_CARRY * spacing)) ** 2)
+    field = (w @ pull) / np.maximum(w.sum(axis=1, keepdims=True), 1e-12) * w.max(axis=1, keepdims=True)
+    moved = sheet.copy()
+    moved[:, :2] += field
     return moved
 
 
@@ -598,6 +625,11 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray):
                             vertices[np.unique(groups["helper-r-eye"])].mean(axis=0)])
     texture = facetexture.bake_eyes(vertices, eye_faces, eye_uv_all, eye_uv_faces,
                                     eye_centres, iris)
+    # Written darker by the renderer's lift, as the skin is (delight.RENDER_LIFT):
+    # the whites rendered at 246 against the photos' 216, and the iris a
+    # shade lighter than the colour read from the photo.
+    texture = Image.fromarray(np.clip(delight.to_srgb(
+        delight.to_linear(np.asarray(texture.convert("RGB"))) / delight.RENDER_LIFT), 0, 255).astype(np.uint8))
     eyes, eye_uv = submesh_uv(eye_faces, eye_uv_faces, vertices, uv=eye_uv_all)
     # Seat the eyeballs a few millimetres behind the lids. Where they sat level
     # with the lid surface they drew over it, the whole iris showed ringed by
@@ -654,15 +686,36 @@ def outfit_for(gender: str, chosen: list[str] | None) -> list[dict]:
 
 def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             gender: str = "male", wear: list[str] | None = None,
-            face_patch: bool = False, pose: str = "relaxed") -> dict:
+            face_patch: bool = False, pose: str = "relaxed",
+            side_photos: list[pathlib.Path] | None = None) -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
         )
 
     raw, groups = load_base()
-    face, landmarks, result = fit_face(photo_path)
-    photo = Image.open(photo_path)
+    face, landmarks, result, photo = fit_face(photo_path)
+    # Photos of the head turned to each side measure the depth one photo can
+    # only guess: the face is fused from all of them (views.fuse), and the fit
+    # trusts depth as far as it was measured.
+    # A turned photo with no face found in it is left out, not the avatar.
+    side_views = []
+    for side in side_photos or []:
+        try:
+            side_views.append(views.view_of(side))
+        except NoFaceFound:
+            pass
+    depth_trust = measured = None
+    if side_views:
+        fused, measured, cameras = views.fuse([views.view_of(photo_path)] + side_views)
+        face = face.copy()
+        face.vertices = fused
+        # Not the lips: thin, moving, and read off a painted lip line, their
+        # fused depth stood a centimetre proud on a rendered test head and
+        # dragged mouth and chin forward with it.
+        lips = morph.INNER_UPPER + morph.INNER_LOWER + morph.OUTER_UPPER + morph.OUTER_LOWER + [61, 291, 78, 308]
+        measured[lips] = 0.0
+        depth_trust = morph.DEPTH_TRUST + (1.0 - morph.DEPTH_TRUST) * measured
 
     # A man's or a woman's body first, then the face fitted on top of it.
     base = morph.body_for(raw, gender)
@@ -673,6 +726,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # cancels instead of being baked into the shape.
     average = place_face(morph.canonical_face(), base, groups).vertices
     person = place_face(face, base, groups).vertices
+    if side_views:
+        # How the fused face was put on the skull, to project the head back
+        # into the turned photos for painting (views.paint_sides).
+        to_fused = np.ptp(person[:, 0]) / np.ptp(fused[:, 0])
+        to_fused = (to_fused, person.mean(axis=0) - to_fused * fused.mean(axis=0))
     corr = morph.correspondences(base, groups["body"], average[:468])
     # The photo's expression is fitted alongside, so a smile is not taken for
     # a wide mouth, and the mesh is built from identity alone: a resting face.
@@ -687,9 +745,24 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                                         expression_of(result))
     shape_weights, shape_names, expression = morph.fit(base, corr, person, average,
                                                        expression_of(result), front,
-                                                       outline_trust)
+                                                       outline_trust, depth=depth_trust)
+    shape_weights = morph.lip_volume(shape_weights, shape_names, base, corr, person)
     vertices = morph.apply(base, shape_weights)
     shape_fit = morph.explained(base, corr, person, average, shape_weights, expression, front)
+    # The lips' and eyelids' shape the targets could not reach, free-form.
+    # Only those: corrected everywhere, the nose followed MediaPipe's own nose
+    # points, which do not sit on the mesh's, and came out further from the
+    # photo on every test face, and the outline's points slide with the
+    # silhouette. The lids: the mesh's eyes rendered 1-4% of the eye spacing
+    # more open than every test photo's.
+    lip_marks = np.zeros(len(corr))
+    lip_marks[morph.INNER_UPPER + morph.INNER_LOWER + morph.OUTER_UPPER + morph.OUTER_LOWER + [61, 291, 78, 308]] = 1.0
+    lip_marks[list(appearance.EYE_CONTOURS[0]) + list(appearance.EYE_CONTOURS[1])] = 1.0
+    # Towards the lips closed: the mesh's met 1.4% of the eye spacing apart on
+    # a photo whose own were 0.4 apart, and a sliver of teeth showed.
+    vertices = morph.correct(vertices, base, corr, morph.close_lips(person), average, shape_weights, expression,
+                             front, np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks)
+    vertices = morph.seal_lips(vertices, corr)
 
     # The same expression taken off the landmarks the photo is baked through,
     # and the lips closed, so the photo's smile is warped back onto a relaxed
@@ -720,6 +793,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = mouth_onto_mesh(full_face.vertices, vertices, corr)
+    full_face.vertices = eyes_onto_mesh(full_face.vertices, vertices, corr)
     placed = trim_face_border(full_face)
 
     # The hair as the photo shows it, from a segmentation of the photo: its
@@ -771,6 +845,14 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
             hairline_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["hairline"] * spacing
             garments.sweep_back(mesh, vertices, groups, appearance.opaque_hair(mesh), hairline_y)
+        if item["category"] == "hair" and "mhclo" in item and hair_reading and hair_reading.get("rise"):
+            # And up to the photo's height over the forehead: the stock cuts lie flat.
+            spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
+            rise_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["rise"] * spacing
+            garments.volumise(mesh, vertices, groups, rise_y)
+            # And out to the photo's outline at the sides.
+            garments.widen(mesh, vertices, groups, float(vertices[corr[[105, 334]], 1].mean()), spacing,
+                           hair_reading.get("widths"))
         if item["category"] == "brows":
             mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
         if item["category"] in ("teeth", "tongue"):
@@ -921,6 +1003,15 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         np.asarray(head_texture), facetexture.rasterize(ears, head_faces, head_uv_all, head_uv_faces,
                                                         head_texture.size[0], fill=0.0)))
     rest_base = shade(rest_base, rest_faces, uv_all, rest_uv_faces, cavity)
+    if side_views:
+        # The cheeks' sides and the jaw towards the ear, which the front
+        # photo never saw, from the turned photos. Not the ears: no landmark
+        # finds them, and a few millimetres' misfit painted the photo's ear
+        # half beside the mesh's.
+        head_texture, _ = views.paint_sides(head_texture, vertices, head_faces, head_uv_all, head_uv_faces,
+                                            photo_strength, to_fused,
+                                            [(view[2], camera) for view, camera in zip(side_views, cameras[1:])],
+                                            skip=appearance.ear_weight(len(vertices)))
 
     # Fingernails: the base mesh's fingertips are smooth skin to the end. The
     # nail is found from the rig (appearance.nail_weight), painted lighter and
@@ -1057,6 +1148,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "source_photo": photo_path.name,
         "photo_size": list(photo.size),
         "kind": "full-body",
+        "side_views": len(side_views),
         "shape": {
             "explained": round(shape_fit, 3),
             "active_targets": int((shape_weights > 0.05).sum()),
@@ -1103,6 +1195,8 @@ def main() -> int:
     parser.add_argument("photo", type=pathlib.Path)
     parser.add_argument("-o", "--out", type=pathlib.Path, required=True)
     parser.add_argument("--gender", choices=["male", "female"], default="male")
+    parser.add_argument("--side", type=pathlib.Path, action="append", default=[],
+                        help="a photo of the head turned to one side (30-45 degrees); give it once per side")
     parser.add_argument("--wear", help="comma-separated catalogue ids, overriding the default outfit")
     parser.add_argument("--face-patch", dest="face_patch", action="store_true",
                         help="also lay the fitted landmark patch over the head. Off by default: "
@@ -1114,7 +1208,8 @@ def main() -> int:
 
     try:
         info = compose(args.photo, args.out, args.gender,
-                       args.wear.split(",") if args.wear else None, args.face_patch, args.pose)
+                       args.wear.split(",") if args.wear else None, args.face_patch, args.pose,
+                       side_photos=args.side or None)
     except NoFaceFound:
         print("no face found in the photo", file=sys.stderr)
         return 1

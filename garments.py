@@ -653,6 +653,118 @@ def sweep_back(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, edge: 
     return float(np.degrees(turn))
 
 
+# Where a lift spreads over a haircut: by height up the head (0 at the eyes,
+# 1 at the crown), none below the first and all above the second; and round
+# from the front, all within the first angle and none past the second.
+VOLUME_SPAN = ((0.3, 0.8), (60.0, 150.0))
+# How far up from the hair's front edge (mesh units) the lift takes to come
+# in full. Lifted right at the edge, the hair stood off the forehead as a
+# shell and its dark inside showed under the fringe.
+VOLUME_RAMP = 0.6
+
+
+def volumise(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, rise_y: float) -> float:
+    """Lift a haircut's top and front off the scalp until it stands as high as
+    `rise_y` over the middle of the forehead. Returns the lift at full weight.
+
+    MakeHuman's cuts all lie close to the head: on the test photos the hair
+    stands 1.2 to 1.5 eye spacings above the brows, every stock cut 0.9 to 1.2,
+    the quiff of a swept-up cut being the commonest thing missing. The hair is
+    pushed out along the scalp's normals, fully over the top and front and
+    easing off towards the eyes, the sides and the back (VOLUME_SPAN), and
+    from nothing at its front edge (VOLUME_RAMP), so it rises from the hairline
+    as a quiff does and keeps its shape. A cut already that high is left alone.
+    """
+    from scipy.spatial import cKDTree
+
+    smooth = lambda t: (lambda c: c * c * (3.0 - 2.0 * c))(np.clip(t, 0.0, 1.0))
+    skin = np.unique(groups["body"])
+    eyes = vertices[np.unique(np.r_[groups["joint-l-eye"], groups["joint-r-eye"]])].mean(axis=0)
+    crown = vertices[np.unique(groups["joint-head-2"])].mean(axis=0)
+    centre = vertices[np.unique(groups["joint-head"])].mean(axis=0)
+    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
+    near = skin[cKDTree(vertices[skin]).query(hair.vertices)[1]]
+
+    (low, high), (full, none) = VOLUME_SPAN
+    height = (vertices[near, 1] - eyes[1]) / max(crown[1] - eyes[1], 1e-6)
+    angle = np.degrees(np.abs(np.arctan2(hair.vertices[:, 0] - centre[0], hair.vertices[:, 2] - centre[2])))
+    middle = np.abs(hair.vertices[:, 0] - centre[0]) < 0.3
+    front = middle & (hair.vertices[:, 2] > centre[2])
+    if not front.any():
+        return 0.0
+    edge = np.percentile(hair.vertices[front, 1], 3)
+    weight = (smooth((height - low) / (high - low)) * smooth((none - angle) / (none - full))
+              * smooth((hair.vertices[:, 1] - edge) / VOLUME_RAMP))
+
+    top = np.percentile(hair.vertices[middle, 1], 98)
+    need = rise_y - top
+    if need <= 0.0:
+        return 0.0
+    # The top rises by the lift times how far its normal points up.
+    up = float(np.median((weight * normals[near, 1])[middle & (hair.vertices[:, 1] >= top - 0.05)]))
+    lift = need / max(up, 0.3)
+    hair.vertices = hair.vertices + normals[near] * (lift * weight)[:, None]
+    return float(lift)
+
+
+# How much wider than the cut the photo's outline may make it, at most (a
+# share of the cut's own width at that height).
+WIDEN_LIMIT = 0.2
+# A cut's rendered outline against its vertices' (both in eye spacings, the
+# render's read as the photo's are): 1.01-1.10 on the four test faces.
+HAIR_RENDER_SPREAD = 1.06
+
+
+def widen(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, brow_y: float,
+          spacing: float, widths: list) -> np.ndarray:
+    """Push a haircut's sides out until its outline, seen from the front, has
+    the photo's shape. Returns the push at each of appearance.HAIR_WIDTH_ROWS.
+
+    `widths`: the photo's hair half-width at those heights above the brows
+    (`brow_y`), in eye spacings (`spacing`), as read_hair reads them. The
+    cut's own outline is measured the same way from its vertices, scaled by
+    how much wider a cut renders than its vertices (HAIR_RENDER_SPREAD). On
+    the test photos swept-back hair stands wider over the temples than any
+    stock cut: up to a fifth wider at 0.75 eye spacings above the brows. The
+    sides are pushed out along the scalp's normals, as far as each part faces
+    sideways, so the cut keeps its shape from every side; never pulled in,
+    which would sink cards into the scalp.
+
+    Matching only the outline's shape (each height against the width at the
+    brows) widened a cut whose photo was narrower at the brows than the cut
+    all the way up, and on one photo the temples came out 14% too wide.
+    """
+    from scipy.spatial import cKDTree
+    import appearance
+
+    rows = np.array(appearance.HAIR_WIDTH_ROWS)
+    if not widths or widths[0] is None or any(w is None for w in widths):
+        return np.zeros(len(rows))
+    centre = vertices[np.unique(groups["joint-head"])].mean(axis=0)
+    v = hair.vertices
+    own = []
+    for above in rows:
+        band = np.abs(v[:, 1] - (brow_y + above * spacing)) < 0.05 * spacing
+        if not band.any():
+            return np.zeros(len(rows))
+        x = v[band, 0] - centre[0]
+        own.append((x.max() - x.min()) / 2 / spacing)
+    own = np.array(own)
+    photo = np.array(widths, dtype=np.float64)
+    push = np.clip(photo / HAIR_RENDER_SPREAD - own, 0.0, WIDEN_LIMIT * own) * spacing
+
+    skin = np.unique(groups["body"])
+    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
+    near = skin[cKDTree(vertices[skin]).query(v)[1]]
+    height = (v[:, 1] - brow_y) / spacing
+    # From the top row up the push holds; below the brows it fades out, so the
+    # sideburns and the hair over the ears stay as the cut has them.
+    amount = np.interp(height, np.r_[rows[0] - 0.25, rows], np.r_[0.0, push])
+    sideways = np.abs(normals[near, 0])
+    hair.vertices = v + normals[near] * (amount * sideways)[:, None]
+    return push
+
+
 def enclosed_by_shoe(shoes: trimesh.Trimesh, points: np.ndarray, margin: float = 0.05) -> np.ndarray:
     """Which points a pair of shoes encloses: within their footprint and below
     the lowest point of the opening the foot goes in by, less `margin`.
