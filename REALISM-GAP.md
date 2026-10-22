@@ -1352,6 +1352,24 @@ photo-14 now runs a little wide low on the temples (1.16 against 1.02).
 picked the right cut 4 times to the rules' 5, and beard styles 2 of 6; its raw
 scores carry no usable confidence, and it brings about 800 MB of torch.
 
+**Depth Anything V2 Small (Apache-2.0; Base and Large are CC-BY-NC) for
+one photo's depth: not used.** Its relative depth, sampled at the landmarks and
+scaled to MediaPipe's, against the rendered test head's true depth (in front
+of the eye corners, % of eye spacing, RMS over all landmarks / the central face):
+
+| | all | central | nose | subnasale | chin 152 | jaw 172 |
+|---|---|---|---|---|---|---|
+| MediaPipe's own guess | 5.9 | 6.0 | -4.4 | -8.0 | -15.9 | +6.0 |
+| Depth Anything | 11.1 | 8.6 | -4.1 | +8.4 | +8.8 | +35.1 |
+| Depth Anything, scaled on the central face | 13.0 | 10.3 | -16.1 | -3.2 | +1.5 | |
+| half and half on the central face | 7.1 | 7.2 | -10.2 | -5.6 | -7.2 | |
+
+It flattens the face's sides (the jaw corner a quarter as deep as it is) and
+puts the chin forward where MediaPipe puts it back; no mix of the two beat
+MediaPipe alone. One caveat: the test head is a render, and a model trained on
+photos may do better on photos, which have no ground truth here. Turned photos
+(above) remain the way to measured depth.
+
 **Scoring by a face-recognition model** (`score.py`): AWS Rekognition
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
