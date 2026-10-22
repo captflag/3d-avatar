@@ -810,6 +810,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb, lighting, face_mask = delight.delight(photo_rgb, landmarks, load_canonical_faces(), cheeks,
                                                     exclude=facial_hair)
     bare_skin = face_mask & (facial_hair < 0.2)
+    skin_rgb = appearance.sharpen_creases(skin_rgb, landmarks, face_mask, keep_out=facial_hair)
     # The mouth is closed on the avatar; paint the photo's open mouth over in
     # lip colour so no teeth get baked across the lips.
     skin_rgb, mouth_filled = appearance.fill_mouth(skin_rgb, landmarks, cheeks)

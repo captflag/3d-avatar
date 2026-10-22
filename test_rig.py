@@ -168,7 +168,7 @@ def check_proportions():
     weights, _, _ = morph.fit(vertices, corr, person, average)
     shaped = morph.apply(vertices, weights)[corr]
     for k, (name, (i, j)) in enumerate(zip(("eye spacing", "face width", "jaw width", "face height",
-                                            "nose to chin"), morph.PROPORTIONS)):
+                                            "nose to chin", "cheekbone width", "cheek width"), morph.PROPORTIONS)):
         got = np.linalg.norm((shaped[j] - shaped[i])[:2])
         assert abs(got / want[k] - 1) < 0.015, f"{name} fitted {100 * (got / want[k] - 1):+.1f}% off"
     print("ok  proportions: eye spacing, widths, height and chin fit within 1.5%")
@@ -591,6 +591,25 @@ def check_likeness_details():
     assert np.mean(dark) < lab((200, 160, 140)) - 40, f"under the edge the skin stayed L {np.mean(dark):.0f}"
     print(f"ok  likeness details: skin at {ratio:.2f} of the photo for lift {delight.RENDER_LIFT}, closed mouth kept, "
           f"thin lips thinned, hairline tint solid under the edge (L {np.mean(dark):.0f})")
+
+
+def check_mouth_set():
+    """On a face that is not smiling, the mouth's press and draw-in are not
+    taken off as expression; on a smiling face they still are."""
+    import morph
+    from compose import place_face
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    person = morph.reference(vertices, corr, average)
+    set_scores = {"mouthPressLeft": 0.5, "mouthPressRight": 0.5, "mouthDimpleLeft": 0.4, "mouthSmileLeft": 0.02}
+    _, _, at_rest = morph.fit(vertices, corr, person, average, set_scores)
+    assert at_rest["mouth-compression"] == 0.0 and at_rest["mouth-retraction"] == 0.0,         f"a set mouth was fitted as expression: {at_rest}"
+    smiling = dict(set_scores, mouthSmileLeft=0.6, mouthSmileRight=0.6)
+    _, _, grin = morph.fit(vertices, corr, person, average, smiling)
+    assert "mouth-corner-puller" in grin, "the smile unit is missing"
+    print("ok  mouth set: press and draw-in kept as shape on a face at rest, fitted as expression with a smile")
 
 
 def check_lashes_and_brows():
@@ -1352,6 +1371,7 @@ if __name__ == "__main__":
         check_hair_cap()
         check_lip_correction()
         check_lashes_and_brows()
+        check_mouth_set()
         check_eye_carry()
         check_likeness_details()
         check_side_paint()

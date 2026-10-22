@@ -1374,6 +1374,74 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## The lower face: cheeks, lighting, mouth
+
+Seventeen things flagged on photo-16's cheeks, mouth, chin and jaw;
+fixed in the order they were listed, each measured before and after on
+all five faces (render minus photo, % of iris spacing or L*).
+
+**Mid-face width.** The cheeks rendered 5-9 off in either direction (a
+broad face oval, a narrow one broad). Cheekbone (50-280) and mid-cheek
+(123-352) width joined the fitted proportions: ref-man +8.1 -> +4.9,
+ref-woman +7.5 -> +4.5. On the narrow faces nothing moved, and the fit's
+own landmarks turned out to match the photo's widths exactly (cheekbone
+106.9 against 106.8, jaw 119.0 against 118.8): what the detector reads as
+narrow on the render is shading, not shape. photo-10 (laughing) came out
+narrower (-1.4 -> -6.1) and its whole-face error 3.25 -> 3.66; the
+proportion rows read a laugh's cheeks as the face's.
+
+**Lighting symmetry.** One cheek rendered 42 L* brighter than the other
+relative to the photo, on three of five faces. Not the texture (the
+de-lit face is 10 L* the other way), not the mesh (left/right pairs within
+1%), not the key and fill (moving the fill up changed it by 3). A flat
+grey head with every directional light off still split 39: the room
+environment map is the lopsided light, and removing it left the head dark
+and symmetric. Rotated about the vertical, the grey head's split went
++70 at -20 degrees, +39 at 0, -15 at +20; the environment is now turned
++14. Split on the five faces: +24 / +1 / +40 / +42 / +43 -> +12 / -6 /
++22 / +14 / +13. Skin brightness elsewhere unchanged.
+
+**Crevice lift.** Lowering it to 0.5 changed nothing on the render: the
+light nasolabial folds and philtrum (+35 / +50) are not the lift. In the
+de-lit photo they are as dark as the photo's; it is the bake that loses
+them, a 214-pixel photo's creases resampled over the texture. An unsharp
+mask on L* after de-lighting (`sharpen_creases`, 0.5 of the detail at a
+fifteenth of the eye spacing, off the stubble and the lips' seam) brings
+the fold back from 16 to 19 L* below the cheek against the photo's 23. At
+0.8 it matched but the stubble broke into blotches.
+
+**Lips.** The lips are less saturated in the texture than in the photo
+(a* +13 against +16/+21) and read more saturated on the render (+25);
+the skin's sheen, the one red-orange thing in the material, is not it
+(sheen off: unchanged). The detector's lip patch takes in the seam, which
+the sealed lips and the occlusion draw darker than the photo's (-37
+against -13 at the start of the round, after the sharpening). Not resolved.
+
+**Mouth set.** The photo's pressed, drawn-in mouth was taken off as
+expression and rendered as a flat line, corners 7-8 higher than the
+photo's. Below a smile of 0.15 the press and retraction units now count as
+the mouth's shape (`SET_SMILE`): corners +7.3 -> +6.4 and +8.6 -> +6.4,
+lip height +5.3 -> +3.2 on one run and +5.0 on another: the detector's
+noise on a 43-pixel mouth is about 2.
+
+**Stubble.** jaw_beard 0.28 is below the beard carry, so the stubble is
+the photo's own specks stretched by the bake: the jaw's darkest tenth 76
+L* below its skin against the photo's 48. Lifting faint stubble towards
+the skin measured nothing and was taken out. A resolution limit.
+
+**The solver.** With the cheek rows added, scipy's trf stopped short of
+the optimum: a face differing from the skull only by a depth shift bent
+head-fat-decr to 0.23 where nothing asked for it (the rig check caught
+it). The fit now uses bvls, which solves the bounded problem exactly, at
+about a second a fit.
+
+Whole-face landmark error, start of the round -> now: ref-man 2.40 ->
+2.27, ref-woman 3.88 -> 3.71, photo-10 3.25 -> 3.66, photo-14 3.07 ->
+3.04. Brows and mouths better on all four; photo-10's nose and jaw worse.
+The cheek-width reading on the renders is not a shape measure (the fit
+matches the photo's widths exactly) and swings with the shading, so it is
+not quoted per face.
+
 ## Eyes and brows against the photo
 
 Measured on photo-16, each eye and brow against the photo's (iris spacing

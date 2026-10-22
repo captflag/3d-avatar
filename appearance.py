@@ -331,6 +331,37 @@ LOWER_LASH = 0.4          # the lower lid's line, as a share of the upper's widt
 BROW_GAIN = 1.6
 
 
+# How much of the face's fine contrast is put back after de-lighting
+# (an unsharp mask on L*, radius a twelfth of the eye spacing). The bake
+# resamples a small photo's creases away: on a 214-pixel face the nasolabial
+# fold rendered 16 L* against its cheek where the photo had 23. At 0.8 the
+# fold matched but the stubble broke into blotches; 0.5 is the middle.
+CREASE_SHARPEN = 0.5
+def sharpen_creases(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray,
+                    keep_out: np.ndarray | None = None) -> np.ndarray:
+    """The face's creases and pores put back a little after de-lighting.
+    `keep_out` (0-1, photo pixels): where not to, the beard and stubble,
+    whose specks a small photo already stretches into blotches."""
+    if face_mask is None or not face_mask.any():
+        return skin_rgb
+    h, w = skin_rgb.shape[:2]
+    if keep_out is not None:
+        face_mask = face_mask & (keep_out < 0.2)
+    # And off the lips' seam: sharpened, the closed mouth's line went twice as
+    # dark as the photo's (lip line L* -36 against -18 before, photo -70 on
+    # its own scale... measured as -110 against -70 on the render).
+    from delight import INNER_LIPS
+    seam = np.zeros((h, w), np.uint8)
+    cv2.polylines(seam, [np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in INNER_LIPS], np.int32)], True, 1,
+                  max(int(0.08 * np.hypot((landmarks[61].x - landmarks[291].x) * w, (landmarks[61].y - landmarks[291].y) * h)), 2))
+    face_mask = face_mask & (seam == 0)
+    lab = cv2.cvtColor(np.ascontiguousarray(skin_rgb), cv2.COLOR_RGB2LAB).astype(np.float32)
+    spacing = np.hypot((landmarks[33].x - landmarks[263].x) * w, (landmarks[33].y - landmarks[263].y) * h)
+    blur = cv2.GaussianBlur(lab[..., 0], (0, 0), max(spacing / 15.0, 1.0))
+    lab[..., 0] = np.where(face_mask, np.clip(lab[..., 0] + CREASE_SHARPEN * (lab[..., 0] - blur), 0, 255), lab[..., 0])
+    return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+
+
 def paint_lashes(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks) -> np.ndarray:
     """The upper lash line, as dark as the photo's, drawn on the lid skin just
     outside the eye opening after fill_eyes has painted the opening over.
