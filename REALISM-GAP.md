@@ -1374,6 +1374,49 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Where the face is lost: reading, fitting, rendering
+
+Each stage measured on its own, in the upright front-on frame (% of the eye
+spacing). The fit compares the mesh's landmark vertices with the photo's
+landmarks. The render compares the landmarks found on the render with the
+photo's.
+
+- **Fit**: about 3.5 across the face. Eyes 1.2-1.3, mouth 1.3-1.7 (3.5 on
+  the laugh), nose 2.2-2.9, outline 5-7, brows 4-7. The outline is the
+  largest error the fit leaves.
+- **Render**: about 3-5. The nose (2.5 -> 3.6-6.6) and the mouth (1.5 ->
+  2.2-8.2) are lost here, between the paint and the mesh. The brows gain:
+  the painted brows follow the photo and hide the mesh's 4-7.
+- **Reading**: three small photos of one man (29-41 px faces) disagreed
+  with each other by 5-8, more than the fit or the render lose. On photos
+  like those, the reading is the bottleneck.
+
+**The head was turned 4 degrees.** `relaxed_pose` turned the neck to the
+side. Every render's nose line sat off-centre, one cheek 17-20% wider than
+the other whatever the photo (photos: -11 to +10). The mesh itself is
+balanced to 1-3. With the head square, renders balance within 2, and the
+landmark error is better on all five faces:
+
+| face | whole face | jaw | nose | brows |
+|---|---|---|---|---|
+| ref-man | 2.38 -> 2.12 | 4.83 -> 3.37 | 2.41 -> 2.64 | 3.03 -> 2.11 |
+| ref-woman | 3.75 -> 2.94 | 8.19 -> 6.24 | 5.53 -> 3.88 | 3.85 -> 3.29 |
+| photo-10 | 3.52 -> 2.30 | 8.07 -> 5.66 | 4.85 -> 2.98 | 4.00 -> 3.44 |
+| photo-14 | 3.01 -> 2.89 | 6.33 -> 5.52 | 3.91 -> 4.14 | 4.67 -> 4.51 |
+| photo-16 | 3.03 -> 2.91 | 6.00 -> 5.36 | 4.09 -> 4.22 | 4.34 -> 4.66 |
+
+Part of the face-width and jaw gap the earlier rounds put down to MediaPipe
+wandering was this turn.
+
+**Outline correction, tried again, set aside.** The jaw and cheek outline
+(234, `JAW_OUTLINE`, 454) was added to `morph.correct` at full trust. The
+mesh's outline vertices moved to the photo's (fit outline 5.5 -> 3.0 on
+photo-16), but the outline the detector finds on the render did not follow
+them. On the squared head: ref-man 2.12 -> 2.04, ref-woman flat, photo-10
+2.30 -> 2.35, photo-14 2.89 -> 3.02, photo-16 2.91 -> 3.03, and the jaw was
+worse on three faces. Taken out. The outline needs the render in the loop:
+fit the silhouette the camera sees, not the landmark vertices.
+
 ## The last open items, each tried
 
 - **Brow height**: the eye carry widened to 0.7 eye spacings and faded

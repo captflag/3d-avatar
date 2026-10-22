@@ -359,7 +359,11 @@ def relaxed_pose() -> dict:
     hip = 5.0
     pose["root"] = turn(z=-hip)                       # right hip up
     pose["spine05"] = turn(z=hip + 2.0)               # torso back up, shoulders tilt left-down
-    pose["neck01"] = turn(z=-2.0, y=4.0)              # head level, a slight turn
+    # Head level and square to the camera, as a portrait photo has it. A 4
+    # degree turn here put every rendered face's nose line 9% of the eye
+    # spacing off-centre: one cheek 17-20% wider than the other, whatever the
+    # photo, read as a crooked face.
+    pose["neck01"] = turn(z=-2.0)
     # The base mesh stands with its ankles twice its hip width apart; at ease
     # they are about hip width (measured: 2.7 against hips of 2.2).
     # Weight leg: in under the body's centre.
