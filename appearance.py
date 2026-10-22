@@ -459,12 +459,13 @@ HAIR_COVER_REACH = 0.015
 
 # How far below the hair's lowest strands the hairline tint stays solid (mesh
 # units, ~10 cm each) before it fades into wisps.
-HAIRLINE_SOLID = 0.06
+HAIRLINE_SOLID = 0.08
 
 
 def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray,
                   uv_faces: np.ndarray, hair_points: np.ndarray, hair_rgb,
-                  fade: float = 0.15, strength: float = 0.85, spare: np.ndarray | None = None):
+                  fade: float = 0.08, strength: float = 0.85, spare: np.ndarray | None = None,
+                  return_weight: bool = False):
     """Paint a soft hairline onto the skin under and just below the hair.
 
     Hair cards end in a row on the forehead, so the hair met the skin in a
@@ -571,10 +572,20 @@ def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarr
     solid = np.clip((weight / max(strength, 1e-6) - 0.55) / 0.35, 0.0, 1.0)
     wisps = np.clip(weight * (0.7 + 0.6 * hairs), 0.0, strength)
     weight = solid * weight + (1.0 - solid) * wisps
-    root = np.asarray(hair_rgb, dtype=np.float64) * 0.7
+    # The root shade is written into the head texture after the skin's
+    # exposure, so it takes the same division by the renderer's lift the skin
+    # did (delight.RENDER_LIFT), or it renders a third too bright: under a
+    # black quiff the scalp read as a brown band.
+    from delight import RENDER_LIFT, to_linear, to_srgb
+    root = to_srgb(to_linear(np.asarray(hair_rgb, dtype=np.float64) * 0.7) / RENDER_LIFT)
     rgb = np.asarray(texture.convert("RGB")).astype(np.float64)
     out = rgb * (1 - weight[..., None]) + root * weight[..., None]
-    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+    tinted = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+    if return_weight:
+        # Also how far each texel lies below the hair's edge (mesh units,
+        # negative above it; nan off the mesh), for the cap under the cards.
+        return tinted, weight, np.where(on, line - at[..., 1], np.nan)
+    return tinted
 
 
 # ----------------------------------------------------------------- beard ------

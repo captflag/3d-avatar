@@ -19,6 +19,7 @@ import json
 import pathlib
 import sys
 
+import cv2
 import numpy as np
 import trimesh
 from PIL import Image
@@ -168,6 +169,19 @@ def dye_colour(rgb) -> np.ndarray:
 # mouth, as a share of the mouth's width (Gaussian reach): the skin round the
 # lips, and then the lips themselves exactly.
 MOUTH_CARRY = (0.45, 0.15)
+# The hair cap under a haircut's cards: how far off the skin it sits (mesh
+# units; the cards lie closer than 0.05 at the back of the head) and the
+# tint weight it is cut to (see hairline_tint).
+CAP_OFFSET = 0.012
+CAP_CUT = 0.05
+# How far below the hair's edge the cap fades out (mesh units): opaque
+# under the cards, gone a centimetre below their lowest strands, where the
+# photo shows skin between sparse hairs.
+CAP_FADE = 0.06
+# And how far above the lowest strands it starts to fade: the lowest few
+# strands per slice set the edge, and a cap opaque down to them put solid
+# hair 0.15 eye spacings lower than the photo's.
+CAP_RAISE = 0.1
 # How far round each eye the photo is carried onto the mesh's eye, in eye
 # spacings (Gaussian reach): far enough that the brow comes with it.
 EYE_CARRY = 0.5
@@ -992,9 +1006,9 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     if haircut is not None and hair_rgb is not None:
         # A soft hairline painted on the skin, so the hair cards do not end on
         # bare forehead in a hard line.
-        head_texture = appearance.hairline_tint(head_texture, vertices, head_faces, head_uv_all,
-                                                head_uv_faces, appearance.opaque_hair(haircut), hair_rgb,
-                                                spare=sampler.sample(vertices)[1])
+        head_texture, hair_cover, hair_below = appearance.hairline_tint(head_texture, vertices, head_faces, head_uv_all,
+                                                            head_uv_faces, appearance.opaque_hair(haircut), hair_rgb,
+                                                            spare=sampler.sample(vertices)[1], return_weight=True)
     # The body's one map runs neck to toe; at 1024 a nail was 8 texels wide.
     rest_base = skin.albedo(SKIN_SIZE, skin_mean, skin_spread, seed=7)
 
@@ -1108,6 +1122,45 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         # edge glow at grazing angles.
         parts[-1].sheen = SKIN_SHEEN
         parts[-1].roughness_texture = head_roughness if name == "head" else body_roughness
+    if haircut is not None and hair_rgb is not None:
+        # A cap in the hair's root shade under the cards, opaque where the
+        # tint is solid and dissolving into the same wisps below the hair's
+        # edge. The lifted front of a swept-back cut stands off the forehead,
+        # and between its strands the tinted skin showed, lit as skin: a
+        # brown band under black hair. An opaque shell there reads as the
+        # hair's shadowed underside, as a real hairline does.
+        centres = (head_uv_all[head_uv_faces].mean(axis=1) * (hair_cover.shape[0] - 1))
+        rows = np.clip((hair_cover.shape[0] - 1 - centres[:, 1]).astype(int), 0, hair_cover.shape[0] - 1)
+        cols = np.clip(centres[:, 0].astype(int), 0, hair_cover.shape[1] - 1)
+        # Above the brows only: lower, beside the ears, the cap showed as
+        # dark patches where no card covers it.
+        brow_line = float(vertices[corr[[105, 334]], 1].mean())
+        under = (hair_cover[rows, cols] > CAP_CUT) & (vertices[head_faces, 1].min(axis=1) > brow_line)
+        if under.sum() > 10:
+            cap, cap_uv = submesh_uv(head_faces[under], head_uv_faces[under],
+                                     vertices + CAP_OFFSET * skin_normal, uv=head_uv_all)
+            shade = np.clip(dye_colour(hair_rgb) * 0.6, 0, 255).astype(np.uint8)
+            # Opaque where the tint is solid, gone where it has thinned to
+            # wisps (CAP_FADE): cut at the tint's own fade it stood a hard,
+            # dark edge below the hair, 16 L* a row against the photo's 11.
+            # Blended, not cut (cut at half alpha, the wisps' breakup drew the
+            # edge as a sawtooth), opaque above the hair's edge and fading
+            # over CAP_FADE below it; the tint's own plateau reaches further
+            # down, and a cap cut to it covered skin the photo shows between
+            # the hairline's sparse hairs (the strip under the hair L* 85
+            # against the photo's 137).
+            cover = np.clip(1.0 - (np.nan_to_num(hair_below, nan=1.0) + CAP_RAISE) / CAP_FADE, 0.0, 1.0)
+            cover = cv2.GaussianBlur(cover, (0, 0), 6)
+            cover = Image.fromarray((cover * 255).astype(np.uint8)).resize((1024, 1024))
+            cap_texture = Image.merge("RGBA", (*(Image.new("L", (1024, 1024), int(c)) for c in shade), cover))
+            source = cap.metadata["base_index"]
+            parts.append(skinned_glb.Part(
+                "scalp_cap", cap.vertices, cap.faces, joints[source], weights[source],
+                uv=gltf_uv(cap_uv), texture=cap_texture,
+                normals=skin_normal[source], roughness=0.95,
+            ))
+            parts[-1].alpha_blend = True
+            parts[-1].morphs = expression_morphs(cap, face_shapes)
     for item, mesh in worn:
         finish = item.get("roughness", ROUGHNESS.get(item["category"], 0.8))
         parts.append(rigged_part(item["id"], mesh, finish, vertices, groups,

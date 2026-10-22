@@ -422,6 +422,38 @@ def check_hair_tangents():
           f"{np.percentile(turn, 99):.0f} degrees along a card edge")
 
 
+def check_hair_cap():
+    """A haircut's avatar carries a blended cap under the cards: in the
+    hair's root shade, above the brows only, its alpha smooth (not a
+    cut-out), opaque under the cards and gone a little below their edge."""
+    import io
+    import pygltflib as gl2
+    from PIL import Image
+
+    photo = HERE / "samples" / "portrait.jpg"
+    if not photo.exists():
+        print("skip hair cap check: samples/portrait.jpg is missing")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "cap.glb"
+        compose(photo, out, "male")
+        g = gl2.GLTF2().load(str(out)); blob = g.binary_blob()
+        names = [m.name for m in g.materials]
+        assert "scalp_cap" in names, f"no scalp cap among {names}"
+        m = g.materials[names.index("scalp_cap")]
+        assert m.alphaMode == "BLEND", f"cap alpha mode {m.alphaMode}"
+        img = g.images[g.textures[m.pbrMetallicRoughness.baseColorTexture.index].source]
+        bv = g.bufferViews[img.bufferView]
+        alpha = np.asarray(Image.open(io.BytesIO(blob[bv.byteOffset:bv.byteOffset + bv.byteLength])).convert("RGBA"))[..., 3]
+        partial = float(((alpha > 0) & (alpha < 255)).mean())
+        assert partial > 0.02, f"cap alpha is a cut-out ({partial:.3f} partial)"
+        assert (alpha == 255).mean() > 0.05, "cap is nowhere opaque"
+        prim = next(p for p in g.meshes[0].primitives if names[p.material] == "scalp_cap")
+        a = g.accessors[prim.attributes.POSITION]
+        assert a.min[1] > 7.3, f"cap reaches down to y {a.min[1]:.2f}, below the brows"
+    print(f"ok  hair cap: blended, {partial:.0%} of its texels fading, opaque under the cards, above the brows")
+
+
 def check_hair_width():
     """A cut whose outline is narrower over the temples than the photo's is
     pushed out there to the photo's shape, and no further than WIDEN_LIMIT;
@@ -1277,6 +1309,7 @@ if __name__ == "__main__":
         check_hair_volume()
         check_hair_width()
         check_hair_tangents()
+        check_hair_cap()
         check_lip_correction()
         check_eye_carry()
         check_likeness_details()

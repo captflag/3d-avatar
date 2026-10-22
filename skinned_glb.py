@@ -44,6 +44,7 @@ class Part:
         self.texture = texture          # a PIL image, or None
         self.normal_texture = normal_texture  # a PIL image in tangent space, or None
         self.alpha_mask = alpha_mask    # texture alpha below 0.5 is cut away
+        self.alpha_blend = False        # or blended by the texture's alpha (a soft edge)
         self.roughness = roughness      # written into the file, so every engine agrees
         self.normal_scale = normal_scale
         self.normals = None if normals is None else np.asarray(normals, dtype=np.float32)
@@ -197,7 +198,8 @@ def _quantise_weights(weights: np.ndarray) -> np.ndarray:
     return np.clip(q, 0, 255).astype(np.uint8)
 
 
-def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None) -> int:
+def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None,
+                 smooth_alpha: bool = False) -> int:
     """Embed an image and return its texture index.
 
     The same image object passed twice is embedded once: head, body and face
@@ -209,7 +211,12 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None)
     if _seen is not None and id(image) in _seen:
         return _seen[id(image)]
     data = io.BytesIO()
-    if image.mode == "RGBA":
+    if image.mode == "RGBA" and smooth_alpha:
+        # A blended part keeps its alpha as it is: the hair cap fades out
+        # under the hairline, and cut at half alpha its edge was a sawtooth.
+        image.save(data, format="PNG", optimize=True)
+        mime = "image/png"
+    elif image.mode == "RGBA":
         # Every RGBA texture here is a cut-out (alpha MASK at 0.5), so its alpha
         # is one transparent palette slot and its colour 255 entries, median
         # cut and dithered: the body's skin went from 947 to 432 KB at about
@@ -329,11 +336,13 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
         )
         if part.texture is not None:
             material.pbrMetallicRoughness.baseColorTexture = gl.TextureInfo(
-                index=_add_texture(gltf, buf, part.texture, _seen=embedded)
+                index=_add_texture(gltf, buf, part.texture, _seen=embedded, smooth_alpha=part.alpha_blend)
             )
         if part.alpha_mask:
             material.alphaMode = "MASK"
             material.alphaCutoff = 0.5
+        if part.alpha_blend:
+            material.alphaMode = "BLEND"
         if part.normal_texture is not None:
             # Pores and grain: breaks up the highlight so skin stops reading as
             # plastic under a key light.

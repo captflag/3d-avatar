@@ -1412,7 +1412,28 @@ taken from the mesh with coincident positions merged (`welded_normals`)
 and tangents summed per position, so the copies agree exactly (the file's
 byte normals differ by 8.6 degrees at most, from rounding). Fine-scale
 noise 17.5 -> 16.6 against the photo's 15.0, brightness unchanged
-(41 / 31 / 80). What is left is the cards' own silhouettes and the alpha
+(41 / 31 / 80).
+
+**The gap under the cards: a cap.** A swept-back cut's lifted front stands
+off the forehead, and between its sparse lowest strands the tinted skin
+showed, lit as skin: a brown band under black hair, read as a gap between
+hair and skull. Tried on the band first, in order: the tint's root shade
+divided by the renderer's lift like the skin (right, kept, but the band
+stayed brown: 143 -> 142 L*); a longer solid plateau and shorter fade
+(kept: band 0.20 -> 0.17 eye spacings); full-strength tint (the strip under
+the hair went darker than the photo's, 112 against 137: not kept); coarse
+strands drawn across the whole tint (brown stripes: not kept). What closed
+the gap was geometry: `compose` now adds a cap (`scalp_cap`) cut from the
+head's own faces 0.012 off the skin, above the brows, in the hair's root
+shade, blended by a smooth alpha (the exporter's RGBA path quantises alpha
+to a cut-out, so blended parts keep theirs) that is opaque under the cards
+and fades over 0.06 units from 0.1 above their lowest strands. Cut at half
+alpha instead, the wisps drew its edge as a sawtooth, and opaque down to the
+lowest strands it put solid hair 0.15 eye spacings lower than the photo's
+(the strip under the hair 85 against 137). Now: solid hair starts 0.88
+above the brows (photo 0.93), the strip 118 (photo 137; 125 before the
+cap), its edge 6.9 L* a row (photo 10.6). Nothing of it shows from the
+side or the back. What is left is the cards' own silhouettes and the alpha
 cut at their tips.
 
 ## One face audited to the detail: photo-16
