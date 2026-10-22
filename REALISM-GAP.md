@@ -1424,6 +1424,15 @@ the mouth's shape (`SET_SMILE`): corners +7.3 -> +6.4 and +8.6 -> +6.4,
 lip height +5.3 -> +3.2 on one run and +5.0 on another: the detector's
 noise on a 43-pixel mouth is about 2.
 
+**Two more, tried and taken out.** The closed mouth's painted seam lifted
+halfway towards the lip colour before the renderer's occlusion darkens the
+crease: the lip-line reading did not move, and on ref-woman it swung from
++87 to -110 between two renders of the same thing, so that measure is the
+detector's noise on a few pixels and says nothing. The cheek width rows
+faded out with a smile, for photo-10: its widths came in (-6.1 -> -2.4) and
+its whole-face error went out (3.66 -> 3.76). photo-10's cheek rows stay
+as they are; its laugh is the limit.
+
 **Stubble.** jaw_beard 0.28 is below the beard carry, so the stubble is
 the photo's own specks stretched by the bake: the jaw's darkest tenth 76
 L* below its skin against the photo's 48. Lifting faint stubble towards
