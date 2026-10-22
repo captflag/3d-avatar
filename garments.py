@@ -710,6 +710,9 @@ def volumise(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, rise_y: 
 # How much wider than the cut the photo's outline may make it, at most (a
 # share of the cut's own width at that height).
 WIDEN_LIMIT = 0.2
+# A cut's rendered outline against its vertices' (both in eye spacings, the
+# render's read as the photo's are): 1.01-1.10 on the four test faces.
+HAIR_RENDER_SPREAD = 1.06
 
 
 def widen(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, brow_y: float,
@@ -719,15 +722,17 @@ def widen(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, brow_y: flo
 
     `widths`: the photo's hair half-width at those heights above the brows
     (`brow_y`), in eye spacings (`spacing`), as read_hair reads them. The
-    cut's own outline is measured the same way from its vertices, and only
-    its shape is matched (each height's width against the width at the brows),
-    since alpha-faded strand tips make a rendered cut 0-10% narrower than its
-    vertices, by an amount that varies with the cut. On the test photos
-    swept-back hair stands wider over the temples than any stock cut: up to
-    a third wider at 0.75 eye spacings above the brows. The sides are pushed
-    out along the scalp's normals, as far as each part faces sideways, so the
-    cut keeps its shape from every side; never pulled in, which would sink
-    cards into the scalp.
+    cut's own outline is measured the same way from its vertices, scaled by
+    how much wider a cut renders than its vertices (HAIR_RENDER_SPREAD). On
+    the test photos swept-back hair stands wider over the temples than any
+    stock cut: up to a fifth wider at 0.75 eye spacings above the brows. The
+    sides are pushed out along the scalp's normals, as far as each part faces
+    sideways, so the cut keeps its shape from every side; never pulled in,
+    which would sink cards into the scalp.
+
+    Matching only the outline's shape (each height against the width at the
+    brows) widened a cut whose photo was narrower at the brows than the cut
+    all the way up, and on one photo the temples came out 14% too wide.
     """
     from scipy.spatial import cKDTree
     import appearance
@@ -746,8 +751,7 @@ def widen(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, brow_y: flo
         own.append((x.max() - x.min()) / 2 / spacing)
     own = np.array(own)
     photo = np.array(widths, dtype=np.float64)
-    wider = np.clip((photo / photo[0]) / (own / own[0]) - 1.0, 0.0, WIDEN_LIMIT)
-    push = wider * own * spacing
+    push = np.clip(photo / HAIR_RENDER_SPREAD - own, 0.0, WIDEN_LIMIT * own) * spacing
 
     skin = np.unique(groups["body"])
     normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals

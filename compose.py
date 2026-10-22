@@ -168,6 +168,9 @@ def dye_colour(rgb) -> np.ndarray:
 # mouth, as a share of the mouth's width (Gaussian reach): the skin round the
 # lips, and then the lips themselves exactly.
 MOUTH_CARRY = (0.45, 0.15)
+# How far round each eye the photo is carried onto the mesh's eye, in eye
+# spacings (Gaussian reach): far enough that the brow comes with it.
+EYE_CARRY = 0.5
 
 
 def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
@@ -197,6 +200,29 @@ def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -
     alpha = np.linalg.solve(near + 1e-2 * np.eye(len(lips)), pull - field[lips])
     moved = sheet.copy()
     moved[:, :2] += field + kernel(sheet, sheet[lips], MOUTH_CARRY[1] * width) @ alpha
+    return moved
+
+
+def eyes_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
+    """The placed landmark sheet with its eyes moved onto the mesh's own, and
+    the brows with them.
+
+    The eyelids the avatar shows are the mesh's, and the brows are painted
+    and carded from the sheet. Placed by one scale and shift across eyes,
+    nose, mouth and chin, the sheet's eyes do not land on the mesh's lids,
+    and on the test photos the brows came out 4-8% of the eye spacing higher
+    above the lids than the photo's. Each eye's contour is moved in the
+    picture's plane onto the mesh's, and the skin round it, brows included,
+    by the same pull fading with distance.
+    """
+    marks = list(appearance.EYE_CONTOURS[0]) + list(appearance.EYE_CONTOURS[1])
+    spacing = float(np.linalg.norm(sheet[33, :2] - sheet[263, :2]))
+    pull = vertices[corr[marks], :2] - sheet[marks, :2]
+    w = np.exp(-(np.linalg.norm(sheet[:, None, :2] - sheet[None, marks, :2], axis=2)
+                 / (EYE_CARRY * spacing)) ** 2)
+    field = (w @ pull) / np.maximum(w.sum(axis=1, keepdims=True), 1e-12) * w.max(axis=1, keepdims=True)
+    moved = sheet.copy()
+    moved[:, :2] += field
     return moved
 
 
@@ -755,6 +781,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = mouth_onto_mesh(full_face.vertices, vertices, corr)
+    full_face.vertices = eyes_onto_mesh(full_face.vertices, vertices, corr)
     placed = trim_face_border(full_face)
 
     # The hair as the photo shows it, from a segmentation of the photo: its

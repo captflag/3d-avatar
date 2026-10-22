@@ -1374,6 +1374,40 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Measured gaps: what each turned out to be
+
+Signed errors, head render against photo, % of eye spacing:
+
+- **Most of the jaw "error" is the photo's head turn.** The avatar's outline
+  sat 4-13 inside the photo's on one side and 3-8 outside on the other, on
+  every face: a slightly turned head against a front-on render. With the two
+  sides averaged the jaw is within 0-5, and what is left is the temples, 2-5
+  too narrow. Forehead width (54-284) added to the fitted proportions moved
+  them 0.1-0.4 and left two of four faces worse: not kept.
+- **The brows sat high above the lids** (aligned on eye corners and nose
+  bridge: +4.1 / -0.5 / +3.9 / +8.0). Not the photo's expression (rendered
+  without it, the same) and not the shape fit (the mesh's brow landmarks are
+  within 2 of the photo's): the brows are painted and carded from the
+  landmark sheet, whose eyes did not land on the mesh's lids.
+  `compose.eyes_onto_mesh` carries the sheet's eyes onto the mesh's, the
+  brows with them (EYE_CARRY 0.5 eye spacings). With the hair change below,
+  brow landmark error 3.78 -> 2.39, 5.74 -> 4.55, 4.50 -> 3.63, 7.04 -> 4.95;
+  whole face 2.40 -> 2.18, 3.88 -> 3.69, 3.25 -> 3.41, 3.07 -> 2.94
+  (photo-10's nose reads worse).
+  photo-14 still shows two brow lines, the card above the painted brow.
+- **The nose is not at its targets' limit** (no nose target above 0.91), and
+  with turned views at 50 degrees its depth is within 0.6 mm. The 3-4 mm
+  shortfall was the 35 degree views; from one photo, MediaPipe's depth guess
+  is the limit.
+- **Hair widened too far on photo-14** (1.16 against the photo's 1.02 just
+  above the brows): matching only the outline's shape widened a cut whose
+  photo is narrower than it at the brows. Matched in absolute width now, a
+  rendered cut standing 6% wider than its vertices (1.01-1.10 measured):
+  photo-14 1.09 / 1.08 / 1.00 against 1.02 / 1.05 / 1.01.
+- **Not fixed:** the eyes read 1-4 too open (the lower lids low), and
+  ref-woman's lower face renders 6-12 short of the photo's. Ears and small
+  photos as before.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.

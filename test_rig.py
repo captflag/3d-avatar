@@ -395,7 +395,7 @@ def check_hair_width():
     own = np.array(own)
     assert not garments.widen(hair, vertices, groups, brow_y, spacing, list(own)).any(), \
         "a cut with the photo's own outline was widened"
-    asked = own * np.array([1.0, 1.05, 1.1, 1.5])
+    asked = own * garments.HAIR_RENDER_SPREAD * np.array([1.0, 1.05, 1.1, 1.5])
     push = garments.widen(hair, vertices, groups, brow_y, spacing, list(asked))
     assert push[0] == 0 and push[1] > 0 and push[2] > push[1], f"pushes {push.round(3)}"
     assert push[3] <= garments.WIDEN_LIMIT * own[3] * spacing + 1e-9, "widened past the limit"
@@ -403,6 +403,29 @@ def check_hair_width():
     assert np.abs(hair.vertices[low] - original[low]).max() < 1e-6, "hair below the brows moved"
     print(f"ok  hair width: pushed out {np.round(push / spacing, 2).tolist()} eye spacings up the temples, "
           f"capped, nothing below the brows")
+
+
+def check_eye_carry():
+    """A sheet whose eyes sit above the mesh's is moved down onto them, its
+    brows with it, and its mouth and chin are left where they were."""
+    import morph
+    from compose import eyes_onto_mesh, place_face
+    import appearance
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    sheet = vertices[corr].copy()
+    spacing = np.linalg.norm(sheet[33, :2] - sheet[263, :2])
+    sheet[:, 1] += 0.05 * spacing                          # the whole sheet a little high
+    moved = eyes_onto_mesh(sheet, vertices, corr)
+    eyes = list(appearance.EYE_CONTOURS[0]) + list(appearance.EYE_CONTOURS[1])
+    share = lambda i: float((sheet[i, 1] - moved[i, 1]).mean() / (0.05 * spacing))
+    assert share(eyes) > 0.6, f"the eyes moved {share(eyes):.2f} of the way"
+    assert share([105, 334]) > 0.4, f"the brows moved {share([105, 334]):.2f} of the way"
+    assert share([152, 17, 0]) < 0.1, f"the mouth and chin moved {share([152, 17, 0]):.2f} of the way"
+    print(f"ok  eye carry: eyes moved {share(eyes):.2f} of the way, brows {share([105, 334]):.2f}, "
+          f"mouth and chin {share([152, 17, 0]):.2f}")
 
 
 def check_lip_correction():
@@ -1113,6 +1136,7 @@ if __name__ == "__main__":
         check_hair_volume()
         check_hair_width()
         check_lip_correction()
+        check_eye_carry()
         check_side_paint()
         check_expression()
         check_mhclo()

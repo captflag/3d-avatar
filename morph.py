@@ -106,7 +106,9 @@ SAME_AXIS = 0.6
 # height, nose to chin (canonical MediaPipe landmarks). Fitted as distances as
 # well as through their landmarks: among 468 landmarks the few that set them
 # were outvoted, and every avatar came out with eyes 4-6% too far apart and a
-# chin 5-11% too short, which reads as a child's face.
+# chin 5-11% too short, which reads as a child's face. Forehead width (54-284)
+# was tried for temples rendering 2-5% of the eye spacing too narrow: it moved
+# them 0.1-0.4 and left two of four faces worse, so it is not among them.
 PROPORTIONS = [(33, 263), (234, 454), (172, 397), (10, 152), (2, 152)]
 # Each distance counts as much as this many landmarks fitted exactly.
 PROPORTION_WEIGHT = 10.0
