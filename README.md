@@ -18,6 +18,40 @@ card is a render of the avatar itself, badged `full body` or `face only`, so you
 can see at a glance what each run produced. Opening the review page with no model
 named shows the newest avatar.
 
+There are two ways in. **Choose from gallery** takes any photo. **Use camera**
+opens a live view that checks the shot before taking it, against the limits the
+pipeline was measured to need:
+- the face 250+ pixels across;
+- facing the camera and upright;
+- mouth relaxed, since a broad smile is never fully taken off the resting face;
+- eyes open;
+- even light on both cheeks;
+- the hair in frame.
+
+Once every line is ticked for half a second the photo takes itself, and **Take
+photo** takes it anyway. The checks use the same MediaPipe face model as the
+pipeline, served at `/models/face_landmarker.task`. Browsers open the camera only
+on `localhost` or https; on a teammate's phone over the office network, **Use
+camera** falls back to the phone's own camera, without the live checks.
+
+After the front photo the camera stays open for up to two turned ones: turn the
+head slowly to one side, as far as you can still see the screen, and back, then
+the other way (**Done** stops at any point). The camera keeps the widest frame
+that passes the same checks (less light and hair) and takes it once the turn is
+wide enough or the head comes back. The turned photos measure how far the nose,
+lips and chin stand out, which one photo only guesses, and paint the cheeks'
+sides and the jaw towards the ears, which the front photo never sees
+(`views.py`). Full body only; from the command line,
+`compose.py front.jpg -o out/x.glb --side left.jpg --side right.jpg`.
+
+**How alike is it?** `score.py` asks AWS Rekognition's CompareFaces how alike
+the photo and the avatar's head render are, 0-100 (a recognition model, paid
+per call, commercial use allowed). Get the render from the studio (**2D
+image**, **Full body** unticked, **Download**), then:
+`.venv/Scripts/python.exe score.py photo.jpg render.png`. It uses the usual AWS
+credentials (`aws configure`); it needs `boto3` (`uv pip install --python
+.venv/Scripts/python.exe boto3`).
+
 Pick **3D model** or **2D image** beside the photo picker, then use **Download**
 on the result. **Full body** is on by default: the fitted face goes on a base body, dressed from
 the catalogue, with skin tone and hair colour sampled from the photo. Pick the male

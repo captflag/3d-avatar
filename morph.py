@@ -250,7 +250,8 @@ def front_of(base: np.ndarray, body_faces: np.ndarray, corr: np.ndarray) -> np.n
 def fit(base: np.ndarray, corr: np.ndarray, person: np.ndarray, average: np.ndarray,
         scores: dict | None = None,
         front: np.ndarray | None = None,
-        reliable: np.ndarray | None = None) -> tuple[np.ndarray, list[str], dict[str, float]]:
+        reliable: np.ndarray | None = None,
+        depth: np.ndarray | None = None) -> tuple[np.ndarray, list[str], dict[str, float]]:
     """Identity weights in [0, 1] that move the skull like this face differs
     from average, and the expression fitted alongside them.
 
@@ -286,7 +287,11 @@ def fit(base: np.ndarray, corr: np.ndarray, person: np.ndarray, average: np.ndar
 
     # Trust depth less than width and height, and any landmark the caller
     # marks as unreliable (a jaw outline lying on a beard) less again.
-    trust = np.tile([1.0, 1.0, DEPTH_TRUST], n)
+    # Depth counts a third where one photo only guessed it, fully where side
+    # views measured it (`depth`, per landmark; views.fuse).
+    trust = np.ones((n, 3))
+    trust[:, 2] = DEPTH_TRUST if depth is None else np.asarray(depth, dtype=np.float64)[:n]
+    trust = trust.reshape(-1)
     if reliable is not None:
         trust = trust * np.repeat(np.asarray(reliable, dtype=np.float64)[:n], 3)
     a = basis * trust[:, None]
@@ -325,8 +330,21 @@ def fit(base: np.ndarray, corr: np.ndarray, person: np.ndarray, average: np.ndar
     upper = np.array([1.0] * t + [ceiling[k] for k in shown])[used]
     a = np.vstack([a[:, used], np.diag(np.sqrt(ridge))])
     b = np.concatenate([b, np.zeros(len(ridge))])
+    lower = np.zeros(len(upper))
+    if depth is not None:
+        # Placement sets depth by the nose tip alone (compose.place_face), so
+        # with depth measured, a face whose nose stands further out reads as
+        # one whose every other landmark sits further back, and the targets
+        # bent the whole face to match. A free shift in depth, which the mesh
+        # never gets, takes up where the face sits instead.
+        shift = np.zeros(len(a))
+        shift[:3 * n] = np.tile([0.0, 0.0, 1.0], n) * trust
+        a = np.hstack([a, shift[:, None]])
+        upper = np.append(upper, np.inf)
+        lower = np.append(lower, -np.inf)
+    solved = lsq_linear(a, b, bounds=(lower, upper), method="trf", lsmr_tol="auto").x
     weights = np.zeros(len(used))
-    weights[used] = lsq_linear(a, b, bounds=(0.0, upper), method="trf", lsmr_tol="auto").x
+    weights[used] = solved[:used.sum()]
 
     expression = dict.fromkeys(EXPRESSION_UNITS, 0.0)
     names = list(EXPRESSION_UNITS)
@@ -409,6 +427,72 @@ def apply(base: np.ndarray, weights, targets=None) -> np.ndarray:
         if w > 1e-4:
             shaped[idx] += w * delta
     return shaped
+
+
+# The free-form correction after the target fit (`correct`): how wide each
+# landmark's pull spreads, in eye-corner spacings, and how much it is damped
+# against landmark noise (a ridge on the radial basis; 0 fits every landmark exactly).
+CORRECT_REACH = 0.12
+CORRECT_DAMPING = 0.3
+# Depth is corrected only near the face's midline, within this many eye-corner
+# spacings either side (a Gaussian): a profile lives there, and there the
+# landmarks are fixed points on the skin. Towards the outline MediaPipe's
+# landmarks follow the silhouette as the head turns, and on a rendered test
+# head their fused depth came out 5-6% of the eye spacing too deep: corrected
+# to it, the temples sank a centimetre and the chin stood 8 mm proud.
+CORRECT_MIDLINE = 0.35
+
+
+def correct(vertices: np.ndarray, base: np.ndarray, corr: np.ndarray, person: np.ndarray,
+            average: np.ndarray, weights: np.ndarray, expression: dict | None = None,
+            front: np.ndarray | None = None, reliable: np.ndarray | None = None,
+            depth: np.ndarray | None = None) -> np.ndarray:
+    """The fitted mesh moved the rest of the way to the photo's landmarks.
+
+    MakeHuman's targets are a few hundred broad sliders: what the fit leaves
+    is the part of this face no combination of them reaches (on a rendered
+    test head the nose stayed 3-4 mm short). That remainder, at each landmark,
+    is spread over the mesh by a Gaussian radial basis, damped so landmark
+    noise is smoothed rather than baked in, and fading to nothing a few
+    centimetres off the face. Every vertex near the face moves with it, the
+    eyeballs and teeth among them, so lids and eyes stay together. Each
+    landmark counts across the picture as far as the fit trusted it
+    (`reliable`), and in depth only as far as side views measured it
+    (`depth`, 0-1; views.fuse): a single photo's depth guess is left to the
+    targets, which keep it to a plausible face.
+    """
+    n = len(corr)
+    want = person[:n] - reference(base, corr, average)
+    got = vertices[corr] - base[corr]
+    if expression:
+        got = got + expression_offsets(base, corr if front is None else front, expression)
+    left = want - got
+    trust = np.ones((n, 3))
+    at = vertices[corr]
+    spacing = float(np.linalg.norm(at[33] - at[263]))
+    if depth is not None:
+        midline = np.exp(-(at[:, 0] / (CORRECT_MIDLINE * spacing)) ** 2)
+        trust[:, 2] = np.asarray(depth, dtype=np.float64)[:n] * midline
+    else:
+        trust[:, 2] = 0.0
+    if reliable is not None:
+        trust *= np.asarray(reliable, dtype=np.float64)[:n, None]
+    # Where the face sits in depth is set by placement, not measured: no shift.
+    left[:, 2] -= (left[:, 2] * trust[:, 2]).sum() / max(trust[:, 2].sum(), 1e-12)
+
+    reach = CORRECT_REACH * spacing
+    kernel = lambda a, b: np.exp(-(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2) / reach) ** 2)
+    near = kernel(at, at)
+    moved = vertices.copy()
+    close = np.where(np.linalg.norm(vertices - at.mean(axis=0), axis=1)
+                     < np.linalg.norm(at - at.mean(axis=0), axis=1).max() + 3 * reach)[0]
+    spread = kernel(vertices[close], at)
+    for axis in range(3):
+        # Ridge weighted by trust: an untrusted landmark's pull is mostly damped away.
+        damping = CORRECT_DAMPING / np.maximum(trust[:, axis], 1e-3)
+        alpha = np.linalg.solve(near + np.diag(damping), left[:, axis])
+        moved[close, axis] += spread @ alpha
+    return moved
 
 
 def explained(base: np.ndarray, corr: np.ndarray, person: np.ndarray,

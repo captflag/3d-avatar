@@ -1216,6 +1216,164 @@ Whole-face landmark error 3.0 -> 2.7 (woman), 2.7 -> 2.5 (ref-man), photo-10
 unchanged at 3.5% of the eye spacing. photo-10's short-sides block still ends
 in a straight edge: that cut's own front, not the sweep.
 
+## Hair: the photo's height, not a different stock cut
+
+Every short cut in the catalogue was built on all three test faces, rendered,
+and its hair lined up with the photo's by the stable face landmarks; the
+score is the overlap of the two (intersection over union) above the eyes.
+No stock cut came close (0.41-0.46 at best), and they all missed the same
+way: height. In the photos the hair stands 1.20, 1.53 and 1.18 eye spacings
+above the brows; every MakeHuman cut lies flat at 0.90-1.17. Width at the
+temples was already right (short02 2.01 against 2.08), and the hairline was
+fixed by the sweep.
+
+`read_hair` now also reads the `rise` (the top of the hair over the
+forehead's middle, a low percentile so flyaways do not set it), and
+`garments.volumise` lifts the cut along the scalp's normals until its top
+reaches that height: fully over the top and front, easing off towards the
+eyes, sides and back, and from nothing at the front edge, so the hair rises
+from the hairline as a quiff does. Lifted right at the edge it stood off the
+forehead as a shell, its dark inside showing under the fringe; over a 0.3
+ramp the painted scalp still showed as a band under ref-man's quiff; 0.6
+closes it.
+
+| | overlap with the photo's hair (stock -> now) | top above the brows (photo / now) |
+|---|---|---|
+| woman | 0.44 -> 0.53 | 1.20 / 1.19 |
+| ref-man | 0.34 -> 0.62 | 1.53 / 1.52 |
+| photo-10 | 0.37 -> 0.67 | 1.18 / 1.15 |
+
+Still open: the cut's own shape (a side parting, a swept fringe, a curl) is
+the stock card layout; ref-man's temples show small notches at 45 degrees;
+photo-10's short-sides front keeps its straight edge.
+
+## Depth from turned photos
+
+One photo gives each landmark's place across the picture and only a guess at
+its depth, so the fit trusts depth at a third and profiles come out average.
+`views.fuse` takes the front photo and one or two turned 30-45 degrees and
+solves each landmark's 3D position from all of them: image x and y count
+fully, MediaPipe's depth guess a tenth, a view only as far as the landmark
+faces it. Each side view's turn is searched round MediaPipe's reading, which
+read a 35 degree turn as 28.6 and so made every depth a fifth too deep. The fit
+then trusts depth as far as a side view saw it, except at the lips: read off a
+painted lip line, their fused depth stood a centimetre proud.
+
+The fit also needed a free shift in depth. Placement sets depth by the nose tip
+alone, so a measured face whose nose stands out reads as one whose every other
+landmark sits back, and with depth trusted, the targets bent the whole face
+forward to match: side views first made the profile worse than one photo.
+
+Measured on a ground truth: ref-man's avatar with a stronger nose, chin and
+mouth added, rendered front, 35 degrees each way, rebuilt from the renders,
+heads compared vertex for vertex (same topology), aligned on the back of the
+head. Depth error over the face front, in mm:
+
+| rebuilt from | RMS | nose | mouth | chin |
+|---|---|---|---|---|
+| (ref-man without the added profile) | 6.9 | -10.9 | -9.1 | -3.8 |
+| the front photo | 4.7 | -7.2 | -6.0 | +0.2 |
+| front + both sides, before the depth shift | 7.5 | +0.8 | +3.4 | +5.7 |
+| front + one side | 3.4 | -5.9 | -4.1 | -0.2 |
+| front + both sides | 3.5 | -3.5 | -2.1 | +0.5 |
+| front + both sides, lips trusted too | 4.4 | -3.8 | -0.8 | +2.4 |
+
+The nose still comes out 3-4 mm short; why is not yet measured.
+Not yet tried on real turned photos of a person, only on renders.
+
+## Turned photos: painting, angle, and what did not help
+
+**The sides painted from the turned photos** (`views.paint_sides`). The front
+photo reaches the face's outline and no further; the cheeks' sides and the jaw
+towards the ears were generated skin. `fuse` now returns each turned photo's
+camera, the shaped head is projected into it, and each texel the front photo
+did not cover takes the turned photo's colour as far as it faces that camera
+squarely and that photo's segmentation calls it skin, colour-matched to the
+front on the cheek both see. Not the ears: no landmark finds them, and a few
+millimetres' misfit painted the photo's ear half beside the mesh's, as a pink
+blotch on the rendered test head. Checked on renders only; real turned photos
+of a person are the test still to run.
+
+**Wider turns, not more of them.** On the rendered test head (depth error over
+the face front, mm):
+
+| turned views | RMS | nose | mouth | chin |
+|---|---|---|---|---|
+| none | 4.7 | -7.3 | -6.0 | +0.2 |
+| +-20 degrees | 5.4 | +1.0 | +2.4 | +5.3 |
+| +-35 degrees | 3.6 | -3.7 | -2.1 | +0.6 |
+| +-50 degrees | 2.4 | -0.6 | -1.8 | +0.5 |
+| +-20, 35 and 50 together | 4.8 | -9.4 | -5.9 | -1.0 |
+
+A slight turn shows depth as a small sideways shift, which MediaPipe's own
+average face outweighs, and it drags the fusion back towards average.
+Weighting views by how far they turn (sin squared) rescued the six-view set
+(3.3) but cost the pairs (+-50: 2.8): not kept. So the camera does not upload
+a video's worth of frames: it watches the turn and keeps the widest frame on
+each side that passes (MediaPipe reads true turns of 20, 35 and 50 degrees as
+about 20, 29 and 42; it now asks for a reading of 30-50, taking it at 40).
+
+**A free-form correction after the target fit: lips only** (`morph.correct`).
+What MakeHuman's targets cannot reach is spread from the landmarks over the
+mesh by a damped Gaussian radial basis. Tried everywhere, it made things worse:
+- in depth, from the turned views, the temples sank up to a centimetre and the
+  chin stood 8 mm proud (depth RMS 3.5 -> 6.4). MediaPipe's outline landmarks
+  follow the silhouette as the head turns, so their fused depth is 5-6% of the
+  eye spacing too deep; even kept to the face's midline it lost (4.9).
+- across the picture, the mouth came closer to the photo but the nose further
+  on all four test faces, and two of four were worse overall: MediaPipe's nose
+  points do not sit on the mesh's, and the outline's slide.
+On the lips alone, landmark error on the head renders against the photos
+(mouth / whole face, % of eye spacing):
+
+| | before | lips corrected |
+|---|---|---|
+| ref-man | 4.06 / 2.54 | 2.70 / 2.56 |
+| ref-woman | 3.14 / 3.85 | 2.57 / 3.76 |
+| photo-10 | 5.64 / 3.89 | 2.44 / 3.26 |
+| photo-14 | 5.40 / 3.51 | 3.86 / 3.41 |
+
+The nose reads a little further off (ref-man 1.8 -> 2.4): partly the lip pull
+reaching the nose's base, partly re-detection noise. Depth on the test head is
+unchanged (3.6).
+
+**The haircut widened to the photo's outline** (`garments.widen`). With the
+quiff, the hair still stood narrower over the temples than the photos': on
+ref-man and photo-14 by 0.13-0.19 eye spacings at 0.5-0.75 above the brows.
+`read_hair` reads the hair's half-width at four heights; the cut's sides are
+pushed out along the scalp's normals until its outline has the photo's shape
+(each height against the width at the brows, since faded strand tips make a
+render 0-10% narrower than its vertices), at most 20% wider, never pulled in.
+Hair overlap with the photo above the eyes, quiff only -> widened: ref-man 0.66
+-> 0.73, ref-woman 0.59 -> 0.60, photo-10 0.72 -> 0.73, photo-14 0.56 -> 0.71.
+photo-14 now runs a little wide low on the temples (1.16 against 1.02).
+
+**SigLIP (Apache-2.0) to choose the haircut: not used.** On six photos it
+picked the right cut 4 times to the rules' 5, and beard styles 2 of 6; its raw
+scores carry no usable confidence, and it brings about 800 MB of torch.
+
+**Depth Anything V2 Small (Apache-2.0; Base and Large are CC-BY-NC) for
+one photo's depth: not used.** Its relative depth, sampled at the landmarks and
+scaled to MediaPipe's, against the rendered test head's true depth (in front
+of the eye corners, % of eye spacing, RMS over all landmarks / the central face):
+
+| | all | central | nose | subnasale | chin 152 | jaw 172 |
+|---|---|---|---|---|---|---|
+| MediaPipe's own guess | 5.9 | 6.0 | -4.4 | -8.0 | -15.9 | +6.0 |
+| Depth Anything | 11.1 | 8.6 | -4.1 | +8.4 | +8.8 | +35.1 |
+| Depth Anything, scaled on the central face | 13.0 | 10.3 | -16.1 | -3.2 | +1.5 | |
+| half and half on the central face | 7.1 | 7.2 | -10.2 | -5.6 | -7.2 | |
+
+It flattens the face's sides (the jaw corner a quarter as deep as it is) and
+puts the chin forward where MediaPipe puts it back; no mix of the two beat
+MediaPipe alone. One caveat: the test head is a render, and a model trained on
+photos may do better on photos, which have no ground truth here. Turned photos
+(above) remain the way to measured depth.
+
+**Scoring by a face-recognition model** (`score.py`): AWS Rekognition
+CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
+want of credentials.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.

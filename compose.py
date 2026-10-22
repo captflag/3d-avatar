@@ -30,6 +30,7 @@ import facetexture
 import garments
 import morph
 import skin
+import views
 from catalogue import (BODY_OBJ, build_item, catalogue, hair_colour, items_by_id,
                        load_base, load_base_uv, srgb_to_linear, submesh, submesh_uv,
                        coverage_alpha)
@@ -654,7 +655,8 @@ def outfit_for(gender: str, chosen: list[str] | None) -> list[dict]:
 
 def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             gender: str = "male", wear: list[str] | None = None,
-            face_patch: bool = False, pose: str = "relaxed") -> dict:
+            face_patch: bool = False, pose: str = "relaxed",
+            side_photos: list[pathlib.Path] | None = None) -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
@@ -662,6 +664,27 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
 
     raw, groups = load_base()
     face, landmarks, result, photo = fit_face(photo_path)
+    # Photos of the head turned to each side measure the depth one photo can
+    # only guess: the face is fused from all of them (views.fuse), and the fit
+    # trusts depth as far as it was measured.
+    # A turned photo with no face found in it is left out, not the avatar.
+    side_views = []
+    for side in side_photos or []:
+        try:
+            side_views.append(views.view_of(side))
+        except NoFaceFound:
+            pass
+    depth_trust = measured = None
+    if side_views:
+        fused, measured, cameras = views.fuse([views.view_of(photo_path)] + side_views)
+        face = face.copy()
+        face.vertices = fused
+        # Not the lips: thin, moving, and read off a painted lip line, their
+        # fused depth stood a centimetre proud on a rendered test head and
+        # dragged mouth and chin forward with it.
+        lips = morph.INNER_UPPER + morph.INNER_LOWER + morph.OUTER_UPPER + morph.OUTER_LOWER + [61, 291, 78, 308]
+        measured[lips] = 0.0
+        depth_trust = morph.DEPTH_TRUST + (1.0 - morph.DEPTH_TRUST) * measured
 
     # A man's or a woman's body first, then the face fitted on top of it.
     base = morph.body_for(raw, gender)
@@ -672,6 +695,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # cancels instead of being baked into the shape.
     average = place_face(morph.canonical_face(), base, groups).vertices
     person = place_face(face, base, groups).vertices
+    if side_views:
+        # How the fused face was put on the skull, to project the head back
+        # into the turned photos for painting (views.paint_sides).
+        to_fused = np.ptp(person[:, 0]) / np.ptp(fused[:, 0])
+        to_fused = (to_fused, person.mean(axis=0) - to_fused * fused.mean(axis=0))
     corr = morph.correspondences(base, groups["body"], average[:468])
     # The photo's expression is fitted alongside, so a smile is not taken for
     # a wide mouth, and the mesh is built from identity alone: a resting face.
@@ -686,9 +714,17 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                                         expression_of(result))
     shape_weights, shape_names, expression = morph.fit(base, corr, person, average,
                                                        expression_of(result), front,
-                                                       outline_trust)
+                                                       outline_trust, depth=depth_trust)
     vertices = morph.apply(base, shape_weights)
     shape_fit = morph.explained(base, corr, person, average, shape_weights, expression, front)
+    # The lips' shape the targets could not reach, free-form. Only the lips:
+    # corrected everywhere, the nose followed MediaPipe's own nose points,
+    # which do not sit on the mesh's, and came out further from the photo on
+    # every test face, and the outline's points slide with the silhouette.
+    lip_marks = np.zeros(len(corr))
+    lip_marks[morph.INNER_UPPER + morph.INNER_LOWER + morph.OUTER_UPPER + morph.OUTER_LOWER + [61, 291, 78, 308]] = 1.0
+    vertices = morph.correct(vertices, base, corr, person, average, shape_weights, expression, front,
+                             np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks)
 
     # The same expression taken off the landmarks the photo is baked through,
     # and the lips closed, so the photo's smile is warped back onto a relaxed
@@ -770,6 +806,14 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
             hairline_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["hairline"] * spacing
             garments.sweep_back(mesh, vertices, groups, appearance.opaque_hair(mesh), hairline_y)
+        if item["category"] == "hair" and "mhclo" in item and hair_reading and hair_reading.get("rise"):
+            # And up to the photo's height over the forehead: the stock cuts lie flat.
+            spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
+            rise_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["rise"] * spacing
+            garments.volumise(mesh, vertices, groups, rise_y)
+            # And out to the photo's outline at the sides.
+            garments.widen(mesh, vertices, groups, float(vertices[corr[[105, 334]], 1].mean()), spacing,
+                           hair_reading.get("widths"))
         if item["category"] == "brows":
             mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
         if item["category"] in ("teeth", "tongue"):
@@ -920,6 +964,15 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         np.asarray(head_texture), facetexture.rasterize(ears, head_faces, head_uv_all, head_uv_faces,
                                                         head_texture.size[0], fill=0.0)))
     rest_base = shade(rest_base, rest_faces, uv_all, rest_uv_faces, cavity)
+    if side_views:
+        # The cheeks' sides and the jaw towards the ear, which the front
+        # photo never saw, from the turned photos. Not the ears: no landmark
+        # finds them, and a few millimetres' misfit painted the photo's ear
+        # half beside the mesh's.
+        head_texture, _ = views.paint_sides(head_texture, vertices, head_faces, head_uv_all, head_uv_faces,
+                                            photo_strength, to_fused,
+                                            [(view[2], camera) for view, camera in zip(side_views, cameras[1:])],
+                                            skip=appearance.ear_weight(len(vertices)))
 
     # Fingernails: the base mesh's fingertips are smooth skin to the end. The
     # nail is found from the rig (appearance.nail_weight), painted lighter and
@@ -1056,6 +1109,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "source_photo": photo_path.name,
         "photo_size": list(photo.size),
         "kind": "full-body",
+        "side_views": len(side_views),
         "shape": {
             "explained": round(shape_fit, 3),
             "active_targets": int((shape_weights > 0.05).sum()),
@@ -1102,6 +1156,8 @@ def main() -> int:
     parser.add_argument("photo", type=pathlib.Path)
     parser.add_argument("-o", "--out", type=pathlib.Path, required=True)
     parser.add_argument("--gender", choices=["male", "female"], default="male")
+    parser.add_argument("--side", type=pathlib.Path, action="append", default=[],
+                        help="a photo of the head turned to one side (30-45 degrees); give it once per side")
     parser.add_argument("--wear", help="comma-separated catalogue ids, overriding the default outfit")
     parser.add_argument("--face-patch", dest="face_patch", action="store_true",
                         help="also lay the fitted landmark patch over the head. Off by default: "
@@ -1113,7 +1169,8 @@ def main() -> int:
 
     try:
         info = compose(args.photo, args.out, args.gender,
-                       args.wear.split(",") if args.wear else None, args.face_patch, args.pose)
+                       args.wear.split(",") if args.wear else None, args.face_patch, args.pose,
+                       side_photos=args.side or None)
     except NoFaceFound:
         print("no face found in the photo", file=sys.stderr)
         return 1
