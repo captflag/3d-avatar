@@ -98,6 +98,7 @@
         <option value="2d">2D image</option>
       </select>
       <label class="toggle"><input type="checkbox" id="fullbody" checked> Full body</label>
+      <label class="toggle" title="2D image: turn the head as it was in the photo instead of level"><input type="checkbox" id="photopose"> Photo's head pose</label>
       <select id="gender" class="toggle" title="which default outfit to dress the avatar in">
         <option value="male">Male outfit</option>
         <option value="female">Female outfit</option>
@@ -148,7 +149,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { setupRealism, applyMaterials, applyPhotoExpression, groundAndShadow, withOcclusion, renderCoverage } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, applyPhotoExpression, applyPhotoPose, groundAndShadow, withOcclusion, renderCoverage } from '/lib/scene-setup.js';
 
 const $ = (id) => document.getElementById(id);
 const drop = $('drop'), file = $('file'), go = $('go'), status = $('status'),
@@ -482,7 +483,7 @@ $('download').addEventListener('click', async () => {
   try {
     if ($('dimension').value === '2d') {
       button.textContent = 'Rendering…';
-      const png = await renderPng(current.model, current.fullBody);
+      const png = await renderPng(current.model, current.fullBody, $('photopose').checked);
       saveBlob(png, `${current.id}.png`);
     } else {
       // The GLB is already on the server; let the browser fetch it as a file.
@@ -571,7 +572,7 @@ function takeTurn(job) {
   return run;
 }
 
-async function drawAvatar(url, width, height, focusHead = false) {
+async function drawAvatar(url, width, height, focusHead = false, photoPose = false) {
   const gltf = await gltfLoader.loadAsync(url);
   const scene = new THREE.Scene();
   const lights = setupRealism(getRenderer(width, height), scene);
@@ -579,6 +580,7 @@ async function drawAvatar(url, width, height, focusHead = false) {
   const model = gltf.scene;
   applyMaterials(model);
   applyPhotoExpression(model);
+  if (photoPose) applyPhotoPose(model);
 
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
@@ -613,9 +615,9 @@ async function drawAvatar(url, width, height, focusHead = false) {
 }
 
 /** Render and encode without letting go of the canvas in between. */
-function renderAvatar(url, width, height, focusHead, encode) {
+function renderAvatar(url, width, height, focusHead, encode, photoPose = false) {
   return takeTurn(async () => {
-    const canvas = await drawAvatar(url, width, height, focusHead);
+    const canvas = await drawAvatar(url, width, height, focusHead, photoPose);
     return encode(canvas);
   });
 }
@@ -625,11 +627,12 @@ async function renderThumbnail(url) {
     (canvas) => canvas.toDataURL('image/webp', 0.8));
 }
 
-/** A 2D avatar: the 3D one rendered to a transparent PNG. */
-async function renderPng(url, fullBody) {
+/** A 2D avatar: the 3D one rendered to a transparent PNG. `photoPose` turns
+ * the head as it was in the photo instead of level. */
+async function renderPng(url, fullBody, photoPose = false) {
   const [w, h] = fullBody ? [900, 1200] : [900, 900];
   return renderAvatar(url, w, h, !fullBody,
-    (canvas) => new Promise((resolve) => canvas.toBlob(resolve, 'image/png')));
+    (canvas) => new Promise((resolve) => canvas.toBlob(resolve, 'image/png')), photoPose);
 }
 
 async function renderThumbnails() {

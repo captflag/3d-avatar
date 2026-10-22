@@ -1426,6 +1426,55 @@ the shown threshold. On sk-21: render jawOpen 0.06, mouth 7.08 -> 2.71,
 whole face 8.20 -> 6.80. The five test faces score no jawOpen, so they do
 not change.
 
+**The nose: mostly the photo's pitch, not the avatar.** In the photos' own
+frame the rendered nose tip was off by -3.6 to +5.8% of the eye spacing, in
+step with the photo's head pitch (4-12 degrees). Shot from slightly above, a
+photo shows the tip 6.4 above the nose's base where the level render shows
+9.3. With each avatar's neck turned by the difference between the photo's
+pose and the level render's (both as MediaPipe reads them), the landmark
+error is:
+
+| face | level render | at the photo's pose | nose |
+|---|---|---|---|
+| ref-man | 1.78 | 1.80 | 2.22 |
+| ref-woman | 2.99 | 1.61 | 1.58 |
+| photo-10 (laughing) | 2.34 | 2.60 | 3.56 |
+| photo-14 | 2.81 | 1.38 | 0.84 |
+| photo-16 | 2.95 | 1.43 | 0.84 |
+
+Measured this way, the nose is within 0.8-2.2 on four faces. On photo-10,
+MediaPipe probably misreads the laughing face's pitch. Comparing a level render with a
+tilted photo had been charging the pose to the nose, the jaw and the whole
+face. Future rounds should measure at the photo's pose.
+
+**The 2D render at the photo's head pose, as an option.** Each GLB now
+carries `photoHeadPose`: MediaPipe's head rotation for the photo, less the
+3.3 degrees of pitch it reads on our own level renders (1.5-4.5 across the
+test faces; `LEVEL_READ_PITCH`). The studio's "Photo's head pose" box turns
+the neck by it for the 2D image. The default stays level, as does the file's
+own pose. Default render against the option:
+
+| face | level (default) | photo's pose |
+|---|---|---|
+| ref-man | 2.15 | 1.98 |
+| ref-woman | 2.97 | 1.84 |
+| photo-10 (laughing) | 2.28 | 2.37 |
+| photo-14 | 2.90 | 1.39 |
+| photo-16 | 2.95 | 1.38 |
+
+ref-woman reaches 1.61 with her own level reading (1.9 degrees) in place of
+the constant.
+
+Tried and set aside in this round:
+- *Nose length (168-2) as a proportion row.* The fit had left the nose
+  2-3% long (the base nose is 6-7% longer than the photos'), and the row
+  brought the fitted length to within 0.2. Level renders were mixed (ref-man
+  2.18 -> 1.78, the others within noise). At the photo's pose: 1.80 -> 1.83,
+  1.61 -> 1.64, 2.60 -> 2.58, 1.38 -> 1.51, 1.43 -> 1.46. Not kept.
+- *Ambient occlusion off.* The renderer's ambient occlusion draws a dark rim under the nose:
+  without it the nose improved on four faces, but the eyes got worse on all five
+  (ref-woman 1.74 -> 2.45). Kept on.
+
 Tried first and set aside: opening the jaw until the mesh's inner lips part
 as far as the photo's, for the mouth's width. It still overshot: weight 0.17
 rendered a lip gap of 0.21 against the photo's 0.12, and the mouth error

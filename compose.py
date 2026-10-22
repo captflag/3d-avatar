@@ -189,6 +189,27 @@ CAP_RAISE = 0.1
 EYE_CARRY = 0.7
 
 
+# The pitch, in degrees, MediaPipe reads on our own level head renders
+# (1.5-4.5 across the five test faces, yaw and roll under 1). A photo's head
+# pose is taken relative to it, so a photo read as level gives a level head.
+# ponytail: one constant for every avatar; measure per avatar if it matters.
+LEVEL_READ_PITCH = 3.3
+
+
+def photo_head_pose(result) -> list[float] | None:
+    """How the head was turned in the photo, as a quaternion (x y z w) in the
+    scene's axes, for a viewer that renders the head as photographed. Test
+    photos are shot 4-12 degrees from level; compared with a level render, that
+    pitch was charged to the nose and jaw, 1-1.5% of the eye spacing of
+    landmark error."""
+    from scipy.spatial.transform import Rotation
+    if not result.facial_transformation_matrixes:
+        return None
+    u, _, vt = np.linalg.svd(np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)[:3, :3])
+    level = Rotation.from_euler("x", LEVEL_READ_PITCH, degrees=True)
+    return [float(c) for c in (Rotation.from_matrix(u @ vt) * level.inv()).as_quat()]
+
+
 def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
     """The placed landmark sheet with its mouth moved onto the mesh's own.
 
@@ -1220,7 +1241,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     body_part = next(p for p in parts if p.name == "body")
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES,
-                       expression=morph.photo_expression(expression_of(result)))
+                       expression=morph.photo_expression(expression_of(result)),
+                       head_pose=photo_head_pose(result))
 
     info = {
         "advice": photo_advice(landmarks, (pw, ph), expression_of(result)),
