@@ -153,11 +153,16 @@ def tangents(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, normals: n
     r = np.where(np.abs(det) > 1e-12, 1.0 / np.where(np.abs(det) > 1e-12, det, 1.0), 0.0)[:, None]
     face_t = (e1 * d2[:, 1:2] - e2 * d1[:, 1:2]) * r
     face_b = (e2 * d1[:, 0:1] - e1 * d2[:, 0:1]) * r
+    # Summed per position, not per vertex: a card mesh keeps a vertex per
+    # texture island, and tangents summed per copy stepped at every seam.
+    _, where = np.unique(np.round(v, 5), axis=0, return_inverse=True)
+    where = where.reshape(-1)
     tangent = np.zeros_like(v)
     bitangent = np.zeros_like(v)
     for k in range(3):
-        np.add.at(tangent, f[:, k], face_t)
-        np.add.at(bitangent, f[:, k], face_b)
+        np.add.at(tangent, where[f[:, k]], face_t)
+        np.add.at(bitangent, where[f[:, k]], face_b)
+    tangent, bitangent = tangent[where], bitangent[where]
     n = np.asarray(normals, dtype=np.float64)
     n = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
     tangent = tangent - n * (tangent * n).sum(axis=1, keepdims=True)

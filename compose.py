@@ -638,6 +638,18 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray):
     return eyes, eye_uv, texture
 
 
+def welded_normals(mesh: trimesh.Trimesh) -> np.ndarray:
+    """Vertex normals continuous across seams: a card mesh keeps a vertex per
+    texture island, so two copies of one position sat on different cards with
+    different normals, and the hair's shading stepped at every seam. The
+    normals are taken from the mesh with coincident positions merged, and
+    every copy gets its position's."""
+    unique, inverse = np.unique(np.round(mesh.vertices, 5), axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    welded = trimesh.Trimesh(unique, inverse[mesh.faces], process=False)
+    return np.asarray(welded.vertex_normals)[inverse]        # copies share one normal
+
+
 def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_count):
     """A catalogue piece, skinned to the rig.
 
@@ -665,7 +677,7 @@ def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_c
             uv=gltf_uv(mesh.metadata["uv"]), texture=mesh.metadata["texture"],
             normal_texture=mesh.metadata.get("normal_texture"),
             alpha_mask=mesh.metadata.get("alpha_mask", False),
-            normals=mesh.vertex_normals, roughness=roughness,
+            normals=welded_normals(mesh), roughness=roughness,
         )
     return skinned_glb.Part(
         name, mesh.vertices, mesh.faces, part_joints, part_weights,

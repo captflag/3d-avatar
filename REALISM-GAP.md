@@ -1403,9 +1403,17 @@ the fine-scale noise (L* left after a 3-pixel blur):
 | isotropic highlight, roughness 0.5 | 34 | 35 | 78 | 19.0 |
 
 The brown and blonde heads keep their earlier numbers (their variation
-is strand colour, not sheen). Facets remain where cards meet, since each
-card has its own tangents; the next step there is welding the cards'
-shared edges.
+is strand colour, not sheen).
+
+**The seams.** A card mesh keeps a vertex per texture island, so 306 of
+short02's positions are two vertices, each on its own card with its own
+normal and tangent, and the shading stepped at every seam. Normals are now
+taken from the mesh with coincident positions merged (`welded_normals`)
+and tangents summed per position, so the copies agree exactly (the file's
+byte normals differ by 8.6 degrees at most, from rounding). Fine-scale
+noise 17.5 -> 16.6 against the photo's 15.0, brightness unchanged
+(41 / 31 / 80). What is left is the cards' own silhouettes and the alpha
+cut at their tips.
 
 ## One face audited to the detail: photo-16
 

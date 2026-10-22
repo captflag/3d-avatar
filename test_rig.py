@@ -399,13 +399,26 @@ def check_hair_tangents():
 
     vertices, groups = load_base()
     hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    # Across a card seam, where one position is kept as two vertices, the
+    # normals and tangents written are the same.
+    from compose import welded_normals
+    normals = welded_normals(hair)
+    tang = tangents(hair.vertices, hair.faces, hair.metadata["uv"], normals)
+    _, inverse = np.unique(np.round(hair.vertices, 5), axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    copies = np.nonzero(np.bincount(inverse) > 1)[0]
+    assert len(copies) > 100, "no card seams found to check"
+    for u in copies:
+        ids = np.nonzero(inverse == u)[0]
+        assert np.allclose(normals[ids], normals[ids[0]], atol=1e-6), "normals differ across a seam"
+        assert np.allclose(tang[ids, :3], tang[ids[0], :3], atol=1e-6), "tangents differ across a seam"
     scalp = garments.scalp_normals(hair.vertices, vertices, groups)
     assert np.allclose(np.linalg.norm(scalp, axis=1), 1.0, atol=1e-6), "scalp normals not unit"
     # Along each card edge the normal turns slowly: no two joined vertices differ by more than 30 degrees.
     e = hair.edges_unique
     turn = np.degrees(np.arccos(np.clip((scalp[e[:, 0]] * scalp[e[:, 1]]).sum(axis=1), -1, 1)))
     assert np.percentile(turn, 99) < 30, f"scalp normal turns {np.percentile(turn, 99):.0f} degrees along an edge"
-    print(f"ok  hair tangents: along u, handedness follows the texture's v; scalp normals turn at most "
+    print(f"ok  hair tangents: along u, handedness follows the texture's v, one per position across {len(copies)} seams; scalp normals turn at most "
           f"{np.percentile(turn, 99):.0f} degrees along a card edge")
 
 
