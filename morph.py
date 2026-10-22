@@ -746,7 +746,12 @@ ARKIT_RESPONSE = {
     "mouthLowerDownLeft": [0.0, 0.01, 0.09, 0.26, 0.48], "mouthLowerDownRight": [0.0, 0.02, 0.12, 0.33, 0.57],
     "mouthUpperUpLeft": [0.06, 0.38, 0.73, 0.75, 0.79], "mouthUpperUpRight": [0.08, 0.43, 0.79, 0.82, 0.85],
     "browOuterUpLeft": [0.38, 0.46, 0.59, 0.68, 0.75], "browOuterUpRight": [0.23, 0.29, 0.39, 0.49, 0.57],
-    "jawOpen": [0.0, 0.01, 0.13, 0.27, 0.35], "mouthFunnel": [0.0, 0.02, 0.03, 0.06, 0.18],
+    # jawOpen re-measured after the lips were sealed and the head squared
+    # (photo-16, ref-woman, sk-21): the old row, [0, 0.01, 0.13, 0.27, 0.35],
+    # turned a photo's barely parted lips (0.08) into weight 0.39, which
+    # rendered as a mouth open on its teeth (0.45). Per avatar it ranges
+    # from 0.33 to 0.85 at full weight.
+    "jawOpen": [0.03, 0.19, 0.35, 0.55, 0.66], "mouthFunnel": [0.0, 0.02, 0.03, 0.06, 0.18],
     "mouthPucker": [0.12, 0.28, 0.57, 0.84, 0.95], "browInnerUp": [0.24, 0.28, 0.33, 0.41, 0.48],
 }
 # Shapes MediaPipe scores on photos but hardly at all on our avatars (frown,

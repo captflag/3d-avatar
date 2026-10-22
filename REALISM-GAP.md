@@ -1417,6 +1417,22 @@ them. On the squared head: ref-man 2.12 -> 2.04, ref-woman flat, photo-10
 worse on three faces. Taken out. The outline needs the render in the loop:
 fit the silhouette the camera sees, not the landmark vertices.
 
+**A barely parted mouth rendered open.** sk-21's photo scores jawOpen
+0.08. The response row turned that into weight 0.39, and the render read
+0.45: lips apart on the teeth, mouth error 7.08. The row was stale. Re-measured
+at weights 0-1, jawOpen reads 0.33 on ref-woman and 0.80-0.85 on photo-16 and
+sk-21 at full weight. The new row is their average, and 0.08 now falls below
+the shown threshold. On sk-21: render jawOpen 0.06, mouth 7.08 -> 2.71,
+whole face 8.20 -> 6.80. The five test faces score no jawOpen, so they do
+not change.
+
+Tried first and set aside: opening the jaw until the mesh's inner lips part
+as far as the photo's, for the mouth's width. It still overshot: weight 0.17
+rendered a lip gap of 0.21 against the photo's 0.12, and the mouth error
+was 9.8. The vertex landmark 14 lands on barely moves with the jaw (0.006
+where its neighbours drop 0.3), so the lip landmarks' vertices are a poor
+gauge of the visible opening.
+
 ## The last open items, each tried
 
 - **Brow height**: the eye carry widened to 0.7 eye spacings and faded
