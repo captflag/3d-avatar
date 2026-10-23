@@ -19,6 +19,7 @@ from flask import Flask, abort, jsonify, request, send_from_directory
 from PIL import Image
 
 import photo_check
+import skinned_glb
 from compose import compose
 from generate import NoFaceFound, generate_avatar, get_landmarker
 
@@ -185,6 +186,17 @@ def too_large(_err):
 @app.get("/out/<path:name>")
 def serve_out(name: str):
     return send_from_directory(OUT, name)
+
+
+@app.get("/compat/<name>")
+def serve_compat(name: str):
+    """An avatar without KHR_mesh_quantization, for old viewers (skinned_glb.dequantised)."""
+    path = OUT / name
+    if not name.endswith(".glb") or path.resolve().parent != OUT.resolve() or not path.exists():
+        abort(404)
+    data = skinned_glb.dequantised(path.read_bytes())
+    return app.response_class(data, mimetype="model/gltf-binary",
+                              headers={"Content-Disposition": f'attachment; filename="{path.stem}-compat.glb"'})
 
 
 @app.get("/uploads/<path:name>")

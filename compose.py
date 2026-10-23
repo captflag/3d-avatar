@@ -1370,6 +1370,9 @@ def main() -> int:
                              "except for a hard edge across the forehead")
     parser.add_argument("--pose", choices=sorted(POSES), default="relaxed",
                         help="the stance the file opens in (the skeleton is the same)")
+    parser.add_argument("--compat", action="store_true",
+                        help="write normals and texture coordinates as floats, without "
+                             "KHR_mesh_quantization, for old viewers such as Windows' 3D Viewer")
     args = parser.parse_args()
 
     try:
@@ -1383,8 +1386,10 @@ def main() -> int:
         print(err, file=sys.stderr)
         return 2
 
+    if args.compat:
+        args.out.write_bytes(skinned_glb.dequantised(args.out.read_bytes()))
     print(f"{args.out}  {info['triangles']} tris  wearing {', '.join(info['wearing'])}"
-          f"  {info['size_kb']} KB")
+          f"  {info['size_kb']} KB" + ("  (compat)" if args.compat else ""))
     return 0
 
 

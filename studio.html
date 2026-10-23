@@ -99,6 +99,7 @@
       <select id="dimension" class="toggle" title="what to produce">
         <option value="3d">3D model</option>
         <option value="2d">2D image</option>
+        <option value="3d-compat" title="without mesh compression, for old viewers such as Windows 3D Viewer">3D model, older viewers</option>
       </select>
       <label class="toggle"><input type="checkbox" id="fullbody" checked> Full body</label>
       <label class="toggle" title="2D image: turn the head as it was in the photo instead of level"><input type="checkbox" id="photopose"> Photo's head pose</label>
@@ -489,9 +490,7 @@ drop.addEventListener('submit', async (ev) => {
     show(data.review);
     status.textContent = `Done · ${data.info.triangles} triangles · ${data.info.size_kb} KB` +
       ((data.info.advice || []).length ? ` · Tip: ${data.info.advice[0]}` : '');
-    $('resultmeta').textContent = $('dimension').value === '2d'
-      ? 'Download gives a transparent PNG rendered from this avatar.'
-      : 'Download gives a GLB: opens in Unity, Unreal, Blender and three.js.';
+    $('resultmeta').textContent = downloadNote();
     loadGallery();
   } catch (err) {
     status.className = 'bad';
@@ -523,8 +522,9 @@ $('download').addEventListener('click', async () => {
     } else {
       // The GLB is already on the server; let the browser fetch it as a file.
       const link = document.createElement('a');
-      link.href = current.model;
-      link.download = `${current.id}.glb`;
+      const compat = $('dimension').value === '3d-compat';
+      link.href = compat ? `/compat/${current.model.split('/').pop()}` : current.model;
+      link.download = `${current.id}${compat ? '-compat' : ''}.glb`;
       link.click();
     }
   } catch (err) {
@@ -538,10 +538,16 @@ $('download').addEventListener('click', async () => {
 
 $('dimension').addEventListener('change', () => {
   if (!current) return;
-  $('resultmeta').textContent = $('dimension').value === '2d'
-    ? 'Download gives a transparent PNG rendered from this avatar.'
-    : 'Download gives a GLB: opens in Unity, Unreal, Blender and three.js.';
+  $('resultmeta').textContent = downloadNote();
 });
+
+function downloadNote() {
+  return {
+    '2d': 'Download gives a transparent PNG rendered from this avatar.',
+    '3d': 'Download gives a GLB: opens in Unity, Unreal, Blender and three.js.',
+    '3d-compat': 'Download gives a GLB without mesh compression, a third larger: also opens in Windows 3D Viewer.',
+  }[$('dimension').value];
+}
 
 function show(reviewUrl) {
   viewer.src = reviewUrl;
