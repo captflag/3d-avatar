@@ -596,7 +596,7 @@ SWEEP_SPAN = (30.0, 75.0)
 
 
 def sweep_back(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, edge: np.ndarray,
-               hairline_y: float, floor: float = 0.05) -> float:
+               hairline_y, floor: float = 0.05, above: float | None = None) -> float:
     """Lift a haircut's front up and back over the head until it ends at
     `hairline_y` mid-forehead, without cutting it. Returns the angle, degrees.
 
@@ -608,6 +608,14 @@ def sweep_back(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, edge: 
     towards the sides (SWEEP_SPAN); the back does not move. Hair that would
     end up nearer the scalp than `floor` is pushed back out. Hair that already
     ends higher than the photo's is left alone.
+
+    `hairline_y` may instead be the photo's hairline as a curve, (xs, ys)
+    across the forehead in head units. Each part of the front is then turned by
+    what brings the edge above it up to the curve, so the cut recedes at the
+    temples where the photo's does; past the curve's ends nothing turns.
+    Only the edge above `above` (the brow line; the curve's heights are read
+    above the photo's brows) sets each part's turn, so hair hanging down the
+    sides in front of the temples does not count as a low hairline.
     """
     from scipy.spatial import cKDTree
 
@@ -616,23 +624,58 @@ def sweep_back(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, edge: 
     cranium = vertices[skin[vertices[skin, 1] > eyes[1]]]
     centre = np.array([0.0, cranium[:, 1].mean(), (cranium[:, 2].max() + cranium[:, 2].min()) / 2.0])
 
-    # The hair's lowest visible points straight ahead (within 15 degrees).
-    rel = edge - centre
-    ahead = np.degrees(np.abs(np.arctan2(rel[:, 0], rel[:, 2]))) < 15.0
-    if ahead.sum() < 10:
-        return 0.0
-    edge, rel = edge[ahead], rel[ahead]
-    radius = float(np.median(np.hypot(rel[:, 1], rel[:, 2])))
-    lift = np.arcsin(np.clip((hairline_y - centre[1]) / radius, -1.0, 1.0))
-    now = np.arcsin(np.clip((np.percentile(edge[:, 1], 3) - centre[1]) / radius, -1.0, 1.0))
-    turn = float(lift - now)
-    if turn <= 0.0:
-        return 0.0
+    def needed(points, target):
+        """The turn that brings the lowest of `points` (relative) up to
+        `target`, and that lowest point's elevation now."""
+        radius = float(np.median(np.hypot(points[:, 1], points[:, 2])))
+        lift = np.arcsin(np.clip((target - centre[1]) / radius, -1.0, 1.0))
+        now = np.arcsin(np.clip(np.percentile(points[:, 1], 3) / radius, -1.0, 1.0))
+        return float(lift - now), float(now)
 
+    rel = edge - centre
+    round_edge = np.degrees(np.abs(np.arctan2(rel[:, 0], rel[:, 2])))
     p = hair.vertices - centre
     angle = np.degrees(np.abs(np.arctan2(p[:, 0], p[:, 2])))
     t = np.clip((SWEEP_SPAN[1] - angle) / (SWEEP_SPAN[1] - SWEEP_SPAN[0]), 0.0, 1.0)
-    a = turn * t * t * (3.0 - 2.0 * t)
+    if np.ndim(hairline_y) == 0:
+        # The hair's lowest visible points straight ahead (within 15 degrees).
+        ahead = round_edge < 15.0
+        if ahead.sum() < 10:
+            return 0.0
+        turn = needed(rel[ahead], hairline_y)[0]
+        if turn <= 0.0:
+            return 0.0
+        a = turn * t * t * (3.0 - 2.0 * t)
+    else:
+        xs, ys = (np.asarray(v, dtype=np.float64) for v in hairline_y)
+        step = float(np.median(np.diff(xs)))
+        turns, nows = np.full(len(xs), np.nan), np.full(len(xs), np.nan)
+        for i, (x, y) in enumerate(zip(xs, ys)):
+            near = (np.abs(edge[:, 0] - x) < step) & (round_edge < SWEEP_SPAN[1])
+            if above is not None:
+                near &= edge[:, 1] > above
+            if near.sum() >= 10:
+                turns[i], nows[i] = needed(rel[near], y)
+        known = ~np.isnan(turns)
+        if not known.any():
+            return 0.0
+        turns = np.maximum(np.interp(xs, xs[known], turns[known]), 0.0)
+        nows = np.interp(xs, xs[known], nows[known])
+        turn = float(turns.max())
+        if turn <= 0.0:
+            return 0.0
+        # Each part turned less the higher up the head it lies, the edge by
+        # all of its turn and the crown not at all: turned whole, columns
+        # needing 40-50 degrees at the temples stood the cut up in a block.
+        # Fading to none a step past the curve's ends, and round the head
+        # over the same span past SWEEP_SPAN that it fades over in front of it.
+        ends = lambda values: np.interp(hair.vertices[:, 0], np.r_[xs[0] - 2 * step, xs, xs[-1] + 2 * step],
+                                        np.r_[0.0, values, 0.0])
+        now = np.interp(hair.vertices[:, 0], xs, nows)
+        rise = np.arctan2(p[:, 1], p[:, 2])
+        a = ends(turns) * np.clip((np.pi / 2 - rise) / (np.pi / 2 - now), 0.0, 1.0)
+        t = np.clip((2 * SWEEP_SPAN[1] - SWEEP_SPAN[0] - angle) / (SWEEP_SPAN[1] - SWEEP_SPAN[0]), 0.0, 1.0)
+        a = a * t * t * (3.0 - 2.0 * t)
     y, z = p[:, 1].copy(), p[:, 2].copy()
     p[:, 1] = y * np.cos(a) + z * np.sin(a)
     p[:, 2] = -y * np.sin(a) + z * np.cos(a)

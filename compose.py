@@ -635,6 +635,24 @@ def hairline_for(face: trimesh.Trimesh, vertices: np.ndarray, groups: dict, lift
     return line
 
 
+def hairline_on_head(points, landmarks, photo_size, sheet: np.ndarray):
+    """The photo's hairline (read_hair's `hairline_points`, photo pixels) on the
+    head, as (xs, ys) in head units, or None.
+
+    Through the placed landmark sheet: an affine from the photo to the sheet,
+    fitted over the upper face, which the hairline sits just above.
+    """
+    if not points or len(points) < 4:
+        return None
+    pw, ph = photo_size
+    pixels = np.array([[lm.x * pw, lm.y * ph] for lm in landmarks[:len(sheet)]])
+    upper = sheet[:, 1] > np.percentile(sheet[:, 1], 66)
+    fit = np.linalg.lstsq(np.c_[pixels[upper], np.ones(upper.sum())], sheet[upper, :2], rcond=None)[0]
+    on_head = np.c_[np.asarray(points, dtype=np.float64), np.ones(len(points))] @ fit
+    on_head = on_head[np.argsort(on_head[:, 0])]
+    return on_head[:, 0], on_head[:, 1]
+
+
 def brows_to_photo(card: trimesh.Trimesh, sheet: np.ndarray, depth: np.ndarray,
                    vertices: np.ndarray, groups: dict) -> trimesh.Trimesh:
     """Move the brow cards onto the photo's own brows, which the bake paints on.
@@ -941,7 +959,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # and what an opened jaw shows.
     outfit = outfit + [items_by_id()[i] for i in ("teeth", "tongue") if i not in {o["id"] for o in outfit}]
 
-    worn, hair_rgb = [], None
+    worn, hair_rgb, curve = [], None, None
     brow_depth = facetexture.brow_depth(photo_rgb, landmarks)
     for item in outfit:
         colour = None
@@ -967,7 +985,9 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # above the brows on the shaped head.
             spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
             hairline_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["hairline"] * spacing
-            garments.sweep_back(mesh, vertices, groups, appearance.opaque_hair(mesh), hairline_y)
+            curve = hairline_on_head(hair_reading.get("hairline_points"), landmarks, photo.size, full_face.vertices)
+            garments.sweep_back(mesh, vertices, groups, appearance.opaque_hair(mesh),
+                                hairline_y if curve is None else curve, above=float(vertices[corr[[105, 334]], 1].mean()))
         if item["category"] == "hair" and "mhclo" in item and hair_reading and hair_reading.get("rise"):
             # And up to the photo's height over the forehead: the stock cuts lie flat.
             spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
@@ -1108,7 +1128,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         # bare forehead in a hard line.
         head_texture, hair_cover, hair_below = appearance.hairline_tint(head_texture, vertices, head_faces, head_uv_all,
                                                             head_uv_faces, appearance.opaque_hair(haircut), hair_rgb,
-                                                            spare=sampler.sample(vertices)[1], return_weight=True)
+                                                            spare=sampler.sample(vertices)[1], return_weight=True,
+                                                            hairline=curve)
     # The body's one map runs neck to toe; at 1024 a nail was 8 texels wide.
     rest_base = skin.albedo(SKIN_SIZE, skin_mean, skin_spread, seed=7)
 
@@ -1370,6 +1391,9 @@ def main() -> int:
                              "except for a hard edge across the forehead")
     parser.add_argument("--pose", choices=sorted(POSES), default="relaxed",
                         help="the stance the file opens in (the skeleton is the same)")
+    parser.add_argument("--compat", action="store_true",
+                        help="write normals and texture coordinates as floats, without "
+                             "KHR_mesh_quantization, for old viewers such as Windows' 3D Viewer")
     args = parser.parse_args()
 
     try:
@@ -1383,8 +1407,10 @@ def main() -> int:
         print(err, file=sys.stderr)
         return 2
 
+    if args.compat:
+        args.out.write_bytes(skinned_glb.dequantised(args.out.read_bytes()))
     print(f"{args.out}  {info['triangles']} tris  wearing {', '.join(info['wearing'])}"
-          f"  {info['size_kb']} KB")
+          f"  {info['size_kb']} KB" + ("  (compat)" if args.compat else ""))
     return 0
 
 

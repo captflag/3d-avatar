@@ -18,30 +18,30 @@ card is a render of the avatar itself, badged `full body` or `face only`, so you
 can see at a glance what each run produced. Opening the review page with no model
 named shows the newest avatar.
 
-There are two ways in. **Choose from gallery** takes any photo. **Use camera**
-opens a live view that checks the shot before taking it, against the limits the
-pipeline was measured to need:
-- the face 250+ pixels across;
-- facing the camera and upright;
-- mouth relaxed, since a broad smile is never fully taken off the resting face;
-- eyes open;
-- even light on both cheeks;
-- the hair in frame.
+There are two ways in. **Choose from gallery** takes any photo. **Guided
+capture** takes three, each checked before it is taken against the limits the
+pipeline was measured to need: the face straight on, then the head turned to the
+person's left and to their right, 30-45 degrees. The turned photos measure how
+far the nose, lips and chin stand out, which one photo only guesses, and paint
+the cheeks' sides and the jaw towards the ears, which the front photo never sees
+(`views.py`; full body only). The checks:
+- the face 500+ pixels across (400 turned), twice what the photo advice asks;
+- facing the camera, or turned the asked way by 30-45 degrees (MediaPipe reads
+  that as 25-40), chin level and head upright;
+- mouth closed and relaxed, since a broad smile is never fully taken off the
+  resting face; eyes open;
+- sharp: how much of the face's edge contrast a further blur takes away, so a
+  soft or shaken photo fails whatever its texture;
+- front only: even light on both cheeks, and the hair in frame.
 
-Once every line is ticked for half a second the photo takes itself, and **Take
-photo** takes it anyway. The checks use the same MediaPipe face model as the
-pipeline, served at `/models/face_landmarker.task`. Browsers open the camera only
-on `localhost` or https; on a teammate's phone over the office network, **Use
-camera** falls back to the phone's own camera, without the live checks.
-
-After the front photo the camera stays open for up to two turned ones: turn the
-head slowly to one side, as far as you can still see the screen, and back, then
-the other way (**Done** stops at any point). The camera keeps the widest frame
-that passes the same checks (less light and hair) and takes it once the turn is
-wide enough or the head comes back. The turned photos measure how far the nose,
-lips and chin stand out, which one photo only guesses, and paint the cheeks'
-sides and the jaw towards the ears, which the front photo never sees
-(`views.py`). Full body only; from the command line,
+With a camera, once every line is ticked for half a second the photo takes
+itself, and **Take photo anyway** takes it regardless. The checks use the same
+MediaPipe face model as the pipeline, served at `/models/face_landmarker.task`.
+Browsers open the camera only on `localhost` or https; without one (a teammate's
+phone on the office network, or no camera fitted) each step takes a photo file
+instead (**Use a photo instead**; a phone opens its own camera for it), checked
+the same way, with **Use this photo anyway** to override. **Skip** leaves a
+turned photo out and **Done** stops at any point. From the command line,
 `compose.py front.jpg -o out/x.glb --side left.jpg --side right.jpg`.
 
 **How alike is it?** `score.py` asks AWS Rekognition's CompareFaces how alike
