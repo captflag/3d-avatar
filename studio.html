@@ -33,6 +33,9 @@
                   border-radius:8px; padding:8px 10px; font:inherit; }
   #status { min-height:20px; font-size:13px; color:var(--muted); text-align:center; }
   #status.bad { color:var(--bad); }
+  #advice { font-size:13px; color:var(--muted); text-align:center; }
+  #advice:empty { display:none; }
+  #advice ul { margin:4px 0 0; padding:0; list-style:none; color:var(--bad); }
 
   #result { display:none; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--panel); }
   #result iframe { width:100%; height:62vh; border:0; display:block; }
@@ -125,6 +128,7 @@
   </section>
 
   <div id="status"></div>
+  <div id="advice" aria-live="polite"></div>
 
   <div id="result">
     <div class="resultbar">
@@ -164,6 +168,34 @@ function setFile(f) {
   go.disabled = false;
   status.textContent = '';
   status.className = '';
+  checkUpload(f);
+}
+
+// ---- Photo check -------------------------------------------------------------
+// The server asks Claude what would cost likeness in the photo (photo_check.py)
+// and what the hair is. Off when the server has no API key: nothing shows.
+let hairHint = '', checkToken = 0;
+async function checkUpload(f) {
+  const token = ++checkToken, advice = $('advice');
+  hairHint = '';
+  advice.replaceChildren();
+  const body = new FormData();
+  body.append('photo', f);
+  let data;
+  try { data = await (await fetch('/check', { method: 'POST', body })).json(); } catch { return; }
+  if (token !== checkToken || !data.enabled || data.error) return;  // a newer photo, or no check
+  hairHint = data.hair_cut;
+  const seen = `Seen: ${data.hair_style}, ${data.hair_colour}` +
+    (data.facial_hair !== 'none' ? `, ${data.facial_hair}` : '') +
+    (data.glasses !== 'none' ? `, ${data.glasses}` : '') + '.';
+  const head = document.createElement('div');
+  head.textContent = (data.advice.length ? 'Photo check, before you build: ' : 'Photo check: good to build from. ') + seen;
+  advice.append(head);
+  if (data.advice.length) {
+    const list = document.createElement('ul');
+    data.advice.forEach((a) => { const li = document.createElement('li'); li.textContent = a; list.append(li); });
+    advice.append(list);
+  }
 }
 
 $('pick').addEventListener('click', () => file.click());
@@ -446,6 +478,7 @@ drop.addEventListener('submit', async (ev) => {
   sides.forEach((f) => body.append('side', f));
   body.append('mode', $('fullbody').checked ? 'body' : 'face');
   body.append('gender', $('gender').value);
+  if (hairHint) body.append('hair_hint', hairHint);
   try {
     const res = await fetch('/generate', { method: 'POST', body });
     const data = await res.json();

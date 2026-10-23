@@ -18,6 +18,7 @@ import re
 from flask import Flask, abort, jsonify, request, send_from_directory
 from PIL import Image
 
+import photo_check
 from compose import compose
 from generate import NoFaceFound, generate_avatar, get_landmarker
 
@@ -125,9 +126,13 @@ def generate():
 
     full_body = request.form.get("mode") == "body"
     gender = "female" if request.form.get("gender") == "female" else "male"
+    # The haircut the photo check saw (/check), if the page ran one: only a
+    # catalogue id or "bald" gets through.
+    hair_hint = photo_check.hair_hint({"hair_cut": request.form.get("hair_hint")})
     try:
         if full_body:
-            info = compose(photo_path, OUT / f"{entry_id}.glb", gender, side_photos=side_photos or None)
+            info = compose(photo_path, OUT / f"{entry_id}.glb", gender, side_photos=side_photos or None,
+                           hair_hint=hair_hint)
         else:
             info = generate_avatar(photo_path, OUT / f"{entry_id}.glb")
     except NoFaceFound:
@@ -145,6 +150,26 @@ def generate():
         review=f"/review.html?model=/out/{entry_id}.glb&photo=/uploads/{photo_path.name}",
         info=info,
     )
+
+
+@app.post("/check")
+def check():
+    """The photo check's verdict (photo_check.py), asked before building.
+    `enabled` is false when no API key is set; nothing is kept on disk."""
+    upload = request.files.get("photo")
+    if upload is None:
+        return jsonify(error="Choose a photo first."), 400
+    if not photo_check.enabled():
+        return jsonify(enabled=False)
+    try:
+        verdict = photo_check.check_photo(upload.stream)
+    except Exception as err:
+        # The type only: an API error's text is not ours to log in full.
+        app.logger.warning("photo check failed: %s", type(err).__name__)
+        verdict = None
+    if verdict is None:
+        return jsonify(enabled=True, error="The photo check gave no answer.")
+    return jsonify(enabled=True, **verdict)
 
 
 @app.errorhandler(413)

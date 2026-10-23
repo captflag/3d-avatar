@@ -744,7 +744,8 @@ def outfit_for(gender: str, chosen: list[str] | None) -> list[dict]:
 def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             gender: str = "male", wear: list[str] | None = None,
             face_patch: bool = False, pose: str = "relaxed",
-            side_photos: list[pathlib.Path] | None = None) -> dict:
+            side_photos: list[pathlib.Path] | None = None,
+            hair_hint: str | None = None) -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
@@ -866,6 +867,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     if wear is None:
         default_cut = next((i["id"] for i in outfit if i["category"] == "hair" and "mhclo" in i), None)
         cut = appearance.hair_style(hair_reading, default_cut)
+        # Where the segmentation read no hair to measure, the photo check's
+        # haircut (photo_check.hair_hint: a catalogue id, or "bald") decides.
+        if hair_hint and (hair_reading is None or hair_reading["top"] is None):
+            cut = None if hair_hint == "bald" else hair_hint
         # Bald: no hair at all. Otherwise the chosen cut over the underlayer.
         rest = [i for i in outfit if i["category"] != "hair"]
         # No scalp layer under a real haircut: the head texture is tinted in
