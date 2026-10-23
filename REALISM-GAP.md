@@ -1374,6 +1374,42 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Hairline from the photo, photographic skin and eye shading, guided capture
+
+Three parallel sessions (notes in side-session-notes/hairline.md,
+photo-shading.md, guided-capture.md), merged and measured together on the
+five test faces. Each was measured on its own: the new builds rendered with
+the old renderer, then with the new one. Whole-face landmark error:
+
+| face | before | + hairline | + skin/eye shading |
+|---|---|---|---|
+| at the photo's pose | | | |
+| ref-man | 1.88 | 1.74 | 1.78 |
+| ref-woman | 1.75 | 1.71 | 1.79 |
+| photo-10 | 1.85 | 1.86 | 1.79 |
+| photo-14 | 1.30 | 1.19 | 1.18 |
+| photo-16 | 1.29 | 1.21 | 1.20 |
+| level | | | |
+| ref-man | 1.74 | 1.57 | 1.55 |
+| ref-woman | 2.69 | 2.51 | 2.49 |
+| photo-10 | 2.07 | 2.01 | 1.97 |
+| photo-14 | 2.92 | 2.78 | 2.77 |
+| photo-16 | 2.92 | 2.82 | 2.79 |
+
+- **Hairline, kept.** The hair's front edge now follows the photo's hairline
+  curve, temples included. Jaw error falls on every face as well (MediaPipe
+  frames the face from the hairline): photo-16 at pose 2.28 -> 1.80.
+- **Skin scattering, a wet lower lid and a refracting cornea, kept.** Its
+  point is looking photographic, not moving landmarks. Landmarks hold within
+  render noise (0.06), except ref-woman at pose (+0.08), and level renders are
+  slightly better on all five. The visible change is modest: softer,
+  more translucent skin.
+- **Guided capture, kept.** It takes front, left and right shots, each
+  checked before it is taken. In the in-app browser (no camera) it fell back
+  to choosing a photo per step. On photo-16 it flagged the face as 214 px
+  (needs 500) and the chin as not level, and passed the rest. Live camera
+  capture is still untested.
+
 ## A shape model trained on our own synthetic heads: better on synthetic, worse on photos
 
 `shape_model.py` (session notes: side-session-notes/shape-model.md) is a ridge
