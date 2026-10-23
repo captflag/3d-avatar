@@ -1889,11 +1889,16 @@ every row, with no trend.
   can be seen. No detail comes back. In the texture strip
   (out/upscale/textures.png) every small version is equally soft, with no
   brow hairs and no stubble.
-- **Brow colour is the largest gain**: 11.4 -> 7.0 dE at 40 px and
-  4.9 -> 2.6 at 80. `brow_colour` reads 3 x 3 pixel patches. On an 89 px wide
-  photo, a patch is 7% of the face's width and takes in skin; enlarged, it
-  covers less of the face. The colour only tints brow cards, and photo-16's
-  avatar wears none, so this avatar does not show it.
+- **Brow colour looks like the largest gain, but is not one**: 11.4 -> 7.0
+  dE at 40 px and 4.9 -> 2.6 at 80. The small photo's brow pixels really are
+  lighter: the darkest point across each brow is (81, 47, 39) on the
+  original, (87, 57, 48) at 80 px and (98, 70, 61) at 40 px, and today's 40 px
+  reading (95, 69, 59) is already about that dark. Enlarging darkens it only
+  because Lanczos and bicubic overshoot at edges, going darker than any real
+  pixel of the small photo. A patch sized in face widths was tried and did not
+  help either: no single size kept the full-size photos where they are, and
+  the 40 px colour stayed about 11 dE off at every size. The colour only tints
+  brow cards, and photo-16's avatar wears none.
 
 **Verdict: no upscaler wins clearly.** Lanczos is slightly ahead of bicubic
 on texture, brows and iris. Both beat reading the small photo as it is only
@@ -1905,9 +1910,9 @@ blur and JPEG loss.
 
 A pre-step was written and tested, but not merged. `fit_face(min_face_px=250)`
 enlarges a smaller face with Lanczos and finds it again, and the advice still
-reports the face at the size it was shot. The one gain worth having is
-cheaper to get directly: measure `brow_colour`'s patch in face widths, not
-pixels.
+reports the face at the size it was shot. The brow colour a 40 px face
+loses is gone from its pixels, so neither enlarging nor a different patch
+brings it back.
 
 ## What changed in the first pass
 
