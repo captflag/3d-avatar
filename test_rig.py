@@ -649,6 +649,11 @@ def check_lashes_and_brows():
     dark_after = np.percentile(L(brows)[region], 20)
     assert dark_after < dark_before - 5, f"brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}"
     assert np.array_equal(brows[cheek], lashed[cheek]), "the cheek changed with the brows"
+    # The lid under the brow (its crease, the socket's shade) is not brow.
+    mid = pts[7]
+    top = int(mid[1] + appearance.BROW_BELOW * np.ptp(pts[5:, 0])) + 2
+    lid = (slice(top, int(marks[159].y * h) - 1), slice(int(mid[0]) - 3, int(mid[0]) + 4))
+    assert lashed[lid].size and np.array_equal(brows[lid], lashed[lid]), "the lid under the brow changed"
     print(f"ok  lashes and brows: lash line L {before:.0f} -> {after:.0f} (photo {photo_line:.0f}), brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}, cheek kept")
 
 
