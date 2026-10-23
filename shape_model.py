@@ -16,6 +16,7 @@ corrected free-form, rig, clothes) runs as before.
     python shape_model.py extract data/synth      # fit every sample, cache
     python shape_model.py train                   # fit the ridge, report test error
     python shape_model.py real uploads/a.png:male ...   # plausibility on real photos
+    python shape_model.py jaw-bias data/synth     # MediaPipe's jaw against the true edge
     python shape_model.py                         # self-check (needs no data)
 
 Trained only on synth.py's CC0 renders; numpy only, no pretrained weights.
@@ -162,10 +163,14 @@ def head_pose(result) -> np.ndarray:
     return Rotation.from_matrix(u @ vt).as_euler("yxz", degrees=True)
 
 
-def mesh(fitted: dict, weights: np.ndarray) -> np.ndarray:
-    """The skull with these weights, then lips and lids corrected free-form and
-    the lips sealed, as compose builds it."""
+def mesh(fitted: dict, weights: np.ndarray, outline: bool = True) -> np.ndarray:
+    """The skull with these weights, then lips and lids corrected free-form,
+    the lips sealed and (`outline`) the jaw fitted as a silhouette, as compose
+    builds it."""
+    from scipy.spatial.transform import Rotation
     from appearance import EYE_CONTOURS
+    from catalogue import load_base
+    from rig import load_weights
     base, average, corr, front = skull(fitted["gender"])
     expression = dict(zip(morph.EXPRESSION_UNITS, fitted["expression"]))
     marks = np.zeros(len(corr))
@@ -174,7 +179,13 @@ def mesh(fitted: dict, weights: np.ndarray) -> np.ndarray:
     vertices = morph.correct(morph.apply(base, weights), base, corr,
                              morph.close_lips(fitted["person"]),
                              average, weights, expression, front, fitted["trust"] * marks)
-    return morph.seal_lips(vertices, corr)
+    vertices = morph.seal_lips(vertices, corr)
+    if outline:
+        resting = fitted["person"] - morph.expression_offsets(base, front, expression)
+        faces = load_base()[1]["body"]
+        vertices = morph.fit_outline(vertices, morph.head_only(vertices, faces, load_weights()), resting,
+                                     Rotation.from_euler("yxz", fitted["pose"], degrees=True).as_matrix())
+    return vertices
 
 
 def features(fitted: dict) -> np.ndarray:
@@ -264,19 +275,46 @@ def residual(m: dict, x: np.ndarray) -> np.ndarray:
     return ((x - m["mean"]) / m["scale"]) @ m["coef"] + m["bias"]
 
 
-def errors(fitted: dict, truth_vertices: np.ndarray, weights: np.ndarray, corr: np.ndarray) -> dict:
+def jaw_edge(fitted: dict, got: np.ndarray, want: np.ndarray, corr: np.ndarray) -> float:
+    """How far the jaw's silhouette, as the photo saw the head, is from the
+    true head's: mean gap along rays from the nose through the jaw outline
+    landmarks, % of the eye spacing. The edge, not the vertices on it."""
+    from scipy.spatial.transform import Rotation
+    from catalogue import load_base
+    from rig import load_weights
+    rotation = Rotation.from_euler("yxz", fitted["pose"], degrees=True).as_matrix()
+    faces = morph.head_only(want, load_base()[1]["body"], load_weights())
+    centre = want[corr].mean(axis=0)
+    scale = morph.OUTLINE_SCALE / np.linalg.norm(want[corr[EYES[0]]] - want[corr[EYES[1]]])
+    size = int(4 * morph.OUTLINE_SCALE)
+    true_mask, xy = morph._silhouette(want, faces, rotation, centre, scale, size)
+    got_mask, _ = morph._silhouette(got, faces, rotation, centre, scale, size)
+    nose, through = xy[corr[1]], xy[corr[morph.JAW_OUTLINE]]
+    reach = lambda mask: _edge_along(mask, through, nose)
+    return float(np.abs(reach(true_mask) - reach(got_mask)).mean() / morph.OUTLINE_SCALE * 100)
+
+
+def _edge_along(mask: np.ndarray, through: np.ndarray, centre: np.ndarray) -> np.ndarray:
+    """Per point, how far from `centre` the silhouette ends along the ray through it."""
+    gaps, _ = morph._edge_along(mask, through, centre)
+    return np.linalg.norm(through - centre, axis=1) - gaps
+
+
+def errors(fitted: dict, truth_vertices: np.ndarray, weights: np.ndarray, corr: np.ndarray,
+           outline: bool = True) -> dict:
     """How far the mesh with these weights is from the true one, in % of the
     true eye spacing, after lining the faces' landmark vertices up by their mean."""
-    got = mesh(fitted, weights)[corr]
-    want = truth_vertices[corr]
-    got = got - got.mean(axis=0) + want.mean(axis=0)
-    spacing = np.linalg.norm(want[EYES[0]] - want[EYES[1]])
-    off = (got - want) / spacing * 100
-    nose = lambda v: np.linalg.norm(v[NOSE[0]] - v[NOSE[1]])
+    got = mesh(fitted, weights, outline)
+    want = truth_vertices
+    got = got - got[corr].mean(axis=0) + want[corr].mean(axis=0)
+    spacing = np.linalg.norm(want[corr[EYES[0]]] - want[corr[EYES[1]]])
+    off = (got[corr] - want[corr]) / spacing * 100
+    nose = lambda v: np.linalg.norm(v[corr[NOSE[0]]] - v[corr[NOSE[1]]])
     return {"face": np.linalg.norm(off, axis=1).mean(),
             "face_xy": np.linalg.norm(off[:, :2], axis=1).mean(),
             "outline": np.linalg.norm(off[OUTLINE], axis=1).mean(),
             "outline_xy": np.linalg.norm(off[OUTLINE, :2], axis=1).mean(),
+            "jaw_edge": jaw_edge(fitted, got, want, corr),
             "nose_long": (nose(got) - nose(want)) / spacing * 100}
 
 
@@ -290,8 +328,8 @@ def signed(weights: np.ndarray) -> np.ndarray:
 def report(rows: list[dict], label: str) -> str:
     keys = rows[0].keys()
     mean = {k: np.mean([r[k] for r in rows]) for k in keys}
-    return (f"{label:<10} face {mean['face']:.2f} (xy {mean['face_xy']:.2f})  "
-            f"outline {mean['outline']:.2f} (xy {mean['outline_xy']:.2f})  "
+    return (f"{label:<16} face {mean['face']:.2f} (xy {mean['face_xy']:.2f})  "
+            f"outline {mean['outline']:.2f} (xy {mean['outline_xy']:.2f})  jaw edge {mean['jaw_edge']:.2f}  "
             f"nose long {mean['nose_long']:+.2f} (|{np.mean([abs(r['nose_long']) for r in rows]):.2f}|)")
 
 
@@ -324,7 +362,7 @@ def train(cache: pathlib.Path = CACHE, measure: int = 200) -> None:
           f"each MakeHuman slider signed): fit {slider_error(data['weights'][test], test):.4f}  "
           f"fit+model {slider_error(corrected(model, test), test):.4f}")
 
-    rows = {"fit": [], "fit+model": [], "best": []}
+    rows = {f"{label}{tail}": [] for tail in ("", " -outl") for label in ("fit", "fit+model", "best")}
     clear = []
     for k in np.where(test)[0][:measure]:
         f = fitted[k]
@@ -332,8 +370,10 @@ def train(cache: pathlib.Path = CACHE, measure: int = 200) -> None:
         corr = skull(f["gender"])[2]
         for label, w in (("fit", f["weights"]), ("fit+model", predict(f, model)), ("best", data["best"][k])):
             rows[label].append(errors(f, truth, w, corr))
+            rows[label + " -outl"].append(errors(f, truth, w, corr, outline=False))
         clear.append(abs(data["female"][k] - 0.5) > 0.3)
-    print(f"vertex error on {len(clear)} held-out heads, % of eye spacing (best: the floor on this body):")
+    print(f"vertex error on {len(clear)} held-out heads, % of eye spacing (best: the floor on this body; "
+          f"-outl: without morph.fit_outline):")
     for label, r in rows.items():
         print(report(r, label))
     print(f"of which {sum(clear)} clearly male or female (blend under 0.2 or over 0.8):")
@@ -381,6 +421,47 @@ def real(photos: list[str], measure: int = 100) -> None:
         print(f"{pathlib.Path(path).name:<28} " + show(change(f, predict(f))))
 
 
+def jaw_bias(folder: pathlib.Path, count: int = 100) -> None:
+    """Where MediaPipe's jaw outline lies on held-out renders, against the true
+    head's silhouette drawn through the render's own perspective camera:
+    signed gap along rays from the nose, % of the eye spacing (positive:
+    MediaPipe's outline outside the true edge). morph.fit_outline fits the
+    jaw's silhouette to that outline."""
+    import cv2
+    import mediapipe as mp
+    from catalogue import load_base
+    from generate import get_landmarker
+    from rig import load_weights
+    from synth import vertices_for
+    names = [n for n, _, _ in morph.load_targets()]
+    body = load_base()[1]["body"]
+    rows = []
+    for path in sorted(folder.glob(f"*{TEST_DIGIT}.json"))[:count]:
+        draw = json.loads(path.read_text(encoding="utf-8"))
+        found = get_landmarker().detect(mp.Image.create_from_file(str(path.with_suffix(".png"))))
+        if not found.face_landmarks:
+            continue
+        size, cam = draw["size"], draw["camera"]
+        marks = np.array([[p.x * size, p.y * size] for p in found.face_landmarks[0]])
+        v = vertices_for(draw["female"], np.array([draw["targets"].get(n, 0.0) for n in names]))
+        eye, at = np.array(cam["position"]), np.array(cam["look_at"])
+        back = (eye - at) / np.linalg.norm(eye - at)
+        right = np.cross(cam["up"], back)
+        right /= np.linalg.norm(right)
+        p = (v - eye) @ np.stack([right, np.cross(back, right), back]).T
+        focal = size / 2 / np.tan(np.radians(cam["fov"]) / 2)
+        px = 4 * np.stack([size / 2 - focal * p[:, 0] / p[:, 2], size / 2 + focal * p[:, 1] / p[:, 2]], axis=1)
+        mask = np.zeros((4 * size, 4 * size), np.uint8)       # drawn 4x over
+        for tri in np.round(px[morph.head_only(v, body, load_weights())]).astype(np.int32):
+            cv2.fillConvexPoly(mask, tri, 1)
+        gaps, _ = morph._edge_along(mask, 4 * marks[morph.JAW_OUTLINE], 4 * marks[1])
+        rows.append(-gaps / (4 * np.linalg.norm(marks[33] - marks[263])) * 100)
+    rows = np.array(rows)
+    print(f"{len(rows)} renders: MediaPipe's jaw outline against the true silhouette, % of the eye spacing: "
+          f"mean {rows.mean():+.2f}, mean |gap| {np.abs(rows).mean():.2f}")
+    print("per landmark, chin in the middle: " + " ".join(f"{m:+.1f}" for m in rows.mean(axis=0)))
+
+
 def demo() -> None:
     """Self-check, no data needed: ridge recovers a linear residual, the
     slider form folds opposite ends together, a body is already in its own
@@ -414,6 +495,9 @@ def main() -> int:
     e.add_argument("--workers", type=int, default=4)
     t = sub.add_parser("train")
     t.add_argument("--measure", type=int, default=200, help="held-out heads to build meshes for")
+    j = sub.add_parser("jaw-bias")
+    j.add_argument("folder", type=pathlib.Path)
+    j.add_argument("-n", type=int, default=100)
     r = sub.add_parser("real")
     r.add_argument("photos", nargs="+", help="photo:male or photo:female")
     args = parser.parse_args()
@@ -421,6 +505,8 @@ def main() -> int:
         extract(args.folder, args.workers)
     elif args.cmd == "train":
         train(measure=args.measure)
+    elif args.cmd == "jaw-bias":
+        jaw_bias(args.folder, args.n)
     elif args.cmd == "real":
         real(args.photos)
     else:
