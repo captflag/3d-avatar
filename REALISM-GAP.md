@@ -1374,6 +1374,181 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Brows laid on the head the render draws; side lights and brow darkening measured and left out
+
+Three changes from two parallel sessions (notes in side-session-notes/
+light-direction.md and brow-render.md). Each was measured on the merged
+build at the photo's pose and level, with the same build rendered twice to
+read the noise (0.06 at most per face).
+
+**Upper face turned by LEVEL_READ_PITCH before the carries
+(`compose.level_upper_face`), kept.** The brow session found the paint
+stretched 1.2-1.35x through brow and lid. The sheet is upright by
+MediaPipe's full head rotation, but the render turns the head back by that
+less 3.3 degrees, so the brow ridge (forward of the eyes) and the lid
+(behind them) part. Turning the sheet above the eyes by the same 3.3
+degrees, in full at the eye line and fading out by the nose tip, gives these
+results (whole face / brows):
+
+| face | at pose before | at pose after | level before | level after |
+|---|---|---|---|---|
+| ref-man | 1.82 / 1.58 | 1.90 / 0.96 | 1.73 / 1.67 | 1.74 / 1.25 |
+| ref-woman | 1.77 / 3.24 | 1.76 / 2.89 | 2.55 / 3.06 | 2.66 / 2.71 |
+| photo-10 | 1.95 / 3.17 | 1.84 / 2.23 | 2.22 / 3.05 | 2.05 / 2.37 |
+| photo-14 | 1.27 / 3.75 | 1.28 / 3.08 | 3.01 / 4.84 | 2.91 / 3.89 |
+| photo-16 | 1.30 / 3.52 | 1.28 / 2.65 | 3.01 / 4.80 | 2.94 / 4.01 |
+
+The brows improve on every face in both views. The whole face is better on
+balance (pose -0.05 summed, level -0.22). ref-man pays 0.08 at pose: his
+photo is near level and 3.3 degrees is too much for him. A per-avatar level
+reading would fix both this and the photo pose.
+
+**Side lights at +-100 degrees, room tipped 37 (light-direction session),
+left out.** The skin's brightness against the photo improves (render minus
+photo L*, forehead + cheeks + chin summed over five faces: at pose 189 ->
+155, level 134 -> 131; the session's jaw sums halve). But MediaPipe reads the
+faces worse under the softer light. At pose ref-man goes 1.82 -> 2.00/2.02,
+photo-14 1.27 -> 1.40/1.42 and photo-16 1.30 -> 1.42/1.46 (two renders each);
+ref-woman and photo-10 are unchanged. The wrapped light flattens the jaw and
+cheek shading the outline is read from. Kept out on the measure that has
+decided every change so far. It stays on its branch,
+refs/heads/claude/light-direction-c5e391, if brightness should win over
+landmark error.
+
+**`tighten_brows` stopped at the brow, gain 1.6 -> 1.25 (brow session),
+left out.** With the old lights, ref-woman's whole face goes 1.77 ->
+1.95/1.93 (two renders); the other four are unchanged within 0.06. The brow
+session's own four-render average had her at +0.02; here, after the jaw fit
+and pose changes, it is +0.17. The change is on
+refs/heads/claude/brow-render-3a264c.
+
+## The laughing face's head pose; ref-woman's mouth after the jaw fit
+
+**Head pose read from the forehead and eyes where a laugh bends MediaPipe's,
+kept.** `photo_head_pose` now also fits MediaPipe's average face to 30
+landmarks an expression hardly moves (`POSE_LANDMARKS`). Where that reading's
+pitch and MediaPipe's part by more than 5 degrees, the stable one is used
+(less its own level reading, 1.0 degree). The readings part by 0.7-3.5 on
+four test faces, so those keep MediaPipe's. On the laughing photo-10 they part
+by 8.2, and photo-10 is the one face that switches. Landmark error at the
+photo's pose: photo-10 2.18 -> 1.95 (nose 3.20 -> 1.85, mouth 1.94 -> 1.42,
+jaw 3.23 -> 5.16, the jaw having been fitted at MediaPipe's pose). The other
+four are unchanged within 0.04.
+
+**ref-woman's mouth (2.22 -> 3.05 since the jaw fit), two attempts, neither
+kept:**
+- *The jaw's pull faded to nothing within 0.2 eye spacings of the lower lip
+  and corners:* ref-woman's mouth 3.05 -> 3.19, ref-man 1.83 -> 1.88.
+- *The photo placed (place_face) by the head before the jaw fit*, since the
+  chin is one of its anchors: ref-woman's mouth 3.05 -> 2.88, but the
+  whole face worse on four faces (ref-man 1.83 -> 1.92, photo-10 2.18 -> 2.22,
+  photo-14 1.26 -> 1.32).
+The mouth stays the jaw fit's one cost.
+
+## Combined: jaw fit, skin exposure from the tone curve, stubble
+
+The jaw fit (below) is merged with the forehead/stubble work and the
+segmentation measurements. That work changes two things: delight.py sets
+exposure so the cheeks render at the photo's brightness under the studio's
+tone curve (`delight.rendered`, in place of the fixed 1.35), and
+`appearance.stubble` adds hair-sized grain where the de-lit photo is darker
+than the cheeks below the nose (nothing below jaw_beard 0.15). Built
+together:
+
+Landmark error at the photo's pose (whole face):
+
+| face | start of round | jaw fit | combined |
+|---|---|---|---|
+| ref-man | 1.99 | 1.88 | 1.83 |
+| ref-woman | 1.83 | 1.78 | 1.81 |
+| photo-10 | 2.39 | 2.24 | 2.18 |
+| photo-14 | 1.36 | 1.27 | 1.26 |
+| photo-16 | 1.39 | 1.27 | 1.29 |
+
+Brightness, render minus photo, L* (0-255) at forehead / cheeks / chin, on
+level renders (the default):
+
+| face | before | combined |
+|---|---|---|
+| ref-man | -3 / -4 / +34 | -3 / -4 / +28 |
+| ref-woman | 0 / +8 / +35 | -4 / +1 / +27 |
+| photo-10 | -1 / +9 / +26 | -5 / +1 / +16 |
+| photo-14 | +22 / +10 / +23 | +7 / -13 / -3 |
+| photo-16 | +24 / +11 / +25 | +9 / -12 / -2 |
+
+On photo-14/16 the forehead and chin come close, but the cheeks swing from
+11 too light to 12 too dark. At the photo's pose those two read +21 / -19 /
+-14 (from +29 / +4 / +13): the studio's lights are more top-down than the
+photo's, and pitching the head moves the light across it. Lighting that
+matches the photo's direction is the open item.
+
+## The jaw as the camera sees it; brows, pose and hair colour tried
+
+Measured at each photo's head pose (the studio's "Photo's head pose"),
+landmark error in % of the eye spacing, whole face and jaw.
+
+**The jaw fitted as a silhouette (`morph.fit_outline`), kept.** The fitted
+head (without the neck: faces bound mostly to head and jaw bones,
+`morph.head_only`) is turned by the photo's rotation and drawn. Each of the
+17 jaw landmarks is met along the ray from the nose tip. The silhouette
+vertex there is moved by the gap in the picture's plane and the move is spread
+like `correct`'s (reach 0.25 eye spacings). This repeats three times. On
+photo-16 the gaps go from up to 4.1% to 0.4% or less (one point 1.1).
+Depth moves are left out: with them, ref-woman's mouth read 0.1 worse.
+
+| face | before | jaw fit (beard landmarks at 0.15) | jaw fit (full trust) |
+|---|---|---|---|
+| ref-man | 1.99 / jaw 3.24 | 1.98 / 3.21 | 1.87 / 3.05 |
+| ref-woman | 1.83 / 2.85 | 1.81 / 2.66 | (no beard: same) |
+| photo-10 | 2.39 / 3.98 | 2.34 / 3.76 | 2.21 / 3.09 |
+| photo-14 | 1.36 / 2.55 | 1.26 / 2.44 | (same) |
+| photo-16 | 1.39 / 2.49 | 1.26 / 2.27 | (same) |
+
+Full trust on beards: the segmentation session found MediaPipe's jaw running
+along the jaw *under* a full beard (the segmented face edge 0.10-0.19 face
+widths outside it), the opposite of what `outline_trust` assumes. The rest
+of the fit still uses `outline_trust`; worth re-testing there.
+
+One regression: ref-woman's mouth reads 2.22 -> 2.89. Her lips themselves
+move under 0.1%. Her chin moves 2.8%, and the crease under her lower lip
+reads lower on the render.
+
+Level renders, compared with tilted photos as before: ref-man 2.15 -> 1.87
+and ref-woman 2.97 -> 2.52. The three tilted photos get slightly worse
+(+0.05 to +0.13), as expected now the jaw matches the photo as shot.
+
+**Brow height: three causes ruled out.** The rendered brows sit 1.5-6.7%
+above the photo's (inner ends most), level or posed.
+- *The fit:* brow-to-lid rows (105-159, 334-386) in PROPORTIONS left the
+  rendered brow height unchanged (photo-16 26.3 -> 26.5 above the lid,
+  photo 21-23) and the whole face slightly worse on three faces. Not kept.
+- *The bake:* traced through the build, the painted brow sits 18.7/19.3
+  above the lid against the photo's 18.3/18.9 (eye-corner spacings). The
+  paint is where the photo has it.
+- *The lid drop (4 degrees):* rendered without it, ref-man's brows read the
+  same.
+- *`tighten_brows` thickening the fringe:* darkening only the brow's core
+  thinned photo-16's brows by 1 (36 -> 35, photo 27). The whole face got
+  worse on three faces, and the brows lighter than the photo's. Not kept.
+Still open: the rendered brows read 25-30% thicker than the photo's and
+higher, while the texture is right. That points at how the brow area
+renders: the ridge's shading and ambient occlusion under the brow.
+
+**Head pose from the forehead, eyes and nose bridge: set aside.** On the
+laughing photo-10, MediaPipe's head transform reads 11.2 degrees of pitch
+where a rigid fit of the average face to 30 landmarks a laugh does not move
+reads 3.0. With that reading: photo-10 2.24 -> 1.93, ref-woman 1.78 -> 1.73,
+but ref-man 1.88 -> 2.21. The level bias of the stable reading varies by face
+(-2.2 to 2.8 degrees), so one constant does not fit. Taking the same reading
+off the avatar's own landmark vertices was worse on all five. Kept: MediaPipe's
+transform less 3.3 degrees. A fix needs the level render read per avatar.
+
+**Hair colour from the photo check, kept.** The studio now passes the
+check's hair colour name with the haircut. A reading outside that name's
+lightness range (`photo_check.HAIR_LIGHTNESS`) is pulled to its nearer end,
+keeping its hue. On sk-22, "black" takes the read (75, 70, 80) to (55, 51,
+60). Without a check, nothing changes.
+
 ## Where the face is lost: reading, fitting, rendering
 
 Each stage measured on its own, in the upright front-on frame (% of the eye

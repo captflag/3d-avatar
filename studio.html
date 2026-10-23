@@ -174,10 +174,10 @@ function setFile(f) {
 // ---- Photo check -------------------------------------------------------------
 // The server asks Claude what would cost likeness in the photo (photo_check.py)
 // and what the hair is. Off when the server has no API key: nothing shows.
-let hairHint = '', checkToken = 0;
+let hairHint = '', hairColour = '', checkToken = 0;
 async function checkUpload(f) {
   const token = ++checkToken, advice = $('advice');
-  hairHint = '';
+  hairHint = ''; hairColour = '';
   advice.replaceChildren();
   const body = new FormData();
   body.append('photo', f);
@@ -185,6 +185,7 @@ async function checkUpload(f) {
   try { data = await (await fetch('/check', { method: 'POST', body })).json(); } catch { return; }
   if (token !== checkToken || !data.enabled || data.error) return;  // a newer photo, or no check
   hairHint = data.hair_cut;
+  hairColour = data.hair_colour;
   const seen = `Seen: ${data.hair_style}, ${data.hair_colour}` +
     (data.facial_hair !== 'none' ? `, ${data.facial_hair}` : '') +
     (data.glasses !== 'none' ? `, ${data.glasses}` : '') + '.';
@@ -479,6 +480,7 @@ drop.addEventListener('submit', async (ev) => {
   body.append('mode', $('fullbody').checked ? 'body' : 'face');
   body.append('gender', $('gender').value);
   if (hairHint) body.append('hair_hint', hairHint);
+  if (hairColour) body.append('hair_colour', hairColour);
   try {
     const res = await fetch('/generate', { method: 'POST', body });
     const data = await res.json();

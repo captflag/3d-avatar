@@ -131,6 +131,30 @@ def check_photo(path, client=None) -> dict | None:
     return verdict
 
 
+# The lightness (L*, 0-100) each hair colour the check names can have. A
+# reading from the photo outside it is pulled to its nearer end: on a soft,
+# highlit photo the hair mask read black hair as grey (L* 30).
+HAIR_LIGHTNESS = {"black": (0, 22), "dark brown": (12, 35), "brown": (25, 48), "light brown": (40, 62),
+                  "blonde": (55, 88), "grey": (45, 80), "white": (75, 100)}
+
+
+def hair_colour_hint(verdict: dict | None) -> str | None:
+    """The hair colour the check saw, when it is one HAIR_LIGHTNESS knows."""
+    colour = (verdict or {}).get("hair_colour")
+    return colour if colour in HAIR_LIGHTNESS else None
+
+
+def within_colour(rgb, colour: str):
+    """`rgb` (0-255) with its lightness pulled into the named colour's range,
+    its hue and chroma kept."""
+    import cv2
+    import numpy as np
+    lab = cv2.cvtColor(np.uint8([[np.clip(rgb, 0, 255)]]), cv2.COLOR_RGB2LAB).astype(np.float64)
+    low, high = HAIR_LIGHTNESS[colour]
+    lab[..., 0] = np.clip(lab[..., 0], low * 2.55, high * 2.55)
+    return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)[0, 0].astype(np.float64)
+
+
 def hair_hint(verdict: dict | None) -> str | None:
     """The catalogue haircut the check saw, "bald", or None when it has none."""
     cut = (verdict or {}).get("hair_cut")

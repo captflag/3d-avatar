@@ -129,10 +129,11 @@ def generate():
     # The haircut the photo check saw (/check), if the page ran one: only a
     # catalogue id or "bald" gets through.
     hair_hint = photo_check.hair_hint({"hair_cut": request.form.get("hair_hint")})
+    hair_colour = photo_check.hair_colour_hint({"hair_colour": request.form.get("hair_colour")})
     try:
         if full_body:
             info = compose(photo_path, OUT / f"{entry_id}.glb", gender, side_photos=side_photos or None,
-                           hair_hint=hair_hint)
+                           hair_hint=hair_hint, hair_colour_hint=hair_colour)
         else:
             info = generate_avatar(photo_path, OUT / f"{entry_id}.glb")
     except NoFaceFound:

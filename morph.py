@@ -532,6 +532,112 @@ def correct(vertices: np.ndarray, base: np.ndarray, corr: np.ndarray, person: np
     return moved
 
 
+# The jaw's outline from cheek to cheek round the chin (MediaPipe ids), fitted
+# as the silhouette the camera sees (`fit_outline`). The points level with the
+# ears are left out: there the silhouette is the ear.
+JAW_OUTLINE = [132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361]
+OUTLINE_ROUNDS = 3
+# How wide each point's pull spreads (eye-corner spacings) and how it is
+# damped, as in `correct`.
+OUTLINE_REACH = 0.25
+OUTLINE_DAMPING = 0.3
+# Silhouettes are drawn at this many pixels per eye-corner spacing.
+OUTLINE_SCALE = 300.0
+
+
+def head_only(vertices: np.ndarray, faces: np.ndarray, weights: dict) -> np.ndarray:
+    """The faces of the head itself, not the neck: those whose every vertex is
+    bound mostly to bones other than the neck's and spine's (`weights`, the
+    rig's {bone: [(vertex, weight)]}). Seen from the front, the jaw's lower
+    edge is then a silhouette rather than a fold over the neck."""
+    away = np.zeros(len(vertices))
+    total = np.zeros(len(vertices))
+    for bone, entries in weights.items():
+        idx = np.array([v for v, _ in entries], dtype=np.int64)
+        w = np.array([x for _, x in entries], dtype=np.float64)
+        ok = idx < len(vertices)
+        np.add.at(total, idx[ok], w[ok])
+        if bone.startswith(("neck", "spine", "clavicle", "shoulder", "breast", "pectoral")):
+            np.add.at(away, idx[ok], w[ok])
+    head = (total > 0) & (away < 0.5 * total)
+    return faces[head[faces].all(axis=1)]
+
+
+def _silhouette(vertices: np.ndarray, faces: np.ndarray, rotation: np.ndarray, centre: np.ndarray,
+                scale: float, size: int) -> tuple[np.ndarray, np.ndarray]:
+    """The faces drawn as one filled shape, seen along -z after `rotation`, and
+    every vertex's place in that picture (x right, y down)."""
+    import cv2
+    p = (vertices - centre) @ rotation.T
+    xy = np.stack([p[:, 0] * scale + size / 2, -p[:, 1] * scale + size / 2], axis=1)
+    mask = np.zeros((size, size), np.uint8)
+    for tri in np.round(xy[faces]).astype(np.int32):
+        cv2.fillConvexPoly(mask, tri, 1)
+    return mask, xy
+
+
+def _edge_along(mask: np.ndarray, targets: np.ndarray, centre: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per target, the silhouette's last pixel on the ray from `centre` through
+    it, and how far short of the target that is (negative: beyond it)."""
+    gaps, edges = [], []
+    for t in targets:
+        d = t - centre
+        length = float(np.linalg.norm(d))
+        r = np.arange(0.0, 2.0 * length, 0.5)
+        pts = np.round(centre + r[:, None] * d / length).astype(int)
+        ok = (pts >= 0).all(axis=1) & (pts[:, 0] < mask.shape[1]) & (pts[:, 1] < mask.shape[0])
+        inside = np.zeros(len(r), bool)
+        inside[ok] = mask[pts[ok, 1], pts[ok, 0]] > 0
+        last = r[np.where(inside)[0].max()] if inside.any() else 0.0
+        gaps.append(length - last)
+        edges.append(centre + last * d / length)
+    return np.array(gaps), np.array(edges)
+
+
+def fit_outline(vertices: np.ndarray, head_faces: np.ndarray, person: np.ndarray,
+                rotation: np.ndarray) -> np.ndarray:
+    """The mesh's jaw moved until its silhouette, seen as the photo saw the
+    head, runs through the photo's jaw outline.
+
+    The landmark fit and `correct` move the vertices the outline landmarks were
+    matched to, but those are not where the jaw's edge shows: corrected that
+    way, the outline vertices reached the photo's (5.5 -> 3.0% of the eye
+    spacing) and the outline read off the render did not follow. Here the head
+    is turned by the photo's `rotation` (MediaPipe's, camera = upright @ R.T),
+    drawn, and each jaw landmark (the photo's own outline, exactly where it was
+    in the picture) is met along the ray from the nose tip: the vertex on the
+    silhouette there is moved the gap in the picture's plane, spread like
+    `correct`'s, and drawn again. Every landmark counts in full, beard or not:
+    on the two bearded test faces MediaPipe's jaw runs along the jaw under
+    the beard (the segmented face edge lies 0.10-0.19 face widths outside it),
+    and fitted at the outline trust the rest of the fit uses (0.15 there), the
+    jaw stayed 3.2-3.8% off where full trust took it to 3.1."""
+    centre = person[:468].mean(axis=0)
+    spacing = float(np.linalg.norm(person[33] - person[263]))
+    scale = OUTLINE_SCALE / spacing
+    size = int(4 * OUTLINE_SCALE)
+    in_view = lambda q: np.stack([q[:, 0] * scale + size / 2, -q[:, 1] * scale + size / 2], axis=1)
+    targets = in_view((person[JAW_OUTLINE] - centre) @ rotation.T)
+    nose = in_view((person[[1]] - centre) @ rotation.T)[0]
+    rays = (targets - nose) / np.linalg.norm(targets - nose, axis=1, keepdims=True)
+    on_head = np.unique(head_faces)
+    reach = OUTLINE_REACH * spacing
+    kernel = lambda a, b: np.exp(-(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2) / reach) ** 2)
+    v = vertices.copy()
+    for _ in range(OUTLINE_ROUNDS):
+        mask, xy = _silhouette(v, head_faces, rotation, centre, scale, size)
+        gaps, edges = _edge_along(mask, targets, nose)
+        at = v[on_head[np.argmin(np.linalg.norm(xy[on_head][None] - edges[:, None], axis=2), axis=1)]]
+        moved_px = gaps[:, None] * rays
+        move = np.stack([moved_px[:, 0], -moved_px[:, 1], np.zeros(len(at))], axis=1) / scale @ rotation
+        move[:, 2] = 0.0
+        alpha = np.linalg.solve(kernel(at, at) + OUTLINE_DAMPING * np.eye(len(at)), move)
+        near = np.where(np.linalg.norm(v - at.mean(axis=0), axis=1)
+                        < np.linalg.norm(at - at.mean(axis=0), axis=1).max() + 3 * reach)[0]
+        v[near] += kernel(v[near], at) @ alpha
+    return v
+
+
 # The lip targets that thin or thicken the lips, and how far they are set
 # by the photo's lip height against the skull's (`lip_volume`).
 LIP_TARGETS = ("mouth/mouth-upperlip-volume-{}", "mouth/mouth-lowerlip-volume-{}",
