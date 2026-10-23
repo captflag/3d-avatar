@@ -68,6 +68,16 @@
   #camera .frame { position:relative; background:#0d0f13; border-radius:8px; overflow:hidden; }
   /* A mirror, as every selfie camera shows; the photo itself is taken unmirrored. */
   #camera video { width:100%; display:block; transform:scaleX(-1); }
+  #camera .frame img { width:100%; max-height:70vh; object-fit:contain; display:block; }
+  #camera .frame img:not([hidden]) ~ .oval { display:none; }
+  #camera .frame :is(video,img)[hidden] { display:none; }
+  #shots { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:0 0 12px; }
+  #shots figure { margin:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; font-size:12px; color:var(--muted); }
+  #shots figure.now { border-color:var(--accent); color:var(--text); }
+  #shots img { width:100%; aspect-ratio:3/4; object-fit:cover; display:block; background:#0d0f13; }
+  #shots figcaption { padding:3px 6px; }
+  #steptitle { margin:0 0 6px; font-size:15px; }
+  #stepask { margin:0 0 12px; color:var(--muted); font-size:13px; }
   #camera .oval { position:absolute; left:50%; top:46%; width:34%; aspect-ratio:3/4;
                   transform:translate(-50%,-50%); border:2px dashed rgba(255,255,255,.35); border-radius:50%; }
   #camera.ready .oval { border-color:var(--accent); border-style:solid; }
@@ -91,11 +101,8 @@
     <p>Drop a photo here, choose one, or take one with the camera. Front-facing and well lit works best.</p>
     <div class="row">
       <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/bmp">
-      <!-- Where the browser cannot open the camera itself (not localhost or https),
-           a phone still opens its own camera from this. -->
-      <input type="file" id="snap" accept="image/*" capture="user">
       <button type="button" class="ghost" id="pick">Choose from gallery</button>
-      <button type="button" class="ghost" id="usecamera">Use camera</button>
+      <button type="button" class="ghost" id="usecamera" title="front, then turned left and right: the depth one photo can only guess">Guided capture</button>
       <select id="dimension" class="toggle" title="what to produce">
         <option value="3d">3D model</option>
         <option value="2d">2D image</option>
@@ -114,14 +121,26 @@
   <section id="camera" aria-label="camera">
     <div class="frame">
       <video id="video" playsinline muted></video>
+      <img id="still" alt="the photo chosen for this step" hidden>
       <div class="oval"></div>
     </div>
     <div>
-      <h2>Before the photo is taken</h2>
+      <div id="shots">
+        <figure><img alt=""><figcaption>1 · Front</figcaption></figure>
+        <figure><img alt=""><figcaption>2 · Your left</figcaption></figure>
+        <figure><img alt=""><figcaption>3 · Your right</figcaption></figure>
+      </div>
+      <h3 id="steptitle"></h3>
+      <p id="stepask"></p>
       <ul id="checks"></ul>
       <p id="camnote">Starting the camera…</p>
       <div class="row" style="justify-content:flex-start">
-        <button type="button" id="shoot" disabled>Take photo</button>
+        <button type="button" id="shoot" hidden>Take photo anyway</button>
+        <!-- Without a camera here (not localhost or https, or none fitted) each
+             step takes a photo instead; on a phone this opens its own camera. -->
+        <input type="file" id="stepfile" accept="image/*" capture="user">
+        <button type="button" class="ghost" id="usefile">Use a photo instead</button>
+        <button type="button" class="ghost" id="skip" hidden>Skip</button>
         <button type="button" class="ghost" id="closecamera">Cancel</button>
       </div>
     </div>
@@ -208,42 +227,55 @@ file.addEventListener('change', () => setFile(file.files[0]));
   drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', (ev) => setFile(ev.dataTransfer.files[0]));
 
-// ---- Camera ------------------------------------------------------------------
-// A photo taken here is checked live against what the pipeline needs, limits
-// measured on the test photos: a face big enough to carry a likeness, straight
-// on, at rest (a broad smile is never fully taken off the resting face), eyes
-// open, light even across the cheeks, and the hair in frame. Once every check
-// holds for half a second the photo takes itself.
-const GOOD_FACE_PX = 250;        // compose.GOOD_FACE_PX: below it the photo advice asks for closer
-const MAX_TURN = 10;             // degrees left/right or up/down
+// ---- Guided capture ----------------------------------------------------------
+// Three photos, each checked live against what the pipeline needs before it is
+// taken: the face straight on, then the head turned to the person's left and to
+// their right (views.py): the same landmarks moving sideways as the head turns
+// measure how far the nose, lips and chin stand out, which one photo can only
+// guess. Limits measured on the test photos: a face big enough to carry a
+// likeness, at rest (a broad smile is never fully taken off the resting face),
+// eyes open, sharp, light even across the cheeks, and the hair in frame. Once
+// every check holds for half a second the photo takes itself; "Take photo
+// anyway" overrides. Without a camera each step takes a photo file instead,
+// checked the same way.
+const FACE_PX = 500;             // cheek to cheek, as compose.photo_advice measures; twice its GOOD_FACE_PX
+const MAX_TURN = 10;             // degrees left/right or up/down, front photo
 const MAX_ROLL = 8;              // degrees of head tilt
 const MAX_SMILE = 0.3;           // MediaPipe score where the shape fit starts damping a smile
 const MAX_BLINK = 0.4;
 const MAX_LIGHT_SPLIT = 0.25;    // cheek against cheek, share of the brighter
+const SHARP_PX = 320;            // the face is scaled to this width before its sharpness is measured
+const MIN_SHARP = 0.4;           // sharpness() below it is blurred; see side-session-notes/guided-capture.md
 const STEADY_FRAMES = 15;
-// After the front photo, up to two turned ones (views.py): the same landmarks
-// moving sideways as the head turns measure how far the nose, lips and chin
-// stand out, which one photo can only guess. The wider the turn the better:
+// Turned 30-45 degrees. At 11-23 real turned photos barely moved the depth;
 // on a rendered test head two shots at 50 degrees left a third of the depth
-// error two at 35 did, and two at 20 made it worse than the front alone. So
-// as the head turns, the widest frame that passes is kept, and taken once it
-// is wide enough or the head comes back. MediaPipe reads true turns of 20, 35
-// and 50 degrees as about 20, 29 and 42, and finds no face side-on: these are
-// its readings.
-const SIDE_TURN = [30, 50];
-const SIDE_ENOUGH = 40;
+// error two at 35 did. The cap is for the landmarks: at 55 the far eye hides
+// and MediaPipe's reading wanders (it read the two sides 52 and 41). MediaPipe
+// reads true turns of 20, 35 and 50 degrees as about 20, 29 and 42, and finds
+// no face side-on: these are about its readings for 30 and 46.
+const SIDE_TURN = [25, 40];
+// MediaPipe's yaw sign when the head turns to the person's own left.
+const LEFT = 1;
+const STEPS = [
+  { title: 'Front', side: null,
+    ask: 'Look straight at the camera, mouth closed, face relaxed.' },
+  { title: 'Turned to your left', side: LEFT,
+    ask: 'Turn your head to your left, about a third of the way to a profile (30-45 degrees), keeping your chin level.' },
+  { title: 'Turned to your right', side: -LEFT,
+    ask: 'Now the same to your right.' },
+];
 const VISION = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 
-const video = $('video'), camera = $('camera'), checks = $('checks'), camnote = $('camnote'), shoot = $('shoot');
-let stream = null, steady = 0, loop = 0, lastResults = [], lastYaw = 0;
-// The widest turned frame so far that passed: { canvas, yaw } (yaw in degrees).
-let best = null;
-// 0 the front photo, then each turned one; `turned` the first turn's direction.
-let step = 0, turned = 0, sides = [];
+const video = $('video'), still = $('still'), camera = $('camera'), checks = $('checks'),
+      camnote = $('camnote'), shoot = $('shoot'), stepfile = $('stepfile');
+let stream = null, steady = 0, loop = 0, lastResults = [];
+// step: which of STEPS is being taken; shots: { file, passed } per step taken;
+// pending: a chosen photo that missed a check, kept until overridden or replaced.
+let step = 0, shots = [], pending = null, sides = [];
 const landmarkers = {};
 
 /** One detector per mode: VIDEO tracks a face from frame to frame, which
- *  unrelated stills (checkPhoto) would confuse. */
+ *  unrelated stills (checkStill) would confuse. */
 async function getLandmarker(mode = 'VIDEO') {
   if (landmarkers[mode]) return landmarkers[mode];
   const { FilesetResolver, FaceLandmarker } = await import(`${VISION}/vision_bundle.mjs`);
@@ -270,9 +302,40 @@ function brightness(source, width, height, x, y, radius) {
   return sum / (data.length / 4);
 }
 
-/** Each check on one frame (`found`: the detector's result for it): [{ ok, text }].
- *  `side`: null for the front photo; for a turned one, the direction wanted
- *  (+1 or -1), or 0 for either. */
+/** How sharp the face in the box [x0, y0, x1, y1] is, 0 (flat) to 1: the share
+ *  of its edges' contrast that blurring it further takes away (Crete-Roffet's
+ *  re-blur measure, per axis, the blurrier axis). A blurred face has little left
+ *  to lose; unlike plain edge strength this does not depend on how much texture
+ *  or contrast the face has. Scaled to SHARP_PX wide so any photo size compares:
+ *  a small face enlarged to that width reads soft, as it is to the pipeline. */
+function sharpness(source, x0, y0, x1, y1) {
+  const scale = SHARP_PX / (x1 - x0);
+  const w = SHARP_PX, h = Math.max(12, Math.round((y1 - y0) * scale));
+  sampler.width = w; sampler.height = h;
+  const ctx = sampler.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(source, x0, y0, x1 - x0, y1 - y0, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const g = new Float32Array(w * h);
+  for (let i = 0; i < g.length; i++) g[i] = 0.299 * data[4 * i] + 0.587 * data[4 * i + 1] + 0.114 * data[4 * i + 2];
+  const R = 4;   // a 9-pixel box blur
+  const kept = (step, along, across) => {
+    let edges = 0, lost = 0;
+    for (let a = 0; a < across; a++) for (let t = R + 1; t < along - R; t++) {
+      const at = (u) => g[a * (step === 1 ? w : 1) + u * step];
+      let box = 0, prev = 0;
+      for (let k = -R; k <= R; k++) { box += at(t + k); prev += at(t - 1 + k); }
+      const d = Math.abs(at(t) - at(t - 1)), db = Math.abs(box - prev) / (2 * R + 1);
+      edges += d; lost += Math.max(0, d - db);
+    }
+    return edges ? lost / edges : 0;
+  };
+  return Math.min(kept(1, w, h), kept(w, h, w));
+}
+
+/** Each check on one frame (`found`: the detector's result for it): [{ ok, text }],
+ *  with the measures behind them on the array (`measured`). `side`: null for
+ *  the front photo, else the yaw sign wanted (LEFT or -LEFT). */
 function assess(found, source, width, height, side = null) {
   const faces = found.faceLandmarks || [];
   const out = [];
@@ -283,10 +346,9 @@ function assess(found, source, width, height, side = null) {
   }
   const p = faces[0];
   const at = (i) => [p[i].x * width, p[i].y * height];
-  const apart = (a, b) => Math.hypot(at(a)[0] - at(b)[0], at(a)[1] - at(b)[1]);
-  const faceWidth = apart(234, 454);
+  const faceWidth = Math.abs(at(454)[0] - at(234)[0]);
   // Turned, the face shows narrower across the cheeks.
-  const needPx = side === null ? GOOD_FACE_PX : Math.round(0.8 * GOOD_FACE_PX);
+  const needPx = side === null ? FACE_PX : Math.round(0.8 * FACE_PX);
   add(faceWidth >= needPx, 'Face close enough',
       `Come closer: face ${Math.round(faceWidth)} px across, needs ${needPx}`);
 
@@ -298,19 +360,26 @@ function assess(found, source, width, height, side = null) {
     add(Math.abs(yaw) <= MAX_TURN && Math.abs(pitch) <= MAX_TURN, 'Facing the camera',
         Math.abs(yaw) > MAX_TURN ? 'Turn to face the camera' : 'Keep your chin level');
   } else {
-    const wrongWay = side !== 0 && Math.sign(yaw) !== side && Math.abs(yaw) > MAX_TURN;
     const [least, most] = SIDE_TURN;
-    add(!wrongWay && Math.abs(yaw) >= least && Math.abs(yaw) <= most && Math.abs(pitch) <= MAX_TURN,
-        'Turned well to the side',
-        wrongWay ? 'Now turn the other way' : Math.abs(yaw) < least ? 'Turn your head further to the side'
-          : Math.abs(yaw) > most ? 'Not quite so far' : 'Keep your chin level');
+    const turn = yaw * side;   // positive: the way wanted
+    add(turn >= least && turn <= most && Math.abs(pitch) <= MAX_TURN, `Turned ${Math.round(turn)}° the right way`,
+        turn < -MAX_TURN ? `Wrong way: turn to your ${side === LEFT ? 'left' : 'right'}`
+          : turn < least ? `Turn further: ${Math.round(Math.max(turn, 0))}°, needs ${least}`
+          : turn > most ? `Not quite so far: ${Math.round(turn)}°, at most ${most}` : 'Keep your chin level');
   }
   add(Math.abs(roll) <= MAX_ROLL, 'Head upright', 'Straighten your head');
 
   const score = Object.fromEntries(found.faceBlendshapes[0].categories.map((c) => [c.categoryName, c.score]));
-  add(Math.max(score.mouthSmileLeft, score.mouthSmileRight, score.jawOpen) <= MAX_SMILE, 'Relaxed mouth',
+  add(Math.max(score.mouthSmileLeft, score.mouthSmileRight, score.jawOpen) <= MAX_SMILE, 'Relaxed, mouth closed',
       'Relax your face: mouth closed, no smile');
   add(Math.max(score.eyeBlinkLeft, score.eyeBlinkRight) <= MAX_BLINK, 'Eyes open', 'Open your eyes');
+
+  const ys = [10, 152].map((i) => at(i)[1]);
+  const sharp = sharpness(source, Math.min(at(234)[0], at(454)[0]), ys[0], Math.max(at(234)[0], at(454)[0]), ys[1]);
+  add(sharp >= MIN_SHARP, 'Sharp', 'Blurred: hold still, or more light');
+  out.measured = { faceWidth: Math.round(faceWidth), yaw: +yaw.toFixed(1), pitch: +pitch.toFixed(1),
+                   roll: +roll.toFixed(1), sharp: +sharp.toFixed(2),
+                   mouth: +Math.max(score.mouthSmileLeft, score.mouthSmileRight, score.jawOpen).toFixed(2) };
 
   // A turned face is lit unevenly by its turn, and the hair was checked on the front photo.
   if (side !== null) return out;
@@ -318,7 +387,8 @@ function assess(found, source, width, height, side = null) {
   const radius = 0.06 * faceWidth;
   const left = brightness(source, width, height, ...at(50), radius);
   const right = brightness(source, width, height, ...at(280), radius);
-  add(Math.abs(left - right) / Math.max(left, right, 1) <= MAX_LIGHT_SPLIT, 'Even light',
+  out.measured.lightSplit = +(Math.abs(left - right) / Math.max(left, right, 1)).toFixed(2);
+  add(out.measured.lightSplit <= MAX_LIGHT_SPLIT, 'Even light',
       'The light falls on one side: face the window or lamp');
 
   const top = p[10].y - 0.45 * (p[152].y - p[10].y);
@@ -339,8 +409,6 @@ function showChecks(results) {
   }));
 }
 
-const wanted = () => (step === 0 ? null : step === 1 ? 0 : -turned);
-
 /** The video frame as it is, unmirrored. */
 function grab() {
   const canvas = document.createElement('canvas');
@@ -354,117 +422,169 @@ function tick(id) {
   if (id !== loop) return;
   if (video.readyState >= 2) {
     const found = landmarkers.VIDEO.detectForVideo(video, performance.now());
-    lastResults = assess(found, video, video.videoWidth, video.videoHeight, wanted());
-    const m = found.facialTransformationMatrixes?.[0];
-    lastYaw = m ? Math.asin(-m.data[2]) * 180 / Math.PI : 0;
+    lastResults = assess(found, video, video.videoWidth, video.videoHeight, STEPS[step].side);
     showChecks(lastResults);
     const ok = lastResults.every((r) => r.ok);
     camera.classList.toggle('ready', ok);
-    if (step === 0) {
-      steady = ok ? steady + 1 : 0;
-      if (steady >= STEADY_FRAMES) { take(); return; }
-    } else {
-      // Turning: keep the widest frame that passes; take it once wide enough,
-      // or when the head comes back towards the camera.
-      if (ok && Math.abs(lastYaw) > (best?.yaw ?? 0)) best = { canvas: grab(), yaw: Math.abs(lastYaw), sign: Math.sign(lastYaw) };
-      if (best && (best.yaw >= SIDE_ENOUGH || Math.abs(lastYaw) < MAX_TURN)) { take(best); return; }
-    }
+    steady = ok ? steady + 1 : 0;
+    if (steady >= STEADY_FRAMES) { take(); return; }
   }
   requestAnimationFrame(() => tick(id));
 }
 
-function startLoop() {
-  steady = 0;
-  best = null;
-  const id = ++loop;
-  requestAnimationFrame(() => tick(id));
-}
-
-/** The front photo is handed on like a chosen one, and the camera stays
- *  open for the turned ones. `kept`: a turned frame kept while turning
- *  (tick), else the frame now. */
-async function take(kept = null) {
+/** The frame now, as this step's photo. */
+async function take() {
   ++loop;
-  const passed = kept !== null || (lastResults.length > 0 && lastResults.every((r) => r.ok));
-  const canvas = kept ? kept.canvas : grab();
-  const blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.95));
-  if (step === 0) {
-    setFile(new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' }));
-    status.className = passed ? '' : 'bad';
-    status.textContent = passed ? 'Photo taken: every check passed.'
-      : 'Photo taken before every check passed: the avatar may look less like you.';
-  } else {
-    // A turned shot that missed its checks says little about depth: keep trying.
-    if (!passed) { startLoop(); return; }
-    sides.push(new File([blob], `camera-side${step}-${Date.now()}.jpg`, { type: 'image/jpeg' }));
-    if (step === 1) turned = (kept ? kept.sign : Math.sign(lastYaw)) || 1;
-    chosen.textContent = `${file.files[0].name} + ${sides.length} turned`;
-  }
-  step += 1;
-  if (step > 2) { finishCamera(); return; }
-  camnote.textContent = step === 1
-    ? 'Front photo taken. For a truer profile, turn your head slowly to one side, as far as you can still see the screen, then back. Or press Done.'
-    : 'Now the same the other way, or press Done.';
-  $('closecamera').textContent = 'Done';
-  startLoop();
+  const passed = lastResults.length > 0 && lastResults.every((r) => r.ok);
+  const blob = await new Promise((done) => grab().toBlob(done, 'image/jpeg', 0.95));
+  keep(new File([blob], `camera-${['front', 'left', 'right'][step]}-${Date.now()}.jpg`, { type: 'image/jpeg' }), passed);
 }
 
-function finishCamera() {
-  closeCamera();
-  if (sides.length) status.textContent += ` With ${sides.length} turned photo${sides.length > 1 ? 's' : ''} for the profile.`;
-  status.textContent += ' Generate when ready.';
+/** A photo file for this step, checked as a camera frame is: kept if it
+ *  passes, else shown with what it misses until overridden or replaced. */
+async function checkStill(f) {
+  ++loop;
+  const id = loop;
+  pending = null;
+  shoot.hidden = true;
+  checks.replaceChildren();
+  camnote.textContent = 'Checking the photo…';
+  still.src = URL.createObjectURL(f);
+  still.hidden = false; video.hidden = true;
+  let results;
+  try {
+    const detector = await getLandmarker('IMAGE');
+    const img = await createImageBitmap(f);
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width; canvas.height = img.height;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    results = assess(detector.detect(canvas), canvas, canvas.width, canvas.height, STEPS[step].side);
+  } catch (err) {
+    results = [{ ok: false, text: `That photo could not be read (${err.message})` }];
+  }
+  if (id !== loop) return;
+  showChecks(results);
+  if (results.every((r) => r.ok)) { keep(f, true); return; }
+  pending = f;
+  shoot.hidden = false; shoot.textContent = 'Use this photo anyway';
+  camnote.textContent = 'This photo misses a check: choose another, or use it anyway.';
+}
+
+/** This step's photo is `f`: show it in the strip and move to the next step. */
+function keep(f, passed) {
+  shots[step] = { file: f, passed };
+  const fig = $('shots').children[step];
+  fig.querySelector('img').src = URL.createObjectURL(f);
+  fig.querySelector('figcaption').textContent =
+    `${step + 1} · ${['Front', 'Your left', 'Your right'][step]} ${passed ? '✓' : '(override)'}`;
+  step += 1;
+  if (step >= STEPS.length) { finishCamera(); return; }
+  beginStep();
+}
+
+function beginStep() {
+  pending = null;
+  steady = 0;
+  [...$('shots').children].forEach((fig, k) => fig.classList.toggle('now', k === step));
+  $('steptitle').textContent = `${step + 1} of 3 · ${STEPS[step].title}`;
+  $('stepask').textContent = STEPS[step].ask;
+  $('skip').hidden = step === 0;
+  $('closecamera').textContent = step ? 'Done' : 'Cancel';
+  checks.replaceChildren();
+  camera.classList.remove('ready');
+  if (stream) {
+    still.hidden = true; video.hidden = false;
+    shoot.hidden = false; shoot.textContent = 'Take photo anyway';
+    camnote.textContent = 'Hold still once every line is ticked: the photo takes itself.';
+    if (video.videoHeight && video.videoHeight < 1000 && step === 0)
+      camnote.textContent += ` This camera gives ${video.videoHeight}-pixel frames: too few for a ${FACE_PX}-pixel face ` +
+        'with the hair in. Take it anyway, or use a photo from a better camera.';
+    const id = ++loop;
+    requestAnimationFrame(() => tick(id));
+  } else {
+    ++loop;
+    still.hidden = true; video.hidden = true;
+    shoot.hidden = true;
+    camnote.textContent = 'Choose a photo for this step: it is checked the same way.';
+  }
 }
 
 async function openCamera() {
-  // Browsers open the camera only on https or localhost; elsewhere a phone
-  // still offers its own camera through the file input.
-  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) { $('snap').click(); return; }
   camera.classList.add('open');
-  step = 0; turned = 0; sides = [];
-  $('closecamera').textContent = 'Cancel';
+  step = 0; shots = []; sides = [];
+  [...$('shots').children].forEach((fig, k) => {
+    fig.querySelector('img').removeAttribute('src');
+    fig.querySelector('figcaption').textContent = `${k + 1} · ${['Front', 'Your left', 'Your right'][k]}`;
+  });
   status.textContent = '';
   status.className = '';
-  camnote.textContent = 'Starting the camera…';
-  shoot.disabled = true;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia(
-      { video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
-    video.srcObject = stream;
-    await video.play();
-    camnote.textContent = 'Loading the face checks…';
-    await getLandmarker();
-    camnote.textContent = 'Hold still once every line is ticked: the photo takes itself.';
-    shoot.disabled = false;
-    startLoop();
-  } catch (err) {
-    closeCamera();
-    status.className = 'bad';
-    status.textContent = `The camera could not be opened (${err.name || err.message}). Choose a photo from the gallery instead.`;
+  shoot.hidden = true;
+  // Browsers open the camera only on https or localhost; elsewhere (a phone on
+  // the office network) each step takes a photo, which a phone opens its camera for.
+  if (window.isSecureContext && navigator.mediaDevices?.getUserMedia) {
+    camnote.textContent = 'Starting the camera…';
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(
+        { video: { facingMode: 'user', width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false });
+      video.srcObject = stream;
+      await video.play();
+      camnote.textContent = 'Loading the face checks…';
+      await getLandmarker();
+    } catch (err) {
+      closeStream();
+      status.className = 'bad';
+      status.textContent = `No camera (${err.name || err.message}): choose a photo for each step instead.`;
+    }
   }
+  beginStep();
+}
+
+function closeStream() {
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = null;
+  video.srcObject = null;
 }
 
 function closeCamera() {
   ++loop;
-  stream?.getTracks().forEach((t) => t.stop());
-  stream = null;
-  video.srcObject = null;
+  closeStream();
   camera.classList.remove('open', 'ready');
+}
+
+/** The front photo is handed on like a chosen one, the turned ones beside it. */
+function finishCamera() {
+  closeCamera();
+  const [front, ...turned] = shots;
+  if (!front) return;
+  setFile(front.file);   // clears sides: set them after
+  sides = turned.filter(Boolean).map((s) => s.file);
+  if (sides.length) chosen.textContent += ` + ${sides.length} turned`;
+  const missed = shots.map((s, k) => (s && !s.passed ? ['front', 'left', 'right'][k] : null)).filter(Boolean);
+  status.className = missed.length ? 'bad' : '';
+  status.textContent = `Front photo${sides.length ? ` and ${sides.length} turned` : ''} taken` +
+    (missed.length ? `; ${missed.join(', ')} taken before every check passed: the avatar may look less like you.`
+      : ', every check passed.') +
+    (sides.length && !$('fullbody').checked ? ' The turned photos are used for full-body avatars only.' : '') +
+    ' Generate when ready.';
 }
 
 $('usecamera').addEventListener('click', openCamera);
 $('closecamera').addEventListener('click', () => (step ? finishCamera() : closeCamera()));
-shoot.addEventListener('click', () => take(step ? best : null));
-$('snap').addEventListener('change', () => setFile($('snap').files[0]));
+shoot.addEventListener('click', () => (pending ? keep(pending, false) : take()));
+$('usefile').addEventListener('click', () => stepfile.click());
+stepfile.addEventListener('change', () => { if (stepfile.files[0]) checkStill(stepfile.files[0]); stepfile.value = ''; });
+$('skip').addEventListener('click', () => { step += 1; step >= STEPS.length ? finishCamera() : beginStep(); });
 
-/** The camera checks run on a still photo (for testing them without a camera). */
+/** The checks on a still photo, with their measures (for testing them without a camera). */
 async function checkPhoto(url, side = null) {
-  const still = await getLandmarker('IMAGE');
+  const detector = await getLandmarker('IMAGE');
   // fetch + createImageBitmap: an unattached Image's decode() never settled here.
   const img = await createImageBitmap(await (await fetch(url)).blob());
   const canvas = document.createElement('canvas');
   canvas.width = img.width; canvas.height = img.height;
   canvas.getContext('2d').drawImage(img, 0, 0);
-  return assess(still.detect(canvas), canvas, canvas.width, canvas.height, side);
+  const results = assess(detector.detect(canvas), canvas, canvas.width, canvas.height, side);
+  return { ok: results.every((r) => r.ok), failed: results.filter((r) => !r.ok).map((r) => r.text), ...results.measured };
 }
 
 drop.addEventListener('submit', async (ev) => {
