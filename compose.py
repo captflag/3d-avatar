@@ -19,6 +19,7 @@ import json
 import pathlib
 import sys
 
+import cv2
 import numpy as np
 import trimesh
 from PIL import Image
@@ -81,7 +82,7 @@ HAIR_ANISOTROPY = (0.7, np.pi / 2)
 # cotton and wrong for everything else: skin read as dry plaster and the eyes
 # had no wet highlight. Our own viewer hid it by overriding the values.
 # A catalogue item can set its own `roughness`; these are the defaults.
-ROUGHNESS = {"skin": 0.5, "eyes": 0.05, "hair": 0.45,
+ROUGHNESS = {"skin": 0.5, "eyes": 0.18, "hair": 0.45,
              "top": 0.85, "bottom": 0.85, "shoes": 0.4}
 
 
@@ -168,9 +169,45 @@ def dye_colour(rgb) -> np.ndarray:
 # mouth, as a share of the mouth's width (Gaussian reach): the skin round the
 # lips, and then the lips themselves exactly.
 MOUTH_CARRY = (0.45, 0.15)
+# The hair cap under a haircut's cards: how far off the skin it sits (mesh
+# units; the cards lie closer than 0.05 at the back of the head) and the
+# tint weight it is cut to (see hairline_tint).
+CAP_OFFSET = 0.012
+CAP_CUT = 0.05
+# How far below the hair's edge the cap fades out (mesh units): opaque
+# under the cards, gone a centimetre below their lowest strands, where the
+# photo shows skin between sparse hairs.
+CAP_FADE = 0.06
+# And how far above the lowest strands it starts to fade: the lowest few
+# strands per slice set the edge, and a cap opaque down to them put solid
+# hair 0.15 eye spacings lower than the photo's.
+CAP_RAISE = 0.1
 # How far round each eye the photo is carried onto the mesh's eye, in eye
 # spacings (Gaussian reach): far enough that the brow comes with it.
-EYE_CARRY = 0.5
+# 0.7, faded out at the nose (see eyes_onto_mesh): brow landmark error
+# 3.29 -> 3.03, 4.00 -> 3.85, 4.23 -> 4.00, 5.18 -> 4.67 against 0.5.
+EYE_CARRY = 0.7
+
+
+# The pitch, in degrees, MediaPipe reads on our own level head renders
+# (1.5-4.5 across the five test faces, yaw and roll under 1). A photo's head
+# pose is taken relative to it, so a photo read as level gives a level head.
+# ponytail: one constant for every avatar; measure per avatar if it matters.
+LEVEL_READ_PITCH = 3.3
+
+
+def photo_head_pose(result) -> list[float] | None:
+    """How the head was turned in the photo, as a quaternion (x y z w) in the
+    scene's axes, for a viewer that renders the head as photographed. Test
+    photos are shot 4-12 degrees from level; compared with a level render, that
+    pitch was charged to the nose and jaw, 1-1.5% of the eye spacing of
+    landmark error."""
+    from scipy.spatial.transform import Rotation
+    if not result.facial_transformation_matrixes:
+        return None
+    u, _, vt = np.linalg.svd(np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)[:3, :3])
+    level = Rotation.from_euler("x", LEVEL_READ_PITCH, degrees=True)
+    return [float(c) for c in (Rotation.from_matrix(u @ vt) * level.inv()).as_quat()]
 
 
 def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
@@ -221,6 +258,10 @@ def eyes_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) ->
     w = np.exp(-(np.linalg.norm(sheet[:, None, :2] - sheet[None, marks, :2], axis=2)
                  / (EYE_CARRY * spacing)) ** 2)
     field = (w @ pull) / np.maximum(w.sum(axis=1, keepdims=True), 1e-12) * w.max(axis=1, keepdims=True)
+    # Faded out from the eyes down to the nose tip: the mouth and chin are
+    # placed by mouth_onto_mesh and the anatomy, not by the eyes.
+    eye_y, nose_y = float(sheet[marks, 1].mean()), float(sheet[1, 1])
+    field *= np.clip((sheet[:, 1] - nose_y) / max(eye_y - nose_y, 1e-9), 0.0, 1.0)[:, None]
     moved = sheet.copy()
     moved[:, :2] += field
     return moved
@@ -339,7 +380,11 @@ def relaxed_pose() -> dict:
     hip = 5.0
     pose["root"] = turn(z=-hip)                       # right hip up
     pose["spine05"] = turn(z=hip + 2.0)               # torso back up, shoulders tilt left-down
-    pose["neck01"] = turn(z=-2.0, y=4.0)              # head level, a slight turn
+    # Head level and square to the camera, as a portrait photo has it. A 4
+    # degree turn here put every rendered face's nose line 9% of the eye
+    # spacing off-centre: one cheek 17-20% wider than the other, whatever the
+    # photo, read as a crooked face.
+    pose["neck01"] = turn(z=-2.0)
     # The base mesh stands with its ankles twice its hip width apart; at ease
     # they are about hip width (measured: 2.7 against hips of 2.2).
     # Weight leg: in under the body's centre.
@@ -638,6 +683,18 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray):
     return eyes, eye_uv, texture
 
 
+def welded_normals(mesh: trimesh.Trimesh) -> np.ndarray:
+    """Vertex normals continuous across seams: a card mesh keeps a vertex per
+    texture island, so two copies of one position sat on different cards with
+    different normals, and the hair's shading stepped at every seam. The
+    normals are taken from the mesh with coincident positions merged, and
+    every copy gets its position's."""
+    unique, inverse = np.unique(np.round(mesh.vertices, 5), axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    welded = trimesh.Trimesh(unique, inverse[mesh.faces], process=False)
+    return np.asarray(welded.vertex_normals)[inverse]        # copies share one normal
+
+
 def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_count):
     """A catalogue piece, skinned to the rig.
 
@@ -665,7 +722,7 @@ def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_c
             uv=gltf_uv(mesh.metadata["uv"]), texture=mesh.metadata["texture"],
             normal_texture=mesh.metadata.get("normal_texture"),
             alpha_mask=mesh.metadata.get("alpha_mask", False),
-            normals=mesh.vertex_normals, roughness=roughness,
+            normals=welded_normals(mesh), roughness=roughness,
         )
     return skinned_glb.Part(
         name, mesh.vertices, mesh.faces, part_joints, part_weights,
@@ -687,7 +744,8 @@ def outfit_for(gender: str, chosen: list[str] | None) -> list[dict]:
 def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             gender: str = "male", wear: list[str] | None = None,
             face_patch: bool = False, pose: str = "relaxed",
-            side_photos: list[pathlib.Path] | None = None) -> dict:
+            side_photos: list[pathlib.Path] | None = None,
+            hair_hint: str | None = None) -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
@@ -784,10 +842,14 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb, lighting, face_mask = delight.delight(photo_rgb, landmarks, load_canonical_faces(), cheeks,
                                                     exclude=facial_hair)
     bare_skin = face_mask & (facial_hair < 0.2)
+    skin_rgb = appearance.sharpen_creases(skin_rgb, landmarks, face_mask, keep_out=facial_hair)
     # The mouth is closed on the avatar; paint the photo's open mouth over in
     # lip colour so no teeth get baked across the lips.
     skin_rgb, mouth_filled = appearance.fill_mouth(skin_rgb, landmarks, cheeks)
     skin_rgb = appearance.fill_eyes(skin_rgb, landmarks)
+    # The lash line back on the lids, and the brows as dense as the photo's.
+    skin_rgb = appearance.paint_lashes(skin_rgb, photo_rgb, landmarks)
+    skin_rgb = appearance.tighten_brows(skin_rgb, landmarks)
     # A colour cast that puts skin outside the natural range is pulled back.
     skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
@@ -805,6 +867,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     if wear is None:
         default_cut = next((i["id"] for i in outfit if i["category"] == "hair" and "mhclo" in i), None)
         cut = appearance.hair_style(hair_reading, default_cut)
+        # Where the segmentation read no hair to measure, the photo check's
+        # haircut (photo_check.hair_hint: a catalogue id, or "bald") decides.
+        if hair_hint and (hair_reading is None or hair_reading["top"] is None):
+            cut = None if hair_hint == "bald" else hair_hint
         # Bald: no hair at all. Otherwise the chosen cut over the underlayer.
         rest = [i for i in outfit if i["category"] != "hair"]
         # No scalp layer under a real haircut: the head texture is tinted in
@@ -980,9 +1046,9 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     if haircut is not None and hair_rgb is not None:
         # A soft hairline painted on the skin, so the hair cards do not end on
         # bare forehead in a hard line.
-        head_texture = appearance.hairline_tint(head_texture, vertices, head_faces, head_uv_all,
-                                                head_uv_faces, appearance.opaque_hair(haircut), hair_rgb,
-                                                spare=sampler.sample(vertices)[1])
+        head_texture, hair_cover, hair_below = appearance.hairline_tint(head_texture, vertices, head_faces, head_uv_all,
+                                                            head_uv_faces, appearance.opaque_hair(haircut), hair_rgb,
+                                                            spare=sampler.sample(vertices)[1], return_weight=True)
     # The body's one map runs neck to toe; at 1024 a nail was 8 texels wide.
     rest_base = skin.albedo(SKIN_SIZE, skin_mean, skin_spread, seed=7)
 
@@ -1096,6 +1162,45 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         # edge glow at grazing angles.
         parts[-1].sheen = SKIN_SHEEN
         parts[-1].roughness_texture = head_roughness if name == "head" else body_roughness
+    if haircut is not None and hair_rgb is not None:
+        # A cap in the hair's root shade under the cards, opaque where the
+        # tint is solid and dissolving into the same wisps below the hair's
+        # edge. The lifted front of a swept-back cut stands off the forehead,
+        # and between its strands the tinted skin showed, lit as skin: a
+        # brown band under black hair. An opaque shell there reads as the
+        # hair's shadowed underside, as a real hairline does.
+        centres = (head_uv_all[head_uv_faces].mean(axis=1) * (hair_cover.shape[0] - 1))
+        rows = np.clip((hair_cover.shape[0] - 1 - centres[:, 1]).astype(int), 0, hair_cover.shape[0] - 1)
+        cols = np.clip(centres[:, 0].astype(int), 0, hair_cover.shape[1] - 1)
+        # Above the brows only: lower, beside the ears, the cap showed as
+        # dark patches where no card covers it.
+        brow_line = float(vertices[corr[[105, 334]], 1].mean())
+        under = (hair_cover[rows, cols] > CAP_CUT) & (vertices[head_faces, 1].min(axis=1) > brow_line)
+        if under.sum() > 10:
+            cap, cap_uv = submesh_uv(head_faces[under], head_uv_faces[under],
+                                     vertices + CAP_OFFSET * skin_normal, uv=head_uv_all)
+            shade = np.clip(dye_colour(hair_rgb) * 0.6, 0, 255).astype(np.uint8)
+            # Opaque where the tint is solid, gone where it has thinned to
+            # wisps (CAP_FADE): cut at the tint's own fade it stood a hard,
+            # dark edge below the hair, 16 L* a row against the photo's 11.
+            # Blended, not cut (cut at half alpha, the wisps' breakup drew the
+            # edge as a sawtooth), opaque above the hair's edge and fading
+            # over CAP_FADE below it; the tint's own plateau reaches further
+            # down, and a cap cut to it covered skin the photo shows between
+            # the hairline's sparse hairs (the strip under the hair L* 85
+            # against the photo's 137).
+            cover = np.clip(1.0 - (np.nan_to_num(hair_below, nan=1.0) + CAP_RAISE) / CAP_FADE, 0.0, 1.0)
+            cover = cv2.GaussianBlur(cover, (0, 0), 6)
+            cover = Image.fromarray((cover * 255).astype(np.uint8)).resize((1024, 1024))
+            cap_texture = Image.merge("RGBA", (*(Image.new("L", (1024, 1024), int(c)) for c in shade), cover))
+            source = cap.metadata["base_index"]
+            parts.append(skinned_glb.Part(
+                "scalp_cap", cap.vertices, cap.faces, joints[source], weights[source],
+                uv=gltf_uv(cap_uv), texture=cap_texture,
+                normals=skin_normal[source], roughness=0.95,
+            ))
+            parts[-1].alpha_blend = True
+            parts[-1].morphs = expression_morphs(cap, face_shapes)
     for item, mesh in worn:
         finish = item.get("roughness", ROUGHNESS.get(item["category"], 0.8))
         parts.append(rigged_part(item["id"], mesh, finish, vertices, groups,
@@ -1141,7 +1246,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     body_part = next(p for p in parts if p.name == "body")
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES,
-                       expression=morph.photo_expression(expression_of(result)))
+                       expression=morph.photo_expression(expression_of(result)),
+                       head_pose=photo_head_pose(result))
 
     info = {
         "advice": photo_advice(landmarks, (pw, ph), expression_of(result)),

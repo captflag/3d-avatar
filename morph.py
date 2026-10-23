@@ -54,6 +54,8 @@ REGULARISE = 0.002
 # Blendshape scores that say the mouth is moving, and how hard a broad smile
 # pulls mouth and cheek shape towards average (see `fit`).
 MOUTH_SCORES = ("mouthSmileLeft", "mouthSmileRight", "jawOpen", "mouthStretchLeft", "mouthStretchRight")
+# Below this smile score the mouth's press and retraction count as its shape.
+SET_SMILE = 0.15
 MOUTH_DAMPING = 300.0
 
 # MakeHuman's expression units, each with the MediaPipe blendshapes that score
@@ -109,7 +111,10 @@ SAME_AXIS = 0.6
 # chin 5-11% too short, which reads as a child's face. Forehead width (54-284)
 # was tried for temples rendering 2-5% of the eye spacing too narrow: it moved
 # them 0.1-0.4 and left two of four faces worse, so it is not among them.
-PROPORTIONS = [(33, 263), (234, 454), (172, 397), (10, 152), (2, 152)]
+# Cheekbone (50-280) and mid-cheek (123-352) width: across five faces the
+# render's cheeks were 5-9% of the eye spacing off in either direction, a
+# broad face oval and a narrow one broad, with no cheek target at its limit.
+PROPORTIONS = [(33, 263), (234, 454), (172, 397), (10, 152), (2, 152), (50, 280), (123, 352)]
 # Each distance counts as much as this many landmarks fitted exactly.
 PROPORTION_WEIGHT = 10.0
 # How far across the face, in mesh units, to look for the skin in front of a
@@ -277,6 +282,16 @@ def fit(base: np.ndarray, corr: np.ndarray, person: np.ndarray, average: np.ndar
     # Expression columns, each capped by the photo's own blendshape scores.
     scores = scores or {}
     measured = [max(scores.get(s, 0.0) for s in shapes) for shapes in EXPRESSION_UNITS.values()]
+    # A pressed, drawn-in mouth on a face that is not smiling is how the
+    # mouth sits, not something it is doing: taken off as expression, a
+    # photo's set mouth rendered as a flat neutral line (corners 7% of the
+    # eye spacing higher than the photo's). Below SET_SMILE the press and
+    # retraction units are left to the identity targets.
+    smiling = max((scores.get(s, 0.0) for s in ("mouthSmileLeft", "mouthSmileRight")), default=0.0)
+    if smiling < SET_SMILE:
+        for k, name in enumerate(EXPRESSION_UNITS):
+            if name in ("mouth-compression", "mouth-retraction"):
+                measured[k] = 0.0
     shown = [k for k, m in enumerate(measured) if m >= SHOWN]
     ceiling = {k: min(1.0, EXPRESSION_GAIN * measured[k]) for k in shown}
     if shown:
@@ -344,7 +359,11 @@ def fit(base: np.ndarray, corr: np.ndarray, person: np.ndarray, average: np.ndar
         a = np.hstack([a, shift[:, None]])
         upper = np.append(upper, np.inf)
         lower = np.append(lower, -np.inf)
-    solved = lsq_linear(a, b, bounds=(lower, upper), method="trf", lsmr_tol="auto").x
+    # bvls, not trf: with the cheek rows added, trf stopped short of the
+    # optimum and left weights of 0.2 on targets nothing asked for (a face
+    # differing from the skull only by a depth shift bent head-fat-decr to
+    # 0.23); bvls solves the bounded problem exactly.
+    solved = lsq_linear(a, b, bounds=(lower, upper), method="bvls").x
     weights = np.zeros(len(used))
     weights[used] = solved[:used.sum()]
 
@@ -727,7 +746,12 @@ ARKIT_RESPONSE = {
     "mouthLowerDownLeft": [0.0, 0.01, 0.09, 0.26, 0.48], "mouthLowerDownRight": [0.0, 0.02, 0.12, 0.33, 0.57],
     "mouthUpperUpLeft": [0.06, 0.38, 0.73, 0.75, 0.79], "mouthUpperUpRight": [0.08, 0.43, 0.79, 0.82, 0.85],
     "browOuterUpLeft": [0.38, 0.46, 0.59, 0.68, 0.75], "browOuterUpRight": [0.23, 0.29, 0.39, 0.49, 0.57],
-    "jawOpen": [0.0, 0.01, 0.13, 0.27, 0.35], "mouthFunnel": [0.0, 0.02, 0.03, 0.06, 0.18],
+    # jawOpen re-measured after the lips were sealed and the head squared
+    # (photo-16, ref-woman, sk-21): the old row, [0, 0.01, 0.13, 0.27, 0.35],
+    # turned a photo's barely parted lips (0.08) into weight 0.39, which
+    # rendered as a mouth open on its teeth (0.45). Per avatar it ranges
+    # from 0.33 to 0.85 at full weight.
+    "jawOpen": [0.03, 0.19, 0.35, 0.55, 0.66], "mouthFunnel": [0.0, 0.02, 0.03, 0.06, 0.18],
     "mouthPucker": [0.12, 0.28, 0.57, 0.84, 0.95], "browInnerUp": [0.24, 0.28, 0.33, 0.41, 0.48],
 }
 # Shapes MediaPipe scores on photos but hardly at all on our avatars (frown,

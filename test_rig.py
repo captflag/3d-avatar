@@ -168,7 +168,7 @@ def check_proportions():
     weights, _, _ = morph.fit(vertices, corr, person, average)
     shaped = morph.apply(vertices, weights)[corr]
     for k, (name, (i, j)) in enumerate(zip(("eye spacing", "face width", "jaw width", "face height",
-                                            "nose to chin"), morph.PROPORTIONS)):
+                                            "nose to chin", "cheekbone width", "cheek width"), morph.PROPORTIONS)):
         got = np.linalg.norm((shaped[j] - shaped[i])[:2])
         assert abs(got / want[k] - 1) < 0.015, f"{name} fitted {100 * (got / want[k] - 1):+.1f}% off"
     print("ok  proportions: eye spacing, widths, height and chin fit within 1.5%")
@@ -377,6 +377,83 @@ def check_hair_volume():
     print(f"ok  hair volume: top rose {risen:.2f} for 0.20 asked, front edge and back kept")
 
 
+def check_hair_tangents():
+    """A card mesh with an anisotropic material goes out with per-vertex
+    tangents: unit length, across the normal, running along u on the
+    texture, with a handedness in the last place. Without them a viewer
+    derives one tangent per triangle and the hair's sheen broke into facets.
+    And the scalp normal a lift follows is smooth across a card."""
+    import garments
+    from skinned_glb import tangents
+
+    # A flat square with u along x: tangents along +x, w = +1.
+    v = np.array([[0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]])
+    f = np.array([[0, 1, 2], [0, 2, 3]])
+    uv = np.array([[0.0, 0], [1, 0], [1, 1], [0, 1]])
+    n = np.tile([0.0, 0, 1], (4, 1))
+    t = tangents(v, f, uv, n)
+    assert np.allclose(t[:, :3], [1, 0, 0], atol=1e-6) and np.all(t[:, 3] == 1.0), f"tangents {t.tolist()}"
+    # v flipped (as glTF texture coordinates are): the direction holds, the handedness flips.
+    t2 = tangents(v, f, uv * [1, -1] + [0, 1], n)
+    assert np.allclose(t2[:, :3], [1, 0, 0], atol=1e-6) and np.all(t2[:, 3] == -1.0), f"flipped tangents {t2.tolist()}"
+
+    vertices, groups = load_base()
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    # Across a card seam, where one position is kept as two vertices, the
+    # normals and tangents written are the same.
+    from compose import welded_normals
+    normals = welded_normals(hair)
+    tang = tangents(hair.vertices, hair.faces, hair.metadata["uv"], normals)
+    _, inverse = np.unique(np.round(hair.vertices, 5), axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    copies = np.nonzero(np.bincount(inverse) > 1)[0]
+    assert len(copies) > 100, "no card seams found to check"
+    for u in copies:
+        ids = np.nonzero(inverse == u)[0]
+        assert np.allclose(normals[ids], normals[ids[0]], atol=1e-6), "normals differ across a seam"
+        assert np.allclose(tang[ids, :3], tang[ids[0], :3], atol=1e-6), "tangents differ across a seam"
+    scalp = garments.scalp_normals(hair.vertices, vertices, groups)
+    assert np.allclose(np.linalg.norm(scalp, axis=1), 1.0, atol=1e-6), "scalp normals not unit"
+    # Along each card edge the normal turns slowly: no two joined vertices differ by more than 30 degrees.
+    e = hair.edges_unique
+    turn = np.degrees(np.arccos(np.clip((scalp[e[:, 0]] * scalp[e[:, 1]]).sum(axis=1), -1, 1)))
+    assert np.percentile(turn, 99) < 30, f"scalp normal turns {np.percentile(turn, 99):.0f} degrees along an edge"
+    print(f"ok  hair tangents: along u, handedness follows the texture's v, one per position across {len(copies)} seams; scalp normals turn at most "
+          f"{np.percentile(turn, 99):.0f} degrees along a card edge")
+
+
+def check_hair_cap():
+    """A haircut's avatar carries a blended cap under the cards: in the
+    hair's root shade, above the brows only, its alpha smooth (not a
+    cut-out), opaque under the cards and gone a little below their edge."""
+    import io
+    import pygltflib as gl2
+    from PIL import Image
+
+    photo = HERE / "samples" / "portrait.jpg"
+    if not photo.exists():
+        print("skip hair cap check: samples/portrait.jpg is missing")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "cap.glb"
+        compose(photo, out, "male")
+        g = gl2.GLTF2().load(str(out)); blob = g.binary_blob()
+        names = [m.name for m in g.materials]
+        assert "scalp_cap" in names, f"no scalp cap among {names}"
+        m = g.materials[names.index("scalp_cap")]
+        assert m.alphaMode == "BLEND", f"cap alpha mode {m.alphaMode}"
+        img = g.images[g.textures[m.pbrMetallicRoughness.baseColorTexture.index].source]
+        bv = g.bufferViews[img.bufferView]
+        alpha = np.asarray(Image.open(io.BytesIO(blob[bv.byteOffset:bv.byteOffset + bv.byteLength])).convert("RGBA"))[..., 3]
+        partial = float(((alpha > 0) & (alpha < 255)).mean())
+        assert partial > 0.02, f"cap alpha is a cut-out ({partial:.3f} partial)"
+        assert (alpha == 255).mean() > 0.05, "cap is nowhere opaque"
+        prim = next(p for p in g.meshes[0].primitives if names[p.material] == "scalp_cap")
+        a = g.accessors[prim.attributes.POSITION]
+        assert a.min[1] > 7.3, f"cap reaches down to y {a.min[1]:.2f}, below the brows"
+    print(f"ok  hair cap: blended, {partial:.0%} of its texels fading, opaque under the cards, above the brows")
+
+
 def check_hair_width():
     """A cut whose outline is narrower over the temples than the photo's is
     pushed out there to the photo's shape, and no further than WIDEN_LIMIT;
@@ -514,6 +591,65 @@ def check_likeness_details():
     assert np.mean(dark) < lab((200, 160, 140)) - 40, f"under the edge the skin stayed L {np.mean(dark):.0f}"
     print(f"ok  likeness details: skin at {ratio:.2f} of the photo for lift {delight.RENDER_LIFT}, closed mouth kept, "
           f"thin lips thinned, hairline tint solid under the edge (L {np.mean(dark):.0f})")
+
+
+def check_mouth_set():
+    """On a face that is not smiling, the mouth's press and draw-in are not
+    taken off as expression; on a smiling face they still are."""
+    import morph
+    from compose import place_face
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    person = morph.reference(vertices, corr, average)
+    set_scores = {"mouthPressLeft": 0.5, "mouthPressRight": 0.5, "mouthDimpleLeft": 0.4, "mouthSmileLeft": 0.02}
+    _, _, at_rest = morph.fit(vertices, corr, person, average, set_scores)
+    assert at_rest["mouth-compression"] == 0.0 and at_rest["mouth-retraction"] == 0.0,         f"a set mouth was fitted as expression: {at_rest}"
+    smiling = dict(set_scores, mouthSmileLeft=0.6, mouthSmileRight=0.6)
+    _, _, grin = morph.fit(vertices, corr, person, average, smiling)
+    assert "mouth-corner-puller" in grin, "the smile unit is missing"
+    print("ok  mouth set: press and draw-in kept as shape on a face at rest, fitted as expression with a smile")
+
+
+def check_lashes_and_brows():
+    """After the eye opening is painted over, the lash line is drawn back as
+    dark as the photo's along the upper lid, and a brow blurred by a small
+    photo is pulled back to its density; skin away from both is untouched."""
+    import cv2
+    import appearance
+    from generate import fit_face
+
+    photo = HERE / "samples" / "portrait.jpg"
+    if not photo.exists():
+        print("skip lashes and brows check: samples/portrait.jpg is missing")
+        return
+    _, marks, _, upright = fit_face(photo)
+    rgb = np.asarray(upright)
+    h, w = rgb.shape[:2]
+    L = lambda img: cv2.cvtColor(np.ascontiguousarray(img), cv2.COLOR_RGB2LAB)[..., 0].astype(float)
+    contour = appearance.EYE_CONTOURS[1]
+    line = np.array([[marks[i].x * w, marks[i].y * h] for i in contour[8:] + [contour[0]]], np.int32)
+    band = np.zeros((h, w), np.uint8)
+    cv2.polylines(band, [line], False, 1, 2)
+    band = band.astype(bool)
+    filled = appearance.fill_eyes(rgb, marks)
+    lashed = appearance.paint_lashes(filled, rgb, marks)
+    before, after, photo_line = L(filled)[band].mean(), L(lashed)[band].mean(), L(rgb)[band].mean()
+    assert after < before - 15 and abs(after - photo_line) < 20, f"lash line L {photo_line:.0f} in the photo, {before:.0f} filled, {after:.0f} drawn"
+    cheek = (slice(int(marks[50].y * h) - 4, int(marks[50].y * h) + 4), slice(int(marks[50].x * w) - 4, int(marks[50].x * w) + 4))
+    assert np.array_equal(lashed[cheek], filled[cheek]), "the cheek changed with the lashes"
+    brows = appearance.tighten_brows(lashed, marks)
+    from facetexture import BROW_LANDMARKS
+    pts = np.array([[marks[i].x * w, marks[i].y * h] for i in BROW_LANDMARKS[:10]], np.int32)
+    region = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(region, cv2.convexHull(pts), 1)
+    region = region.astype(bool)
+    dark_before = np.percentile(L(lashed)[region], 20)
+    dark_after = np.percentile(L(brows)[region], 20)
+    assert dark_after < dark_before - 5, f"brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}"
+    assert np.array_equal(brows[cheek], lashed[cheek]), "the cheek changed with the brows"
+    print(f"ok  lashes and brows: lash line L {before:.0f} -> {after:.0f} (photo {photo_line:.0f}), brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}, cheek kept")
 
 
 def check_lip_correction():
@@ -1231,7 +1367,11 @@ if __name__ == "__main__":
         check_hairline_sweep()
         check_hair_volume()
         check_hair_width()
+        check_hair_tangents()
+        check_hair_cap()
         check_lip_correction()
+        check_lashes_and_brows()
+        check_mouth_set()
         check_eye_carry()
         check_likeness_details()
         check_side_paint()

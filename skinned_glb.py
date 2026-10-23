@@ -44,6 +44,7 @@ class Part:
         self.texture = texture          # a PIL image, or None
         self.normal_texture = normal_texture  # a PIL image in tangent space, or None
         self.alpha_mask = alpha_mask    # texture alpha below 0.5 is cut away
+        self.alpha_blend = False        # or blended by the texture's alpha (a soft edge)
         self.roughness = roughness      # written into the file, so every engine agrees
         self.normal_scale = normal_scale
         self.normals = None if normals is None else np.asarray(normals, dtype=np.float32)
@@ -140,6 +141,40 @@ class _Buffer:
         return len(self.accessors) - 1
 
 
+def tangents(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, normals: np.ndarray) -> np.ndarray:
+    """Per-vertex tangents (xyz, handedness) from the texture coordinates: the
+    direction on the surface along which u increases, summed over each
+    vertex's triangles, made perpendicular to the normal."""
+    v = np.asarray(vertices, dtype=np.float64)
+    t = np.asarray(uv, dtype=np.float64)
+    f = np.asarray(faces)
+    e1, e2 = v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]
+    d1, d2 = t[f[:, 1]] - t[f[:, 0]], t[f[:, 2]] - t[f[:, 0]]
+    det = d1[:, 0] * d2[:, 1] - d2[:, 0] * d1[:, 1]
+    r = np.where(np.abs(det) > 1e-12, 1.0 / np.where(np.abs(det) > 1e-12, det, 1.0), 0.0)[:, None]
+    face_t = (e1 * d2[:, 1:2] - e2 * d1[:, 1:2]) * r
+    face_b = (e2 * d1[:, 0:1] - e1 * d2[:, 0:1]) * r
+    # Summed per position, not per vertex: a card mesh keeps a vertex per
+    # texture island, and tangents summed per copy stepped at every seam.
+    _, where = np.unique(np.round(v, 5), axis=0, return_inverse=True)
+    where = where.reshape(-1)
+    tangent = np.zeros_like(v)
+    bitangent = np.zeros_like(v)
+    for k in range(3):
+        np.add.at(tangent, where[f[:, k]], face_t)
+        np.add.at(bitangent, where[f[:, k]], face_b)
+    tangent, bitangent = tangent[where], bitangent[where]
+    n = np.asarray(normals, dtype=np.float64)
+    n = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
+    tangent = tangent - n * (tangent * n).sum(axis=1, keepdims=True)
+    length = np.linalg.norm(tangent, axis=1, keepdims=True)
+    # A vertex with no usable texture gradient takes any direction across the normal.
+    fallback = np.cross(n, np.where(np.abs(n[:, :1]) < 0.9, [[1.0, 0.0, 0.0]], [[0.0, 1.0, 0.0]]))
+    tangent = np.where(length > 1e-9, tangent / np.maximum(length, 1e-9), fallback / np.maximum(np.linalg.norm(fallback, axis=1, keepdims=True), 1e-9))
+    hand = np.where((np.cross(n, tangent) * bitangent).sum(axis=1) < 0.0, -1.0, 1.0)
+    return np.column_stack([tangent, hand]).astype(np.float32)
+
+
 def axis_angle(axis, degrees: float):
     """A glTF rotation quaternion [x, y, z, w]."""
     axis = np.asarray(axis, dtype=np.float64)
@@ -163,7 +198,8 @@ def _quantise_weights(weights: np.ndarray) -> np.ndarray:
     return np.clip(q, 0, 255).astype(np.uint8)
 
 
-def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None) -> int:
+def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None,
+                 smooth_alpha: bool = False) -> int:
     """Embed an image and return its texture index.
 
     The same image object passed twice is embedded once: head, body and face
@@ -175,7 +211,12 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None)
     if _seen is not None and id(image) in _seen:
         return _seen[id(image)]
     data = io.BytesIO()
-    if image.mode == "RGBA":
+    if image.mode == "RGBA" and smooth_alpha:
+        # A blended part keeps its alpha as it is: the hair cap fades out
+        # under the hairline, and cut at half alpha its edge was a sawtooth.
+        image.save(data, format="PNG", optimize=True)
+        mime = "image/png"
+    elif image.mode == "RGBA":
         # Every RGBA texture here is a cut-out (alpha MASK at 0.5), so its alpha
         # is one transparent palette slot and its colour 255 entries, median
         # cut and dithered: the body's skin went from 947 to 432 KB at about
@@ -209,7 +250,8 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None)
 
 def export(parts: list[Part], skeleton, out_path: pathlib.Path,
            pose: dict[str, list[float]] | None = None, morph_names: list[str] | None = None,
-           expression: dict[str, float] | None = None) -> None:
+           expression: dict[str, float] | None = None,
+           head_pose: list[float] | None = None) -> None:
     """Write the avatar and its skeleton to `out_path` as a GLB.
 
     `pose` rotates named bones in the rest pose. The base mesh is modelled in a
@@ -224,6 +266,11 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
     stored in the mesh's extras as `photoExpression` for a viewer to show. The
     file's own weights stay at rest, so a rig driven by face tracking or
     animation starts from a neutral face.
+
+    `head_pose` (a quaternion, x y z w, in the scene's axes) is how the head
+    was turned in the photo, stored in the mesh's extras as `photoHeadPose`
+    for a viewer that wants to render the head as photographed. The file's
+    own pose stays level.
     """
     buf = _Buffer()
     gltf = gl.GLTF2()
@@ -274,6 +321,12 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
             attributes["COLOR_0"] = buf.add(colour, gl.ARRAY_BUFFER, normalized=True)
         if part.uv is not None:
             attributes["TEXCOORD_0"] = buf.add_quantised(part.uv, "uv")
+        if part.anisotropy is not None and part.uv is not None and part.normals is not None:
+            # An anisotropic highlight runs along the tangent. Without one in
+            # the file a viewer derives tangents from each triangle's texture
+            # coordinates, and the hair's sheen broke into grey facets, a
+            # triangle at a time.
+            attributes["TANGENT"] = buf.add(tangents(part.vertices, part.faces, part.uv, part.normals), gl.ARRAY_BUFFER)
 
         index_type = np.uint16 if len(part.vertices) < 65536 else np.uint32
         indices = buf.add(part.faces.reshape(-1).astype(index_type), gl.ELEMENT_ARRAY_BUFFER)
@@ -289,11 +342,13 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
         )
         if part.texture is not None:
             material.pbrMetallicRoughness.baseColorTexture = gl.TextureInfo(
-                index=_add_texture(gltf, buf, part.texture, _seen=embedded)
+                index=_add_texture(gltf, buf, part.texture, _seen=embedded, smooth_alpha=part.alpha_blend)
             )
         if part.alpha_mask:
             material.alphaMode = "MASK"
             material.alphaCutoff = 0.5
+        if part.alpha_blend:
+            material.alphaMode = "BLEND"
         if part.normal_texture is not None:
             # Pores and grain: breaks up the highlight so skin stops reading as
             # plastic under a key light.
@@ -341,6 +396,8 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
         if expression:
             mesh.extras["photoExpression"] = {k: round(float(v), 3) for k, v in expression.items()
                                               if k in morph_names}
+    if head_pose is not None:
+        mesh.extras = {**(mesh.extras or {}), "photoHeadPose": [round(float(c), 5) for c in head_pose]}
     gltf.meshes.append(mesh)
     gltf.extensionsUsed.append("KHR_mesh_quantization")
     gltf.extensionsRequired.append("KHR_mesh_quantization")

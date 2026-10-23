@@ -186,7 +186,7 @@ SOCKETS = [
 ]
 
 
-def lift_crevices(srgb: np.ndarray, landmarks, size: tuple[int, int], strength: float = 0.6):
+def lift_crevices(srgb: np.ndarray, landmarks, size: tuple[int, int], strength: float = 0.8):
     """Brighten the photo's crevice shadows towards the skin around them.
 
     Shadow under the nose and in the eye corners is occlusion: no light got

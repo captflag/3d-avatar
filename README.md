@@ -52,6 +52,15 @@ image**, **Full body** unticked, **Download**), then:
 credentials (`aws configure`); it needs `boto3` (`uv pip install --python
 .venv/Scripts/python.exe boto3`).
 
+**Is the photo good enough?** With `ANTHROPIC_API_KEY` set in the studio's
+environment, a chosen photo is first sent to the Claude API (`photo_check.py`,
+claude-sonnet-5-5) and the studio lists what would cost likeness ("Take off the
+sunglasses", "Face the camera straight on") with the hair, facial hair and
+glasses it saw; where the photo's segmentation finds no hair to measure, its
+haircut picks the catalogue cut. Without the key nothing is sent and nothing
+changes. It needs `anthropic` (`uv pip install --python .venv/Scripts/python.exe
+anthropic`); from the command line, `.venv/Scripts/python.exe photo_check.py photo.jpg`.
+
 Pick **3D model** or **2D image** beside the photo picker, then use **Download**
 on the result. **Full body** is on by default: the fitted face goes on a base body, dressed from
 the catalogue, with skin tone and hair colour sampled from the photo. Pick the male

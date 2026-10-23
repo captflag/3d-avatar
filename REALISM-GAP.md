@@ -1374,6 +1374,311 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Where the face is lost: reading, fitting, rendering
+
+Each stage measured on its own, in the upright front-on frame (% of the eye
+spacing). The fit compares the mesh's landmark vertices with the photo's
+landmarks. The render compares the landmarks found on the render with the
+photo's.
+
+- **Fit**: about 3.5 across the face. Eyes 1.2-1.3, mouth 1.3-1.7 (3.5 on
+  the laugh), nose 2.2-2.9, outline 5-7, brows 4-7. The outline is the
+  largest error the fit leaves.
+- **Render**: about 3-5. The nose (2.5 -> 3.6-6.6) and the mouth (1.5 ->
+  2.2-8.2) are lost here, between the paint and the mesh. The brows gain:
+  the painted brows follow the photo and hide the mesh's 4-7.
+- **Reading**: three small photos of one man (29-41 px faces) disagreed
+  with each other by 5-8, more than the fit or the render lose. On photos
+  like those, the reading is the bottleneck.
+
+**The head was turned 4 degrees.** `relaxed_pose` turned the neck to the
+side. Every render's nose line sat off-centre, one cheek 17-20% wider than
+the other whatever the photo (photos: -11 to +10). The mesh itself is
+balanced to 1-3. With the head square, renders balance within 2, and the
+landmark error is better on all five faces:
+
+| face | whole face | jaw | nose | brows |
+|---|---|---|---|---|
+| ref-man | 2.38 -> 2.12 | 4.83 -> 3.37 | 2.41 -> 2.64 | 3.03 -> 2.11 |
+| ref-woman | 3.75 -> 2.94 | 8.19 -> 6.24 | 5.53 -> 3.88 | 3.85 -> 3.29 |
+| photo-10 | 3.52 -> 2.30 | 8.07 -> 5.66 | 4.85 -> 2.98 | 4.00 -> 3.44 |
+| photo-14 | 3.01 -> 2.89 | 6.33 -> 5.52 | 3.91 -> 4.14 | 4.67 -> 4.51 |
+| photo-16 | 3.03 -> 2.91 | 6.00 -> 5.36 | 4.09 -> 4.22 | 4.34 -> 4.66 |
+
+Part of the face-width and jaw gap the earlier rounds put down to MediaPipe
+wandering was this turn.
+
+**Outline correction, tried again, set aside.** The jaw and cheek outline
+(234, `JAW_OUTLINE`, 454) was added to `morph.correct` at full trust. The
+mesh's outline vertices moved to the photo's (fit outline 5.5 -> 3.0 on
+photo-16), but the outline the detector finds on the render did not follow
+them. On the squared head: ref-man 2.12 -> 2.04, ref-woman flat, photo-10
+2.30 -> 2.35, photo-14 2.89 -> 3.02, photo-16 2.91 -> 3.03, and the jaw was
+worse on three faces. Taken out. The outline needs the render in the loop:
+fit the silhouette the camera sees, not the landmark vertices.
+
+**A barely parted mouth rendered open.** sk-21's photo scores jawOpen
+0.08. The response row turned that into weight 0.39, and the render read
+0.45: lips apart on the teeth, mouth error 7.08. The row was stale. Re-measured
+at weights 0-1, jawOpen reads 0.33 on ref-woman and 0.80-0.85 on photo-16 and
+sk-21 at full weight. The new row is their average, and 0.08 now falls below
+the shown threshold. On sk-21: render jawOpen 0.06, mouth 7.08 -> 2.71,
+whole face 8.20 -> 6.80. The five test faces score no jawOpen, so they do
+not change.
+
+**The nose: mostly the photo's pitch, not the avatar.** In the photos' own
+frame the rendered nose tip was off by -3.6 to +5.8% of the eye spacing, in
+step with the photo's head pitch (4-12 degrees). Shot from slightly above, a
+photo shows the tip 6.4 above the nose's base where the level render shows
+9.3. With each avatar's neck turned by the difference between the photo's
+pose and the level render's (both as MediaPipe reads them), the landmark
+error is:
+
+| face | level render | at the photo's pose | nose |
+|---|---|---|---|
+| ref-man | 1.78 | 1.80 | 2.22 |
+| ref-woman | 2.99 | 1.61 | 1.58 |
+| photo-10 (laughing) | 2.34 | 2.60 | 3.56 |
+| photo-14 | 2.81 | 1.38 | 0.84 |
+| photo-16 | 2.95 | 1.43 | 0.84 |
+
+Measured this way, the nose is within 0.8-2.2 on four faces. On photo-10,
+MediaPipe probably misreads the laughing face's pitch. Comparing a level render with a
+tilted photo had been charging the pose to the nose, the jaw and the whole
+face. Future rounds should measure at the photo's pose.
+
+**The 2D render at the photo's head pose, as an option.** Each GLB now
+carries `photoHeadPose`: MediaPipe's head rotation for the photo, less the
+3.3 degrees of pitch it reads on our own level renders (1.5-4.5 across the
+test faces; `LEVEL_READ_PITCH`). The studio's "Photo's head pose" box turns
+the neck by it for the 2D image. The default stays level, as does the file's
+own pose. Default render against the option:
+
+| face | level (default) | photo's pose |
+|---|---|---|
+| ref-man | 2.15 | 1.98 |
+| ref-woman | 2.97 | 1.84 |
+| photo-10 (laughing) | 2.28 | 2.37 |
+| photo-14 | 2.90 | 1.39 |
+| photo-16 | 2.95 | 1.38 |
+
+ref-woman reaches 1.61 with her own level reading (1.9 degrees) in place of
+the constant.
+
+Tried and set aside in this round:
+- *Nose length (168-2) as a proportion row.* The fit had left the nose
+  2-3% long (the base nose is 6-7% longer than the photos'), and the row
+  brought the fitted length to within 0.2. Level renders were mixed (ref-man
+  2.18 -> 1.78, the others within noise). At the photo's pose: 1.80 -> 1.83,
+  1.61 -> 1.64, 2.60 -> 2.58, 1.38 -> 1.51, 1.43 -> 1.46. Not kept.
+- *Ambient occlusion off.* The renderer's ambient occlusion draws a dark rim under the nose:
+  without it the nose improved on four faces, but the eyes got worse on all five
+  (ref-woman 1.74 -> 2.45). Kept on.
+
+Tried first and set aside: opening the jaw until the mesh's inner lips part
+as far as the photo's, for the mouth's width. It still overshot: weight 0.17
+rendered a lip gap of 0.21 against the photo's 0.12, and the mouth error
+was 9.8. The vertex landmark 14 lands on barely moves with the jaw (0.006
+where its neighbours drop 0.3), so the lip landmarks' vertices are a poor
+gauge of the visible opening.
+
+## The last open items, each tried
+
+- **Brow height**: the eye carry widened to 0.7 eye spacings and faded
+  out from the eyes to the nose tip, so the brows come with the eyes and
+  the mouth stays put. Brow landmark error better on all four faces
+  (3.29 -> 3.03, 4.00 -> 3.85, 4.23 -> 4.00, 5.18 -> 4.67); whole-face
+  error a wash. Unfaded, 0.7 improved the whole face on three faces
+  (3.71 -> 3.51, 3.04 -> 2.90), but by carrying the painted mouth with the
+  eyes: a lead that the painted mouth sits a little off, not a fix. The
+  brow still sits 28 above the lid by the render's own landmarks (photo
+  21-23): that is the mesh's brow ridge.
+- **Lower lip roll**: each lip's volume from its own height (edge to
+  seam) instead of both from the pair: photo-16's lips +4.6 -> +6.9,
+  ref-woman's whole face 3.71 -> 4.20. Taken out.
+- **photo-10**: the cheek rows at a third of their weight: 3.66 -> 3.60,
+  ref-man 2.27 -> 2.35. A wash; taken out.
+- **Forehead +24**: the de-lighting gain capped at 1.2 left it at +25 and
+  the brow ridge at +26. On this one person only: the key light from above
+  on the photo's forward-tilted forehead. No lever without relighting.
+- **Nose depth from one photo**: a forward bias on the nose targets took
+  the rendered test head's nose from -7.3 to +1.2 mm, but the test head was
+  made by adding nose depth, so the test cannot tell a better fit from a
+  bigger nose for everyone. Not shipped; turned photos remain the answer.
+- **Ears, the swept-back cut**: no landmarks for the one, no CC0 asset for
+  the other.
+
+## The lower face: cheeks, lighting, mouth
+
+Seventeen things flagged on photo-16's cheeks, mouth, chin and jaw;
+fixed in the order they were listed, each measured before and after on
+all five faces (render minus photo, % of iris spacing or L*).
+
+**Mid-face width.** The cheeks rendered 5-9 off in either direction (a
+broad face oval, a narrow one broad). Cheekbone (50-280) and mid-cheek
+(123-352) width joined the fitted proportions: ref-man +8.1 -> +4.9,
+ref-woman +7.5 -> +4.5. On the narrow faces nothing moved, and the fit's
+own landmarks turned out to match the photo's widths exactly (cheekbone
+106.9 against 106.8, jaw 119.0 against 118.8): what the detector reads as
+narrow on the render is shading, not shape. photo-10 (laughing) came out
+narrower (-1.4 -> -6.1) and its whole-face error 3.25 -> 3.66; the
+proportion rows read a laugh's cheeks as the face's.
+
+**Lighting symmetry.** One cheek rendered 42 L* brighter than the other
+relative to the photo, on three of five faces. Not the texture (the
+de-lit face is 10 L* the other way), not the mesh (left/right pairs within
+1%), not the key and fill (moving the fill up changed it by 3). A flat
+grey head with every directional light off still split 39: the room
+environment map is the lopsided light, and removing it left the head dark
+and symmetric. Rotated about the vertical, the grey head's split went
++70 at -20 degrees, +39 at 0, -15 at +20; the environment is now turned
++14. Split on the five faces: +24 / +1 / +40 / +42 / +43 -> +12 / -6 /
++22 / +14 / +13. Skin brightness elsewhere unchanged.
+
+**Crevice lift.** Lowering it to 0.5 changed nothing on the render: the
+light nasolabial folds and philtrum (+35 / +50) are not the lift. In the
+de-lit photo they are as dark as the photo's; it is the bake that loses
+them, a 214-pixel photo's creases resampled over the texture. An unsharp
+mask on L* after de-lighting (`sharpen_creases`, 0.5 of the detail at a
+fifteenth of the eye spacing, off the stubble and the lips' seam) brings
+the fold back from 16 to 19 L* below the cheek against the photo's 23. At
+0.8 it matched but the stubble broke into blotches.
+
+**Lips.** The lips are less saturated in the texture than in the photo
+(a* +13 against +16/+21) and read more saturated on the render (+25);
+the skin's sheen, the one red-orange thing in the material, is not it
+(sheen off: unchanged). The detector's lip patch takes in the seam, which
+the sealed lips and the occlusion draw darker than the photo's (-37
+against -13 at the start of the round, after the sharpening). Not resolved.
+
+**Mouth set.** The photo's pressed, drawn-in mouth was taken off as
+expression and rendered as a flat line, corners 7-8 higher than the
+photo's. Below a smile of 0.15 the press and retraction units now count as
+the mouth's shape (`SET_SMILE`): corners +7.3 -> +6.4 and +8.6 -> +6.4,
+lip height +5.3 -> +3.2 on one run and +5.0 on another: the detector's
+noise on a 43-pixel mouth is about 2.
+
+**Two more, tried and taken out.** The closed mouth's painted seam lifted
+halfway towards the lip colour before the renderer's occlusion darkens the
+crease: the lip-line reading did not move, and on ref-woman it swung from
++87 to -110 between two renders of the same thing, so that measure is the
+detector's noise on a few pixels and says nothing. The cheek width rows
+faded out with a smile, for photo-10: its widths came in (-6.1 -> -2.4) and
+its whole-face error went out (3.66 -> 3.76). photo-10's cheek rows stay
+as they are; its laugh is the limit.
+
+**Stubble.** jaw_beard 0.28 is below the beard carry, so the stubble is
+the photo's own specks stretched by the bake: the jaw's darkest tenth 76
+L* below its skin against the photo's 48. Lifting faint stubble towards
+the skin measured nothing and was taken out. A resolution limit.
+
+**The solver.** With the cheek rows added, scipy's trf stopped short of
+the optimum: a face differing from the skull only by a depth shift bent
+head-fat-decr to 0.23 where nothing asked for it (the rig check caught
+it). The fit now uses bvls, which solves the bounded problem exactly, at
+about a second a fit.
+
+Whole-face landmark error, start of the round -> now: ref-man 2.40 ->
+2.27, ref-woman 3.88 -> 3.71, photo-10 3.25 -> 3.66, photo-14 3.07 ->
+3.04. Brows and mouths better on all four; photo-10's nose and jaw worse.
+The cheek-width reading on the renders is not a shape measure (the fit
+matches the photo's widths exactly) and swings with the shading, so it is
+not quoted per face.
+
+## Eyes and brows against the photo
+
+Measured on photo-16, each eye and brow against the photo's (iris spacing
+as the unit; L* 0-255):
+
+- **The lash line was gone.** Along the upper lid the photo reads L* 50-57;
+  the avatar's lid there read 98-105, bare skin, since fill_eyes paints the
+  opening and the lashes over with lid skin, and the eyeballs sat on it and
+  stared. `appearance.paint_lashes` reads the photo's own colour along the
+  upper lid (the darker half of the pixels there) and draws it back on the
+  rim after the fill, 0.07 of the eye's width wide, with a thinner, fainter
+  line along the lower lid. In the painted photo the line is L* 48; on the
+  render it reads 61-76, the rim's curl and a 2-pixel line in a 214-pixel
+  photo taking the rest.
+- **The brows had spread.** Painted from a photo whose brows are a few
+  pixels tall, they came out 40% thicker (27/32 -> 39/37) and lighter
+  (L* 98 -> 123 on one side). `appearance.tighten_brows` pulls each brow's
+  pixels darker than the surrounding skin by 1.6 about that skin level:
+  L* 123 -> 96 and 106 -> 81 against the photo's 98 / 104. The thickness
+  reads the same (38 / 37), the measure taking in the socket's shadow under
+  the brow, and the brow sits 28 above the lid against the photo's 21-23.
+  The catalogue's brow card worn over the paint changed no number.
+- **The whites were a flat bright ellipse.** The lids' shadow in the eye
+  texture is deeper (0.4 -> 0.6 above, and 0.25 below): sclera L* 158 ->
+  148 on the one side, the other unchanged. The iris highlight was two hard
+  blobs: eye roughness 0.05 -> 0.18.
+- **Under the brow** the lid read 12 L* darker than the photo's relative to
+  the cheek, which merged the brow into a thick band: the crevice lift in
+  delight is 0.8 of the deficit instead of 0.6.
+- Unchanged: the eye tilt (one eye 4 degrees more than the photo's), the
+  hooded fold itself, and the brow's height.
+
+## Hair: the facets, and the creases under them
+
+The hair rendered as a cap of grey triangles: a highlight patch per
+triangle, which no amount of colour or shape work changed. Built with each
+suspect off in turn on photo-16, the facets stayed without the strand
+normal map and without the sweep, lift and widening, and vanished without
+the anisotropic highlight. The file carried no tangents: a viewer then
+derives one per triangle from its texture coordinates, and the highlight,
+which runs along the tangent, broke along them. `skinned_glb.tangents`
+now writes per-vertex tangents (along u, across the normal, with the
+handedness) for every part with an anisotropic material.
+
+What was left after that was creases: the lifts moved each hair vertex
+along the normal of the single nearest skin vertex, so two neighbouring
+points on one card could take two different normals and the card folded
+between them. `garments.scalp_normals` averages the nearest twelve by
+inverse distance (the normal now turns at most 23 degrees along a card
+edge). Hair L* against photo-16's, mean / spread / brightest tenth, with
+the fine-scale noise (L* left after a 3-pixel blur):
+
+| | mean | spread | p90 | fine-scale |
+|---|---|---|---|---|
+| photo | 38 | 29 | 78 | 15.0 |
+| facets (before) | 41 | 31 | 81 | 16.7 |
+| tangents | 29 | 29 | 57 | 18.9 |
+| tangents + smooth lifts | 38 | 31 | 78 | 17.5 |
+| isotropic highlight, roughness 0.5 | 34 | 35 | 78 | 19.0 |
+
+The brown and blonde heads keep their earlier numbers (their variation
+is strand colour, not sheen).
+
+**The seams.** A card mesh keeps a vertex per texture island, so 306 of
+short02's positions are two vertices, each on its own card with its own
+normal and tangent, and the shading stepped at every seam. Normals are now
+taken from the mesh with coincident positions merged (`welded_normals`)
+and tangents summed per position, so the copies agree exactly (the file's
+byte normals differ by 8.6 degrees at most, from rounding). Fine-scale
+noise 17.5 -> 16.6 against the photo's 15.0, brightness unchanged
+(41 / 31 / 80).
+
+**The gap under the cards: a cap.** A swept-back cut's lifted front stands
+off the forehead, and between its sparse lowest strands the tinted skin
+showed, lit as skin: a brown band under black hair, read as a gap between
+hair and skull. Tried on the band first, in order: the tint's root shade
+divided by the renderer's lift like the skin (right, kept, but the band
+stayed brown: 143 -> 142 L*); a longer solid plateau and shorter fade
+(kept: band 0.20 -> 0.17 eye spacings); full-strength tint (the strip under
+the hair went darker than the photo's, 112 against 137: not kept); coarse
+strands drawn across the whole tint (brown stripes: not kept). What closed
+the gap was geometry: `compose` now adds a cap (`scalp_cap`) cut from the
+head's own faces 0.012 off the skin, above the brows, in the hair's root
+shade, blended by a smooth alpha (the exporter's RGBA path quantises alpha
+to a cut-out, so blended parts keep theirs) that is opaque under the cards
+and fades over 0.06 units from 0.1 above their lowest strands. Cut at half
+alpha instead, the wisps drew its edge as a sawtooth, and opaque down to the
+lowest strands it put solid hair 0.15 eye spacings lower than the photo's
+(the strip under the hair 85 against 137). Now: solid hair starts 0.88
+above the brows (photo 0.93), the strip 118 (photo 137; 125 before the
+cap), its edge 6.9 L* a row (photo 10.6). Nothing of it shows from the
+side or the back. What is left is the cards' own silhouettes and the alpha
+cut at their tips.
+
 ## One face audited to the detail: photo-16
 
 A fifth test photo, a tanned man with heavy upper lids, thin lips and a tall
@@ -1475,8 +1780,32 @@ opening instead of 0.2 (still 0.2 below, where the lash rim made the ring),
 so the fold a hooded eye creases at is left in the paint. Under-eye L* and
 the ring unchanged; the crease itself is barely more visible at 214 pixels.
 
-Still open on photo-16: the pompadour (no such cut), the lid fold as a
-shape, the forehead +24 under the key light, the ears, and the 214-pixel face.
+**A swept-back cut from the community packs: none usable.** MakeHuman's
+community "Hair 01" pack (hair01_cc0.zip, 25 cuts, every one listed CC0)
+is mostly bobs, braids and long styles; the two short men's cuts in it are
+`culturalibre_hair_02`, whose own .mhclo header says AGPL3 whatever the
+pack page says (not used), and `culturalibre_hair_05` (CC0 in its header,
+by swift502): a low-poly cut of separate clumps that renders as black spikes
+with scalp between them, at half the photo's height. Overlap with photo-16's
+hair 0.06 against short02's 0.59. The "Hair 02" and "Hair 03" packs are
+CC-BY, outside the licence rule. A pompadour needs a cut modelled for it.
+
+**The two arcs across the forehead, ruled out one by one.** They survive
+with the hairline tint off altogether, with the landmark warp eased into
+the forehead affine at the sheet's rim, and with the crease shading off; a
+flat grey head with no maps shows none, and the mesh's midline profile is a
+smooth bulge. So they are in the colour texture, and the one source left is
+the photo's own forehead through the affine map (its faint lines, or the
+segmenter's eroded skin edge), which a sharper photo would settle. The
+easing and the other two changes were taken out again, having moved nothing.
+
+**Lip depth in the correction** (the one-photo trust for the lip contours,
+so the lower lip's roll would follow the photo's guess): lips +6.2 -> +6.4
+by the detector. Taken out.
+
+Still open on photo-16: the pompadour (no usable cut), the lid fold as a
+shape, the forehead +24 under the key light, the lower lip's roll, the
+arcs, the ears, and the 214-pixel face.
 
 ## Measured gaps: what each turned out to be
 

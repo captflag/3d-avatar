@@ -573,8 +573,11 @@ def bake_eyes(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces:
         colour = colour * (1.0 - band(angle, 8.0, soft=0.8)) + pupil * band(angle, 8.0, soft=0.8)
         # The upper lid's shadow over the top of the eye, a little under the lower.
         up = direction[:, 1:2]
-        colour = colour * (1.0 - 0.4 * np.clip((up - 0.12) / 0.35, 0.0, 1.0)
-                           - 0.12 * np.clip((-up - 0.35) / 0.3, 0.0, 1.0))
+        # Deeper than it was (0.4): the whites rendered as a flat bright
+        # ellipse where the photo's are shaded under the lid and warm at the
+        # corners. A little under the lower lid too.
+        colour = colour * (1.0 - 0.6 * np.clip((up - 0.08) / 0.35, 0.0, 1.0)
+                           - 0.25 * np.clip((-up - 0.25) / 0.3, 0.0, 1.0))
         image[ys[inside], xs[inside]] = colour
 
     return Image.fromarray(np.clip(image, 0, 255).astype(np.uint8), mode="RGB")
