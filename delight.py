@@ -42,8 +42,19 @@ SKIN_CEILING = 0.45
 # photo shows it. Before, the de-lighting left the brightness wherever its
 # gain put it and the renderer added its quarter on top: light faces hit the
 # ceiling and happened to come out right, a tan face rendered 33 L* lighter
-# than its photo.
+# than its photo. Still what the eye texture (compose) and the hairline's root
+# shade (appearance.hairline_tint) are divided by.
 RENDER_LIFT = 1.35
+# The skin itself is written for the renderer as it is: its lights multiply
+# the albedo by RENDER_LIGHT at the cheek, and its tone curve (three.js
+# NeutralToneMapping at exposure 1.05) then compresses whatever comes out
+# light. Measured by rendering each test head as built and again unlit: on
+# the cheeks 1.9-2.2 before the curve, the same at 0.5, 1 and 1.35 times
+# photo-16's texture. The plain 1.35 above held for light skin only, which
+# the curve squeezes; tan skin sits below the curve's shoulder and photo-16
+# rendered 20 L* light on the cheeks and 26 on the forehead.
+RENDER_LIGHT = 2.0
+RENDER_EXPOSURE = 1.05
 # How much of the fitted shading to remove (1 = all of it), and the most any
 # pixel may be brightened or darkened.
 STRENGTH = 0.7
@@ -59,6 +70,21 @@ def to_srgb(linear: np.ndarray) -> np.ndarray:
     c = np.clip(linear, 0.0, 1.0)
     c = np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
     return np.clip(c * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
+def rendered(albedo: np.ndarray, light: float = RENDER_LIGHT) -> np.ndarray:
+    """Linear RGB the studio shows for a linear albedo (..., 3) lit by `light`:
+    three.js NeutralToneMapping of the lit colour."""
+    c = np.asarray(albedo, dtype=np.float64) * light * RENDER_EXPOSURE
+    low = c.min(axis=-1, keepdims=True)
+    c = c - np.where(low < 0.08, low - 6.25 * low * low, 0.04)
+    peak = c.max(axis=-1, keepdims=True)
+    start, d = 0.76, 0.24
+    top = np.maximum(peak, start)
+    new_peak = 1.0 - d * d / (top + d - start)
+    blend = 1.0 - 1.0 / (0.15 * (top - new_peak) + 1.0)
+    squeezed = c * new_peak / top * (1.0 - blend) + new_peak * blend
+    return np.where(peak < start, c, squeezed)
 
 
 def sh_basis(normals: np.ndarray) -> np.ndarray:
@@ -293,11 +319,16 @@ def delight(photo_rgb: np.ndarray, landmarks, faces: np.ndarray,
     linear = linear * gain[..., None]
     linear, report["shine_removed"] = remove_shine(linear, mask, landmarks, (w, h))
 
-    # Exposure: the cheeks back to the brightness the photo showed, less the
-    # renderer's lift, and capped at what real skin reflects. The lighting fit
+    # Exposure: the cheeks at the albedo the renderer shows as bright as the
+    # photo showed them, capped at what real skin reflects. The lighting fit
     # only redistributes shading; the level is the photo's.
-    cheek = float(np.median(linear[ys_c, xs_c] @ luma))
-    scale = min(SKIN_CEILING, shown / RENDER_LIFT) / max(cheek, 1e-6)
+    cheek_rgb = np.median(linear[ys_c, xs_c], axis=0)
+    cheek = max(float(cheek_rgb @ luma), 1e-6)
+    lo, hi = 0.0, 1.0 / cheek
+    for _ in range(40):                     # rendered() rises with the albedo
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if float(rendered(cheek_rgb * mid) @ luma) < shown else (lo, mid)
+    scale = min(SKIN_CEILING / cheek, lo)
     report["exposure"] = round(float(scale), 2)
     out, report["crevices_lifted"] = lift_crevices(to_srgb(linear * scale), landmarks, (w, h))
     return out, report, mask
