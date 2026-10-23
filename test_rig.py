@@ -519,8 +519,8 @@ def check_likeness_details():
     from PIL import Image
     from compose import place_face
 
-    # Skin: a flat mid-tan face under even light comes back a third darker in
-    # linear luminance, and a bright one no brighter than the ceiling.
+    # Skin: a flat mid-tan face under even light is written so the studio's
+    # lights and tone curve show it as bright as the photo did.
     canon = load_canonical_faces()
     lab = lambda rgb: cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2LAB)[0, 0, 0]
     class Mark:
@@ -534,9 +534,9 @@ def check_likeness_details():
     cheeks = np.array([[m.x * 300, m.y * 300] for m in (marks[50], marks[280], marks[205], marks[425])])
     out, report, mask = delight.delight(photo, marks, canon, cheeks)
     shown = delight.to_linear(photo[0, 0].astype(float)) @ [0.2126, 0.7152, 0.0722]
-    got = delight.to_linear(out[mask].astype(float)) @ [0.2126, 0.7152, 0.0722]
-    ratio = float(np.median(got)) / shown
-    assert abs(ratio * delight.RENDER_LIFT - 1.0) < 0.12, f"skin written at {ratio:.2f} of the photo's, lift {delight.RENDER_LIFT}"
+    got = delight.rendered(np.median(delight.to_linear(out[mask].astype(float)), axis=0)) @ [0.2126, 0.7152, 0.0722]
+    ratio = float(got) / shown
+    assert abs(ratio - 1.0) < 0.12, f"skin renders at {ratio:.2f} of the photo's brightness"
 
     # Mouth: lips 0.7% of the mouth's width apart stay as the photo has them.
     rgb = np.full((300, 300, 3), (200, 160, 140), np.uint8)
@@ -589,7 +589,7 @@ def check_likeness_details():
         x, y = int(uv[i, 0] * 511), int((1 - uv[i, 1]) * 511)
         dark.append(lab(tinted[y, x]))
     assert np.mean(dark) < lab((200, 160, 140)) - 40, f"under the edge the skin stayed L {np.mean(dark):.0f}"
-    print(f"ok  likeness details: skin at {ratio:.2f} of the photo for lift {delight.RENDER_LIFT}, closed mouth kept, "
+    print(f"ok  likeness details: skin renders at {ratio:.2f} of the photo, closed mouth kept, "
           f"thin lips thinned, hairline tint solid under the edge (L {np.mean(dark):.0f})")
 
 
@@ -894,13 +894,13 @@ def check_delight():
     h, w = rgb.shape[:2]
     cheeks = np.array([[marks[i].x * w, marks[i].y * h] for i in SKIN_LANDMARKS])
     out, report, mask = delight.delight(rgb, marks, load_canonical_faces(), cheeks)
-    # Skin within the natural range keeps the photo's own brightness, less
-    # the renderer's lift (delight.RENDER_LIFT), so it renders as the photo shows it.
+    # Skin within the natural range is written so it renders as the photo
+    # shows it (delight.rendered: the studio's lights and tone curve).
     luma = np.array([0.2126, 0.7152, 0.0722])
     at = (cheeks[:, 1].astype(int), cheeks[:, 0].astype(int))
     shown = np.median(delight.to_linear(rgb[at]) @ luma)
-    written = np.median(delight.to_linear(out[at]) @ luma)
-    assert abs(written * delight.RENDER_LIFT / shown - 1.0) < 0.12,         f"cheeks written at {written / shown:.2f} of the photo's for a lift of {delight.RENDER_LIFT}"
+    seen = delight.rendered(np.median(delight.to_linear(out[at]), axis=0)) @ luma
+    assert abs(seen / shown - 1.0) < 0.12, f"cheeks render at {seen / shown:.2f} of the photo's brightness"
     import cv2
     far = cv2.dilate(mask.astype(np.uint8), np.ones((51, 51), np.uint8)) == 0
     # Away from the face only the exposure factor applies, the same to every pixel.
@@ -1353,6 +1353,36 @@ def check_brows():
     print(f"ok  brows: read {depth.round(2).tolist()} down the contours; cards on that line "
           f"within 1 mm, still on the skin")
 
+def check_stubble():
+    """Specks over a beard add grain and keep its average; a shaven face and
+    the skin beside the beard are left as they were."""
+    from PIL import Image
+    import appearance
+
+    # A square of skin filling the map, the photo's beard over its lower part
+    # (the map's top rows: v runs up).
+    grid = np.linspace(0, 1, 21)
+    vertices = np.array([[x, y, 0] for y in grid for x in grid])
+    faces = np.array([[r * 21 + c + d for d in tri] for r in range(20) for c in range(20)
+                      for tri in ((0, 1, 22), (0, 22, 21))])
+    class Sampler:
+        def sample(self, points):
+            return points[:, :2] * 199, np.ones(len(points))
+    photo = np.full((200, 200, 3), (200, 160, 140), np.uint8)
+    photo[130:] = (120, 85, 70)
+    cheeks = np.array([[60.0, 40.0], [140.0, 40.0]])
+    marks = _landmarks({1: (0.5, 0.4), 152: (0.5, 0.95)})
+    texture = Image.new("RGB", (256, 256), (150, 120, 100))
+    args = (vertices, faces, vertices[:, :2], faces, Sampler(), photo, cheeks)
+    same = appearance.stubble(texture, *args, 0.06, marks)
+    assert same is texture, "stubble drawn on a shaven face"
+    out = np.asarray(appearance.stubble(texture, *args, 0.5, marks)).astype(float)
+    hair, bare = out[10:70, 10:-10, 1], out[150:240, 10:-10, 1]
+    assert hair.std() > 5 and abs(hair.mean() - 120) < 3, f"beard grain {hair.std():.1f}, mean {hair.mean():.1f}"
+    assert np.all(bare == 120), "stubble drawn on bare skin"
+    print(f"ok  stubble: grain {hair.std():.1f} over the beard at its own average, none on a shaven face")
+
+
 if __name__ == "__main__":
     try:
         check_weights()
@@ -1387,6 +1417,7 @@ if __name__ == "__main__":
         check_forehead()
         check_brows()
         check_details()
+        check_stubble()
     except AssertionError as err:
         print(f"FAIL  {err}", file=sys.stderr)
         raise SystemExit(1)
