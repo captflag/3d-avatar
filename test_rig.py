@@ -344,7 +344,33 @@ def check_hairline_sweep():
     moved = np.linalg.norm(hair.vertices - original, axis=1) > 1e-6
     gap = ((hair.vertices - vertices[near]) * normals[near]).sum(axis=1)[moved]
     assert gap.min() > 0.04, f"swept hair sank to {gap.min():.3f} from the scalp"
-    print(f"ok  hairline sweep: fringe turned back {turned:.0f} deg, edge rose {risen:.2f} of 0.30, back kept, off the scalp")
+
+    # The photo's hairline as a curve, receding at the temples: the temples
+    # rise further than the middle, each about to the curve, the crown and
+    # the back stay put.
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    original = hair.vertices.copy()
+    opaque = appearance.opaque_hair(hair)
+    import morph
+    from compose import place_face
+    corr = morph.correspondences(vertices, groups["body"],
+                                 place_face(morph.canonical_face(), vertices, groups).vertices[:468])
+    brow = vertices[corr[[105, 334]], 1].mean()
+    ahead = opaque[(opaque[:, 2] > np.median(opaque[:, 2])) & (opaque[:, 1] > brow)]
+    low = lambda pts, a, b: np.percentile(pts[(np.abs(pts[:, 0]) >= a) & (np.abs(pts[:, 0]) < b), 1], 3)
+    xs = np.linspace(-0.6, 0.6, 7)
+    ys = low(ahead, 0.0, 0.1) + 0.15 + 0.25 * (xs / 0.6) ** 2
+    garments.sweep_back(hair, vertices, groups, opaque, (xs, ys), above=brow)
+    opaque = appearance.opaque_hair(hair)
+    after = opaque[(opaque[:, 2] > np.median(opaque[:, 2])) & (opaque[:, 1] > brow)]
+    middle, temples = low(after, 0.0, 0.1) - low(ahead, 0.0, 0.1), low(after, 0.4, 0.55) - low(ahead, 0.4, 0.55)
+    assert temples > middle + 0.08, f"the temples rose {temples:.2f}, the middle {middle:.2f}"
+    assert abs(low(after, 0.0, 0.1) - ys[3]) < 0.08, "the middle missed the curve"
+    crown = original[:, 1] > np.percentile(original[:, 1], 97)
+    assert np.median(np.linalg.norm(hair.vertices[crown] - original[crown], axis=1)) < 0.03, "the crown moved"
+    assert np.abs(hair.vertices[back] - original[back]).max() < 1e-6, "the back of the hair moved"
+    print(f"ok  hairline sweep: fringe turned back {turned:.0f} deg, edge rose {risen:.2f} of 0.30, back kept, "
+          f"off the scalp; to a receding curve the temples rose {temples:.2f}, the middle {middle:.2f}")
 
 
 def check_hair_volume():
@@ -589,6 +615,12 @@ def check_likeness_details():
         x, y = int(uv[i, 0] * 511), int((1 - uv[i, 1]) * 511)
         dark.append(lab(tinted[y, x]))
     assert np.mean(dark) < lab((200, 160, 140)) - 40, f"under the edge the skin stayed L {np.mean(dark):.0f}"
+    # With the photo's hairline above the cards' edge, the skin below it stays bare.
+    floored = np.asarray(appearance.hairline_tint(plain, vertices, faces, uv, uv_faces, hair, (30, 25, 24), spare=spare,
+                                                  hairline=(np.array([-spacing, spacing]), np.full(2, line_y + 0.2))))
+    bare = [lab(floored[int((1 - uv[uv_faces[h[0][0], h[1][0]], 1]) * 511), int(uv[uv_faces[h[0][0], h[1][0]], 0] * 511)])
+            for h in rows]
+    assert np.mean(bare) > lab((200, 160, 140)) - 3, f"below the photo's hairline the skin was tinted (L {np.mean(bare):.0f})"
     print(f"ok  likeness details: skin renders at {ratio:.2f} of the photo, closed mouth kept, "
           f"thin lips thinned, hairline tint solid under the edge (L {np.mean(dark):.0f})")
 

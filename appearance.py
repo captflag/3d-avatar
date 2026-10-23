@@ -145,6 +145,11 @@ def segment(photo_rgb: np.ndarray) -> np.ndarray | None:
 # (`widths` in read_hair) and matched (garments.widen).
 HAIR_WIDTH_ROWS = (0.0, 0.25, 0.5, 0.75)
 
+# Where across the forehead the hairline's height is read (`hairline_points` in
+# read_hair): shares of half the face's width either side of its middle
+# (landmark 9), temple to temple.
+HAIRLINE_ACROSS = np.linspace(-0.85, 0.85, 11)
+
 
 def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dict | None:
     """What the photo says about the hair, measured in face heights.
@@ -153,7 +158,9 @@ def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dic
     `bottom`: where it ends relative to the chin (negative is above the chin).
     `fringe`: share of the forehead it covers. `hairline`: how far above the
     brows the hair ends mid-forehead, in eye spacings, and `rise` how high above
-    them it stands over the forehead's middle. `sides`: how far it stands out
+    them it stands over the forehead's middle. `hairline_points`: the hairline
+    as a curve, the lowest hair above the brows at HAIRLINE_ACROSS, in photo
+    pixels (rows for columns with no hair left out). `sides`: how far it stands out
     past the face's outline at the temples, in face widths (median over the
     rows from the top of the face to the eyes). `widths`: its half-width
     either side of the face's midline at HAIR_WIDTH_ROWS, in eye spacings
@@ -175,7 +182,7 @@ def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dic
     ys, xs = np.nonzero(hair & near)
     amount = float((hair & near).sum() / max((parts == FACE_SKIN).sum(), 1))
     reading = {"amount": round(amount, 2), "top": None, "bottom": None, "fringe": 0.0, "sides": None,
-               "hairline": None, "rise": None, "widths": None, "colour": None}
+               "hairline": None, "hairline_points": None, "rise": None, "widths": None, "colour": None}
     if len(ys) < 50:
         return reading
 
@@ -211,6 +218,15 @@ def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dic
             if hair[:int(brows), x].any()]
     if lows:
         reading["hairline"] = round(float((brows - np.median(lows)) / spacing), 2)
+    # And across the forehead, so receding temples and a widow's peak show.
+    points = []
+    for u in HAIRLINE_ACROSS:
+        x = x9 + u * face_w / 2
+        cols = range(max(int(x - 0.05 * spacing), 0), min(int(x + 0.05 * spacing) + 1, w))
+        low = [np.nonzero(hair[:int(brows), c])[0].max() for c in cols if hair[:int(brows), c].any()]
+        if low:
+            points.append([round(float(x), 1), round(float(np.median(low)), 1)])
+    reading["hairline_points"] = points or None
     # The rise: the top of the hair across the middle of the head, a low
     # percentile so a few flyaway strands do not set it.
     middle = hair[:int(brows), max(int(x9 - 0.5 * spacing), 0):min(int(x9 + 0.5 * spacing), w)]
@@ -584,7 +600,7 @@ HAIRLINE_SOLID = 0.08
 def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray,
                   uv_faces: np.ndarray, hair_points: np.ndarray, hair_rgb,
                   fade: float = 0.08, strength: float = 0.85, spare: np.ndarray | None = None,
-                  return_weight: bool = False):
+                  return_weight: bool = False, hairline=None):
     """Paint a soft hairline onto the skin under and just below the hair.
 
     Hair cards end in a row on the forehead, so the hair met the skin in a
@@ -602,6 +618,10 @@ def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarr
     carries. Below the hair's edge, where the photo shows the forehead up to
     its own hairline, the tint is left off: mixed over tan skin, a dark hair
     colour only greyed it.
+
+    `hairline` (the photo's, as (xs, ys) across the forehead on the head) is
+    as low as the tint reaches on the front of the head: cards hanging below
+    it do not darken skin the photo shows bare.
     """
     from PIL import Image
     from facetexture import rasterize
@@ -635,6 +655,10 @@ def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarr
     on = ~np.isnan(at[..., 1])
     tex_angle = np.degrees(np.arctan2(at[..., 0] - centre[0], at[..., 2] - centre[1])) % 360.0
     line = np.interp(tex_angle / (360.0 / bins), np.arange(bins), edge, period=bins)
+    if hairline is not None:
+        xs, ys = hairline
+        ahead = (at[..., 2] > centre[1]) & (at[..., 0] > xs[0]) & (at[..., 0] < xs[-1])
+        line = np.where(ahead, np.maximum(line, np.interp(np.nan_to_num(at[..., 0]), xs, ys)), line)
     # Solid for HAIRLINE_SOLID below the edge, then fading over `fade`. The
     # edge is a few of the lowest strands per slice, smoothed round the head;
     # the cards' coverage thins out well below it.
