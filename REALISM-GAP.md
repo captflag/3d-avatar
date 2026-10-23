@@ -1841,6 +1841,74 @@ Signed errors, head render against photo, % of eye spacing:
   ref-woman's lower face renders 6-12 short of the photo's. Ears and small
   photos as before.
 
+## Upscaling a small face, against ground truth
+
+photo-16 (477 x 642, face 214 px cheek to cheek) was shrunk (Lanczos) until
+its face was 40 px and 80 px wide. Each small version was then read three
+ways: as it is, enlarged back to full size with bicubic, and enlarged with
+Lanczos. An avatar was built from each and compared with the avatar built from
+the original photo.
+
+Real-ESRGAN was not run. Its code is BSD-3, but the released weights were
+trained on DF2K + OST: DIV2K's licence says it is "made available for academic
+research purpose only", and Flickr2K is scraped Flickr under mixed licences.
+It fails the training-data rule, as does nearly every learned upscaler
+(DIV2K is the field's standard set).
+
+| | landmarks | depth | head mm (mean / worst) | face texture dE | fine detail | brow colour dE | iris dE |
+|---|---|---|---|---|---|---|---|
+| 40 px, as is | 0.71 | 0.76 | 1.14 / 6.5 | 2.9 | 0.80 | 11.4 | 4.4 |
+| 40 px, bicubic | 0.69 | 0.45 | 0.97 / 6.4 | 2.0 | 0.84 | 8.7 | 3.7 |
+| 40 px, Lanczos | 0.71 | 0.30 | 0.99 / 6.0 | 1.9 | 0.85 | 7.0 | 3.3 |
+| 80 px, as is | 0.29 | 0.25 | 0.38 / 1.2 | 1.8 | 0.86 | 4.9 | 2.7 |
+| 80 px, bicubic | 0.30 | 0.29 | 0.28 / 0.8 | 1.3 | 0.89 | 3.9 | 3.2 |
+| 80 px, Lanczos | 0.33 | 0.26 | 0.34 / 2.2 | 1.2 | 0.91 | 2.6 | 2.1 |
+| 80 px, Lanczos to 250 px | | | 0.51 / 2.6 | 1.5 | 0.90 | | 2.4 |
+
+The landmark and depth columns are the mean error against the original
+photo's landmarks, as % of eye spacing, with position and size taken out.
+Head mm is the head mesh against the original avatar's. Face texture dE is
+the mean CIE76 colour difference over the face in the baked head texture.
+Fine detail is how well the texture's high-pass correlates with the
+original's (1 = all of it). Brow colour is `facetexture.brow_colour` on the
+photo. Iris is from the sidecar. Skin and hair colour stayed within 1.5 dE in
+every row, with no trend.
+
+- **Landmarks: no gain**, as found on photo-10 earlier ("Upscaling small
+  photos"). Read as it is, the 40 px face sits 2.8 off, evenly across the
+  face: half a small pixel of offset, a shift the fit ignores. With position
+  and size taken out, every reading of the 40 px face lands at 0.7 and every
+  reading of the 80 px face at 0.3, whichever upscaler was used.
+- **Head shape: no gain we can tell from noise.** Upscaling moved the head
+  0.1-0.15 mm closer, but enlarging the same 80 px face to 250 px instead of
+  214 moved it 0.17 mm *further*. Differences of that size come from the
+  scale alone. The 40 px avatar stays 1 mm off on average and 6 mm at
+  worst, whatever the upscaler.
+- **Texture: smoother, not sharper.** The face texture's colour error falls
+  2.9 -> 1.9 dE at 40 px and 1.8 -> 1.2 at 80, below the roughly 2.3 dE that
+  can be seen. No detail comes back. In the texture strip
+  (out/upscale/textures.png) every small version is equally soft, with no
+  brow hairs and no stubble.
+- **Brow colour is the largest gain**: 11.4 -> 7.0 dE at 40 px and
+  4.9 -> 2.6 at 80. `brow_colour` reads 3 x 3 pixel patches. On an 89 px wide
+  photo, a patch is 7% of the face's width and takes in skin; enlarged, it
+  covers less of the face. The colour only tints brow cards, and photo-16's
+  avatar wears none, so this avatar does not show it.
+
+**Verdict: no upscaler wins clearly.** Lanczos is slightly ahead of bicubic
+on texture, brows and iris. Both beat reading the small photo as it is only
+in colour sampling, by amounts at or below what can be seen. Neither moves
+the shape or brings back detail. What a 40 px face loses could only be
+guessed back by a learned restorer, and none trained on licence-clean data
+was found. One photo, shrunk cleanly: a real small photo also carries camera
+blur and JPEG loss.
+
+A pre-step was written and tested, but not merged. `fit_face(min_face_px=250)`
+enlarges a smaller face with Lanczos and finds it again, and the advice still
+reports the face at the size it was shot. The one gain worth having is
+cheaper to get directly: measure `brow_colour`'s patch in face widths, not
+pixels.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.
