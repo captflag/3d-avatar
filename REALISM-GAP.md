@@ -1374,6 +1374,48 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## A shape model trained on our own synthetic heads: better on synthetic, worse on photos
+
+`shape_model.py` (session notes: side-session-notes/shape-model.md) is a ridge
+regression trained on 4,466 of our own CC0 synthetic heads (`synth.py`). It
+predicts what the landmark fit gets wrong, from what the fit saw: placed
+landmarks, fitted weights, head pose and body. On 300 held-out synthetic
+heads it cuts the true face error from 6.04 to 4.32% of the eye spacing, the
+outline from 9.94 to 6.37 and the nose-length error by half. It also found
+that MediaPipe's jaw outline on those renders sits 5.9% outside the true jaw,
+so `fit_outline` makes the *true* jaw worse there (jaw edge 4.61 -> 7.43).
+
+Wired into compose as its notes propose (after `lip_volume`, single-photo
+builds) and measured on the five test faces, whole-face landmark error:
+
+| face | jaw fit, no model (kept) | model + jaw fit | model, no jaw fit | no model, no jaw fit |
+|---|---|---|---|---|
+| at the photo's pose | | | | |
+| ref-man | **1.88** | 2.68 | 2.61 | 2.05 |
+| ref-woman | **1.75** | 1.79 | 2.12 | 1.98 |
+| photo-10 | **1.85** | 2.20 | 2.10 | 1.98 |
+| photo-14 | **1.30** | 1.56 | 1.72 | 1.34 |
+| photo-16 | **1.29** | 1.35 | 1.66 | 1.35 |
+| level | | | | |
+| ref-man | **1.74** | 2.27 | 2.30 | 2.10 |
+| ref-woman | 2.69 | **2.39** | 2.76 | 2.86 |
+| photo-10 | **2.07** | 2.44 | 2.28 | 2.18 |
+| photo-14 | 2.92 | **2.46** | 2.61 | 2.75 |
+| photo-16 | 2.92 | **2.50** | 2.64 | 2.80 |
+
+At the photo's pose, the fair comparison, the current build wins on every
+face, so the model is not wired in. The level renders favour it on three
+faces, but level renders against tilted photos have been misleading before. The jaw fit
+beats no jaw fit on all five at the photo's pose. Whatever it does to the
+true jaw on synthetic heads, the outline MediaPipe reads off the render
+matches the photo's better with it, so it stays.
+
+Why the model can win on synthetic heads and lose on photos: it learned from
+MediaPipe's readings of our own renders, whose faces, lighting and skin
+differ from photographs. A model trained on renders corrects the renders'
+errors. The module and its notes stay in the repo so the training can be
+reproduced (`python shape_model.py` self-checks; data/ is git-ignored).
+
 ## Brows laid on the head the render draws; side lights and brow darkening measured and left out
 
 Three changes from two parallel sessions (notes in side-session-notes/
