@@ -27,6 +27,7 @@ from PIL import Image
 import appearance
 import skinned_glb
 import delight
+import photo_check
 import facetexture
 import garments
 import morph
@@ -36,7 +37,7 @@ from catalogue import (BODY_OBJ, build_item, catalogue, hair_colour, items_by_id
                        load_base, load_base_uv, srgb_to_linear, submesh, submesh_uv,
                        coverage_alpha)
 from generate import NoFaceFound, expression_of, fit_face, load_canonical_faces
-from rig import load_skeleton, rigid_binding, weight_table
+from rig import load_skeleton, load_weights, rigid_binding, weight_table
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -745,7 +746,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             gender: str = "male", wear: list[str] | None = None,
             face_patch: bool = False, pose: str = "relaxed",
             side_photos: list[pathlib.Path] | None = None,
-            hair_hint: str | None = None) -> dict:
+            hair_hint: str | None = None, hair_colour_hint: str | None = None) -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
@@ -821,6 +822,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     vertices = morph.correct(vertices, base, corr, morph.close_lips(person), average, shape_weights, expression,
                              front, np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks)
     vertices = morph.seal_lips(vertices, corr)
+    # The jaw's edge as the camera saw it, with the photo's expression off.
+    resting = person[:len(corr)] - morph.expression_offsets(base, front, expression)
+    u, _, vt = np.linalg.svd(np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)[:3, :3])
+    vertices = morph.fit_outline(vertices, morph.head_only(vertices, groups["body"], load_weights()),
+                                 resting, u @ vt)
 
     # The same expression taken off the landmarks the photo is baked through,
     # and the lips closed, so the photo's smile is warped back onto a relaxed
@@ -896,6 +902,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             if hair_rgb is None:
                 read = hair_reading["colour"] if hair_reading else None
                 hair_rgb = read if read is not None else hair_colour(photo, landmarks, cheeks)
+                # The photo check's colour name (photo_check.hair_colour_hint),
+                # where the page ran one, bounds how light the reading may be.
+                if hair_colour_hint:
+                    hair_rgb = photo_check.within_colour(hair_rgb, hair_colour_hint)
             colour = np.clip(dye_colour(hair_rgb) * float(item.get("colour_scale", 1.0)), 0, 255).astype(np.uint8)
         elif item.get("colour") == "from_brows":
             colour = facetexture.brow_colour(photo_rgb, landmarks)

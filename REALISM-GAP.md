@@ -1374,6 +1374,73 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## The jaw as the camera sees it; brows, pose and hair colour tried
+
+Measured at each photo's head pose (the studio's "Photo's head pose"),
+landmark error in % of the eye spacing, whole face and jaw.
+
+**The jaw fitted as a silhouette (`morph.fit_outline`), kept.** The fitted
+head (without the neck: faces bound mostly to head and jaw bones,
+`morph.head_only`) is turned by the photo's rotation and drawn. Each of the
+17 jaw landmarks is met along the ray from the nose tip. The silhouette
+vertex there is moved by the gap in the picture's plane and the move is spread
+like `correct`'s (reach 0.25 eye spacings). This repeats three times. On
+photo-16 the gaps go from up to 4.1% to 0.4% or less (one point 1.1).
+Depth moves are left out: with them, ref-woman's mouth read 0.1 worse.
+
+| face | before | jaw fit (beard landmarks at 0.15) | jaw fit (full trust) |
+|---|---|---|---|
+| ref-man | 1.99 / jaw 3.24 | 1.98 / 3.21 | 1.87 / 3.05 |
+| ref-woman | 1.83 / 2.85 | 1.81 / 2.66 | (no beard: same) |
+| photo-10 | 2.39 / 3.98 | 2.34 / 3.76 | 2.21 / 3.09 |
+| photo-14 | 1.36 / 2.55 | 1.26 / 2.44 | (same) |
+| photo-16 | 1.39 / 2.49 | 1.26 / 2.27 | (same) |
+
+Full trust on beards: the segmentation session found MediaPipe's jaw running
+along the jaw *under* a full beard (the segmented face edge 0.10-0.19 face
+widths outside it), the opposite of what `outline_trust` assumes. The rest
+of the fit still uses `outline_trust`; worth re-testing there.
+
+One regression: ref-woman's mouth reads 2.22 -> 2.89. Her lips themselves
+move under 0.1%. Her chin moves 2.8%, and the crease under her lower lip
+reads lower on the render.
+
+Level renders, compared with tilted photos as before: ref-man 2.15 -> 1.87
+and ref-woman 2.97 -> 2.52. The three tilted photos get slightly worse
+(+0.05 to +0.13), as expected now the jaw matches the photo as shot.
+
+**Brow height: three causes ruled out.** The rendered brows sit 1.5-6.7%
+above the photo's (inner ends most), level or posed.
+- *The fit:* brow-to-lid rows (105-159, 334-386) in PROPORTIONS left the
+  rendered brow height unchanged (photo-16 26.3 -> 26.5 above the lid,
+  photo 21-23) and the whole face slightly worse on three faces. Not kept.
+- *The bake:* traced through the build, the painted brow sits 18.7/19.3
+  above the lid against the photo's 18.3/18.9 (eye-corner spacings). The
+  paint is where the photo has it.
+- *The lid drop (4 degrees):* rendered without it, ref-man's brows read the
+  same.
+- *`tighten_brows` thickening the fringe:* darkening only the brow's core
+  thinned photo-16's brows by 1 (36 -> 35, photo 27). The whole face got
+  worse on three faces, and the brows lighter than the photo's. Not kept.
+Still open: the rendered brows read 25-30% thicker than the photo's and
+higher, while the texture is right. That points at how the brow area
+renders: the ridge's shading and ambient occlusion under the brow.
+
+**Head pose from the forehead, eyes and nose bridge: set aside.** On the
+laughing photo-10, MediaPipe's head transform reads 11.2 degrees of pitch
+where a rigid fit of the average face to 30 landmarks a laugh does not move
+reads 3.0. With that reading: photo-10 2.24 -> 1.93, ref-woman 1.78 -> 1.73,
+but ref-man 1.88 -> 2.21. The level bias of the stable reading varies by face
+(-2.2 to 2.8 degrees), so one constant does not fit. Taking the same reading
+off the avatar's own landmark vertices was worse on all five. Kept: MediaPipe's
+transform less 3.3 degrees. A fix needs the level render read per avatar.
+
+**Hair colour from the photo check, kept.** The studio now passes the
+check's hair colour name with the haircut. A reading outside that name's
+lightness range (`photo_check.HAIR_LIGHTNESS`) is pulled to its nearer end,
+keeping its hue. On sk-22, "black" takes the read (75, 70, 80) to (55, 51,
+60). Without a check, nothing changes.
+
 ## Where the face is lost: reading, fitting, rendering
 
 Each stage measured on its own, in the upright front-on frame (% of the eye
