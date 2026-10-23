@@ -1914,6 +1914,38 @@ reports the face at the size it was shot. The brow colour a 40 px face
 loses is gone from its pixels, so neither enlarging nor a different patch
 brings it back.
 
+## The photo check on the three sk photos
+
+`photo_check.py` (claude-sonnet-5-5, off without `ANTHROPIC_API_KEY`) on
+uploads/sk-20.png, sk-21.png and sk-22.png: three 148x148 photos of one man,
+the set whose builds disagreed by 5-8% of the eye spacing. Beside it, what the
+pipeline measures (face width in pixels from the landmarks, head pose from
+MediaPipe's transform):
+
+| photo | pipeline | check: issues | check: hair, face |
+|---|---|---|---|
+| sk-20 | face 35 px; yaw 23, pitch 3, roll -12 | sunglasses, face too small, head turned, side lighting | short, swept up and back (hair_short02); black; stubble; sunglasses |
+| sk-21 | face 45 px; yaw 15, pitch 12, roll -5 | face too small, blurred, head turned | short, swept back (hair_short02); black; none |
+| sk-22 | face 43 px; yaw -11, pitch 11, roll -6 | face too small, head turned, head tilted, blurred | short, swept up and back (hair_short02); black; stubble |
+
+All three come back unusable, which is right: none should be built from as it
+is. Where the pipeline can measure, the two agree: every face is far under
+250 px, and every head is turned over 10 degrees. What MediaPipe says nothing
+about, the check catches: the sunglasses on sk-20 (until now the build fitted
+eyes behind dark lenses without a word), blur on sk-21 and sk-22, and hard
+light from one side on sk-20. It did not call sk-21 tilted at a 12 degree
+pitch, though it did call sk-22 tilted at 11, so near the threshold it is a
+judgement call.
+
+The haircut agrees with the segmentation rules (hair_short02 on all three).
+Here the segmentation found hair to measure, so the check's cut is not used.
+It is used only where the reading finds none, and on the five test faces a
+hint changes nothing (identical GLBs). Its "stubble" on sk-20 and sk-22 sits
+beside jaw_beard 0.25 and 0.49, so only sk-22's beard is carried. Its
+"black" hair is closer than the pipeline's read on sk-22, which is grey
+(75, 70, 80) where the others read 16-32: a soft, highlit photo. Neither is
+acted on yet.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.
