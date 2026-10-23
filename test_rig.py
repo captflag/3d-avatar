@@ -22,6 +22,7 @@ from compose import compose, rest_pose
 from generate import load_canonical_faces
 from garments import GARMENT_DIR, deform, make_test_vest, skinning_matrices, transfer_weights
 from rig import MAX_INFLUENCES, load_skeleton, weight_table
+import skinned_glb
 from skinned_glb import axis_angle
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -75,6 +76,20 @@ def check_export():
 
         print(f"ok  export: {len(skin.joints)} joints, "
               f"{len(gltf.meshes[0].primitives)} primitives, all skinned")
+
+        # The compat copy for old viewers: no quantisation left, same geometry.
+        compat = pathlib.Path(tmp) / "compat.glb"
+        compat.write_bytes(skinned_glb.dequantised(out.read_bytes()))
+        old = gl.GLTF2().load(str(compat))
+        assert "KHR_mesh_quantization" not in (old.extensionsUsed or []) + (old.extensionsRequired or [])
+        for primitive in old.meshes[0].primitives:
+            for name in ("NORMAL", "TEXCOORD_0"):
+                index = getattr(primitive.attributes, name)
+                if index is not None:
+                    assert old.accessors[index].componentType == gl.FLOAT, f"{name} still quantised"
+        assert old.accessors[old.meshes[0].primitives[0].attributes.POSITION].count \
+            == gltf.accessors[gltf.meshes[0].primitives[0].attributes.POSITION].count
+        print("ok  compat export: normals and UVs as floats, KHR_mesh_quantization dropped")
 
 
 def check_transfer():
