@@ -239,6 +239,24 @@ def photo_head_pose(result, landmarks, photo) -> list[float] | None:
                                * Rotation.from_euler("x", level, degrees=True).inv()).as_quat()]
 
 
+def level_upper_face(sheet: np.ndarray) -> np.ndarray:
+    """The placed sheet above the eyes turned by LEVEL_READ_PITCH.
+
+    The sheet is the photo's landmarks turned upright by MediaPipe's whole head
+    rotation, but the render turns the head back by that rotation less
+    LEVEL_READ_PITCH. Paint laid on the one head and drawn on the other moves
+    the brow ridge (forward of the eyes) and the lid (behind them) apart: the
+    brows rendered 1-3.6% of the eye spacing high and a fifth thicker. Turned
+    in full from the eye line up, and not at all from the nose tip down, so the
+    nose and mouth stay where they were placed."""
+    from scipy.spatial.transform import Rotation
+    turn = Rotation.from_euler("x", LEVEL_READ_PITCH, degrees=True).as_matrix()
+    eyes = sheet[[33, 133, 263, 362]].mean(axis=0)
+    turned = (sheet - eyes) @ turn.T + eyes
+    share = np.clip((sheet[:, 1] - sheet[1, 1]) / (eyes[1] - sheet[1, 1]), 0.0, 1.0)[:, None]
+    return sheet + share * (turned - sheet)
+
+
 def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
     """The placed landmark sheet with its mouth moved onto the mesh's own.
 
@@ -888,6 +906,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
+    full_face.vertices = level_upper_face(full_face.vertices)
     full_face.vertices = mouth_onto_mesh(full_face.vertices, vertices, corr)
     full_face.vertices = eyes_onto_mesh(full_face.vertices, vertices, corr)
     placed = trim_face_border(full_face)

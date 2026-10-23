@@ -47,18 +47,14 @@ SKIN_CEILING = 0.45
 RENDER_LIFT = 1.35
 # The skin itself is written for the renderer as it is: its lights multiply
 # the albedo by RENDER_LIGHT at the cheek, and its tone curve (three.js
-# NeutralToneMapping at exposure 1.0) then compresses whatever comes out
+# NeutralToneMapping at exposure 1.05) then compresses whatever comes out
 # light. Measured by rendering each test head as built and again unlit: on
 # the cheeks 1.9-2.2 before the curve, the same at 0.5, 1 and 1.35 times
 # photo-16's texture. The plain 1.35 above held for light skin only, which
 # the curve squeezes; tan skin sits below the curve's shoulder and photo-16
 # rendered 20 L* light on the cheeks and 26 on the forehead.
-# 2.0 at exposure 1.05 until the studio gained its side lights and dropped to
-# 1.0; at delight's cheek landmarks the five test heads now get 1.95-2.2
-# (mean 2.1), the same light times exposure as before, so the skin is written
-# as it was.
-RENDER_LIGHT = 2.1
-RENDER_EXPOSURE = 1.0
+RENDER_LIGHT = 2.0
+RENDER_EXPOSURE = 1.05
 # How much of the fitted shading to remove (1 = all of it), and the most any
 # pixel may be brightened or darkened.
 STRENGTH = 0.7

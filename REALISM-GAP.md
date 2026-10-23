@@ -1374,6 +1374,54 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Brows laid on the head the render draws; side lights and brow darkening measured and left out
+
+Three changes from two parallel sessions (notes in side-session-notes/
+light-direction.md and brow-render.md). Each was measured on the merged
+build at the photo's pose and level, with the same build rendered twice to
+read the noise (0.06 at most per face).
+
+**Upper face turned by LEVEL_READ_PITCH before the carries
+(`compose.level_upper_face`), kept.** The brow session found the paint
+stretched 1.2-1.35x through brow and lid. The sheet is upright by
+MediaPipe's full head rotation, but the render turns the head back by that
+less 3.3 degrees, so the brow ridge (forward of the eyes) and the lid
+(behind them) part. Turning the sheet above the eyes by the same 3.3
+degrees, in full at the eye line and fading out by the nose tip, gives these
+results (whole face / brows):
+
+| face | at pose before | at pose after | level before | level after |
+|---|---|---|---|---|
+| ref-man | 1.82 / 1.58 | 1.90 / 0.96 | 1.73 / 1.67 | 1.74 / 1.25 |
+| ref-woman | 1.77 / 3.24 | 1.76 / 2.89 | 2.55 / 3.06 | 2.66 / 2.71 |
+| photo-10 | 1.95 / 3.17 | 1.84 / 2.23 | 2.22 / 3.05 | 2.05 / 2.37 |
+| photo-14 | 1.27 / 3.75 | 1.28 / 3.08 | 3.01 / 4.84 | 2.91 / 3.89 |
+| photo-16 | 1.30 / 3.52 | 1.28 / 2.65 | 3.01 / 4.80 | 2.94 / 4.01 |
+
+The brows improve on every face in both views. The whole face is better on
+balance (pose -0.05 summed, level -0.22). ref-man pays 0.08 at pose: his
+photo is near level and 3.3 degrees is too much for him. A per-avatar level
+reading would fix both this and the photo pose.
+
+**Side lights at +-100 degrees, room tipped 37 (light-direction session),
+left out.** The skin's brightness against the photo improves (render minus
+photo L*, forehead + cheeks + chin summed over five faces: at pose 189 ->
+155, level 134 -> 131; the session's jaw sums halve). But MediaPipe reads the
+faces worse under the softer light. At pose ref-man goes 1.82 -> 2.00/2.02,
+photo-14 1.27 -> 1.40/1.42 and photo-16 1.30 -> 1.42/1.46 (two renders each);
+ref-woman and photo-10 are unchanged. The wrapped light flattens the jaw and
+cheek shading the outline is read from. Kept out on the measure that has
+decided every change so far. It stays on its branch,
+refs/heads/claude/light-direction-c5e391, if brightness should win over
+landmark error.
+
+**`tighten_brows` stopped at the brow, gain 1.6 -> 1.25 (brow session),
+left out.** With the old lights, ref-woman's whole face goes 1.77 ->
+1.95/1.93 (two renders); the other four are unchanged within 0.06. The brow
+session's own four-render average had her at +0.02; here, after the jaw fit
+and pose changes, it is +0.17. The change is on
+refs/heads/claude/brow-render-3a264c.
+
 ## The laughing face's head pose; ref-woman's mouth after the jaw fit
 
 **Head pose read from the forehead and eyes where a laugh bends MediaPipe's,

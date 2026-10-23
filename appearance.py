@@ -328,15 +328,7 @@ LASH_KEEP = 1.0
 LOWER_LASH = 0.4          # the lower lid's line, as a share of the upper's width and darkness
 # Brows: pixels darker than the brow's surrounding skin are pulled darker by
 # this gain, so a brow blurred by a small photo keeps its density and edge.
-# 1.6 took the rendered brows 14-34 L* darker than the photos' on all five
-# test faces once the skin was written for the studio's tone curve; at 1.25
-# (and stopped at the brow's lower edge, BROW_BELOW) they are 1-21 darker.
-BROW_GAIN = 1.25
-# How far below the brow's lower contour the darkening reaches, as a share of
-# the brow's width. The region round the brow ran down onto the lid, and the
-# lid's crease and the socket's shading under the brow went dark with the
-# hair: the rendered brow's dark band came out up to a quarter wider.
-BROW_BELOW = 0.06
+BROW_GAIN = 1.6
 
 
 # How much of the face's fine contrast is put back after de-lighting
@@ -418,7 +410,7 @@ def tighten_brows(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
     pixels tall). Inside a region round each brow's landmarks, pixels darker
     than the region's skin are pushed darker by BROW_GAIN about that skin
     level, which tightens the edge and restores the density; pixels at or
-    above skin level, and the lid below the brow, are left alone."""
+    above skin level are left alone."""
     from facetexture import BROW_LANDMARKS
     if len(landmarks) <= max(BROW_LANDMARKS):
         return skin_rgb
@@ -439,10 +431,7 @@ def tighten_brows(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
         # No darker than the brow's own darkest hairs: on a sharp photo with
         # dark brows the gain alone took them to black.
         floor = np.percentile(lab[..., 0][region], 3)
-        lower = pts[5:][np.argsort(pts[5:, 0])]
-        below = np.arange(h)[:, None] > (np.interp(np.arange(w), lower[:, 0], lower[:, 1])
-                                         + BROW_BELOW * np.ptp(lower[:, 0]))[None, :]
-        deeper = region & ~below & (lab[..., 0] < skin)
+        deeper = region & (lab[..., 0] < skin)
         lab[..., 0][deeper] = np.maximum(skin - (skin - lab[..., 0][deeper]) * BROW_GAIN, floor)
         changed |= deeper
     out = skin_rgb.copy()
