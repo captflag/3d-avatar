@@ -1374,6 +1374,43 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Combined: jaw fit, skin exposure from the tone curve, stubble
+
+The jaw fit (below) is merged with the forehead/stubble work and the
+segmentation measurements. That work changes two things: delight.py sets
+exposure so the cheeks render at the photo's brightness under the studio's
+tone curve (`delight.rendered`, in place of the fixed 1.35), and
+`appearance.stubble` adds hair-sized grain where the de-lit photo is darker
+than the cheeks below the nose (nothing below jaw_beard 0.15). Built
+together:
+
+Landmark error at the photo's pose (whole face):
+
+| face | start of round | jaw fit | combined |
+|---|---|---|---|
+| ref-man | 1.99 | 1.88 | 1.83 |
+| ref-woman | 1.83 | 1.78 | 1.81 |
+| photo-10 | 2.39 | 2.24 | 2.18 |
+| photo-14 | 1.36 | 1.27 | 1.26 |
+| photo-16 | 1.39 | 1.27 | 1.29 |
+
+Brightness, render minus photo, L* (0-255) at forehead / cheeks / chin, on
+level renders (the default):
+
+| face | before | combined |
+|---|---|---|
+| ref-man | -3 / -4 / +34 | -3 / -4 / +28 |
+| ref-woman | 0 / +8 / +35 | -4 / +1 / +27 |
+| photo-10 | -1 / +9 / +26 | -5 / +1 / +16 |
+| photo-14 | +22 / +10 / +23 | +7 / -13 / -3 |
+| photo-16 | +24 / +11 / +25 | +9 / -12 / -2 |
+
+On photo-14/16 the forehead and chin come close, but the cheeks swing from
+11 too light to 12 too dark. At the photo's pose those two read +21 / -19 /
+-14 (from +29 / +4 / +13): the studio's lights are more top-down than the
+photo's, and pitching the head moves the light across it. Lighting that
+matches the photo's direction is the open item.
+
 ## The jaw as the camera sees it; brows, pose and hair colour tried
 
 Measured at each photo's head pose (the studio's "Photo's head pose"),

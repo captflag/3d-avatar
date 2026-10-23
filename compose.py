@@ -1050,6 +1050,9 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     head_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces,
                                     sampler, face_centre, face_radius, skin_rgb, head_base,
                                     size=head_size, blend="none")
+    # A beard's hairs are finer than the photo's pixels: grain where it was.
+    head_texture = appearance.stubble(head_texture, vertices, head_faces, head_uv_all, head_uv_faces,
+                                      sampler, skin_rgb, cheeks, jaw_beard, landmarks)
     # The haircut's cards if there are any, else a buzz cut's scalp layer.
     hair_meshes = [(("mhclo" in item), m) for item, m in worn if item["category"] == "hair"]
     haircut = max(hair_meshes, key=lambda pair: pair[0])[1] if hair_meshes else None
