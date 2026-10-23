@@ -1374,6 +1374,29 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## The laughing face's head pose; ref-woman's mouth after the jaw fit
+
+**Head pose read from the forehead and eyes where a laugh bends MediaPipe's,
+kept.** `photo_head_pose` now also fits MediaPipe's average face to 30
+landmarks an expression hardly moves (`POSE_LANDMARKS`). Where that reading's
+pitch and MediaPipe's part by more than 5 degrees, the stable one is used
+(less its own level reading, 1.0 degree). The readings part by 0.7-3.5 on
+four test faces, so those keep MediaPipe's. On the laughing photo-10 they part
+by 8.2, and photo-10 is the one face that switches. Landmark error at the
+photo's pose: photo-10 2.18 -> 1.95 (nose 3.20 -> 1.85, mouth 1.94 -> 1.42,
+jaw 3.23 -> 5.16, the jaw having been fitted at MediaPipe's pose). The other
+four are unchanged within 0.04.
+
+**ref-woman's mouth (2.22 -> 3.05 since the jaw fit), two attempts, neither
+kept:**
+- *The jaw's pull faded to nothing within 0.2 eye spacings of the lower lip
+  and corners:* ref-woman's mouth 3.05 -> 3.19, ref-man 1.83 -> 1.88.
+- *The photo placed (place_face) by the head before the jaw fit*, since the
+  chin is one of its anchors: ref-woman's mouth 3.05 -> 2.88, but the
+  whole face worse on four faces (ref-man 1.83 -> 1.92, photo-10 2.18 -> 2.22,
+  photo-14 1.26 -> 1.32).
+The mouth stays the jaw fit's one cost.
+
 ## Combined: jaw fit, skin exposure from the tone curve, stubble
 
 The jaw fit (below) is merged with the forehead/stubble work and the

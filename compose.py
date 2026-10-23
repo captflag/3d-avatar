@@ -36,7 +36,7 @@ import views
 from catalogue import (BODY_OBJ, build_item, catalogue, hair_colour, items_by_id,
                        load_base, load_base_uv, srgb_to_linear, submesh, submesh_uv,
                        coverage_alpha)
-from generate import NoFaceFound, expression_of, fit_face, load_canonical_faces
+from generate import NoFaceFound, build_mesh, expression_of, fit_face, load_canonical_faces
 from rig import load_skeleton, load_weights, rigid_binding, weight_table
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -195,20 +195,48 @@ EYE_CARRY = 0.7
 # pose is taken relative to it, so a photo read as level gives a level head.
 # ponytail: one constant for every avatar; measure per avatar if it matters.
 LEVEL_READ_PITCH = 3.3
+# Landmarks an expression hardly moves: forehead, brows, eye corners, the
+# nose's bridge and the temples; the pitch a rigid fit to them alone reads on
+# our level renders (-2.2 to 2.8, mean 1.0); and how far it may disagree with
+# MediaPipe's before MediaPipe's is taken to be bent by the expression.
+POSE_LANDMARKS = [10, 151, 9, 8, 168, 6, 197, 195, 33, 133, 263, 362, 70, 63, 105, 66, 107,
+                  300, 293, 334, 296, 336, 127, 356, 162, 389, 21, 251, 54, 284]
+STABLE_LEVEL_PITCH = 1.0
+POSE_DISAGREE = 5.0
 
 
-def photo_head_pose(result) -> list[float] | None:
+def _pitch(rotation) -> float:
+    return float(np.degrees(np.arctan2(rotation[2, 1], rotation[2, 2])))
+
+
+def photo_head_pose(result, landmarks, photo) -> list[float] | None:
     """How the head was turned in the photo, as a quaternion (x y z w) in the
     scene's axes, for a viewer that renders the head as photographed. Test
     photos are shot 4-12 degrees from level; compared with a level render, that
     pitch was charged to the nose and jaw, 1-1.5% of the eye spacing of
-    landmark error."""
+    landmark error.
+
+    MediaPipe's head transform, unless an expression has bent it: it is fitted
+    to every landmark, and on a laughing photo the raised cheeks and dropped
+    jaw read as 11 degrees of pitch where the forehead and eyes alone show 3.
+    Where the two readings part by more than POSE_DISAGREE, the rigid fit of
+    MediaPipe's average face to POSE_LANDMARKS is taken instead. Not always:
+    its own level reading varies more from face to face (-2.2 to 2.8 against
+    MediaPipe's 1.5-4.5), and taken on every face it cost ref-man 0.33."""
     from scipy.spatial.transform import Rotation
     if not result.facial_transformation_matrixes:
         return None
     u, _, vt = np.linalg.svd(np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)[:3, :3])
-    level = Rotation.from_euler("x", LEVEL_READ_PITCH, degrees=True)
-    return [float(c) for c in (Rotation.from_matrix(u @ vt) * level.inv()).as_quat()]
+    turn, level = u @ vt, LEVEL_READ_PITCH
+    points = np.asarray(build_mesh(landmarks, load_canonical_faces(), photo, None).vertices)[POSE_LANDMARKS]
+    average = np.asarray(morph.canonical_face().vertices)[POSE_LANDMARKS]
+    a, b = average - average.mean(axis=0), points - points.mean(axis=0)
+    u, _, vt = np.linalg.svd(a.T @ b)
+    stable = (u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt).T
+    if abs(_pitch(turn) - _pitch(stable)) > POSE_DISAGREE:
+        turn, level = stable, STABLE_LEVEL_PITCH
+    return [float(c) for c in (Rotation.from_matrix(turn)
+                               * Rotation.from_euler("x", level, degrees=True).inv()).as_quat()]
 
 
 def mouth_onto_mesh(sheet: np.ndarray, vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
@@ -1260,7 +1288,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES,
                        expression=morph.photo_expression(expression_of(result)),
-                       head_pose=photo_head_pose(result))
+                       head_pose=photo_head_pose(result, landmarks, photo))
 
     info = {
         "advice": photo_advice(landmarks, (pw, ph), expression_of(result)),
