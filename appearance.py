@@ -822,6 +822,87 @@ OUTER_LIPS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 
 BEARD_REACH = 0.8          # mesh units, ~8 cm: how far a beard is carried under the jaw
 
 
+def _lips_and_nostrils(landmarks, photo_size: tuple[int, int]) -> np.ndarray:
+    """Photo-space mask (0/1) of the lips and the nose's base, grown a little:
+    dark like a beard, never one."""
+    w, h = photo_size
+    exclude = np.zeros((h, w), np.uint8)
+    lips = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in OUTER_LIPS], np.int32)
+    cv2.fillPoly(exclude, [lips], 1)
+    from delight import NOSE_BASE
+    nose = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in NOSE_BASE], np.int32)
+    cv2.fillConvexPoly(exclude, cv2.convexHull(nose), 1)
+    grow = max(int(0.15 * np.ptp(lips[:, 0])), 1)
+    return cv2.dilate(exclude, np.ones((2 * grow + 1,) * 2, np.uint8))
+
+
+# Stubble: below STUBBLE_FROM jaw_beard (appearance.outline_trust) the face is
+# taken as shaven and left alone; ref-woman reads 0.06, photo-16's stubble
+# 0.28. Below the nose, skin from STUBBLE_DARKER L* (0-255) under the cheeks'
+# is read as hair, fully at STUBBLE_DARKER + STUBBLE_RAMP. STUBBLE_CONTRAST
+# is how far a hair darkens the skin at full density; STUBBLE_GRAIN a hair's
+# width in texels of a 2048 map (each about 0.2 mm on the face), drawn twice
+# as long down the face.
+STUBBLE_FROM = 0.15
+STUBBLE_DARKER, STUBBLE_RAMP = 6.0, 30.0
+STUBBLE_CONTRAST = 0.4
+STUBBLE_GRAIN = 0.6
+
+
+def stubble(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.ndarray,
+            sampler, skin_rgb: np.ndarray, cheek_pixels: np.ndarray, jaw_beard: float, landmarks):
+    """Fine specks of hair over the photo's beard and stubble, so it reads as hair.
+
+    A beard's hairs are finer than a small photo's pixels: on a 214-pixel face
+    a pixel is about 0.7 mm, and baked onto a 2048 map each is stretched over
+    three or four texels, so stubble came out as a smooth grey smudge and a
+    full beard as blotches. Where the de-lit photo (`skin_rgb`) is darker than
+    the cheeks below the nose, the texture is multiplied by zero-mean noise of
+    hair-sized specks, in proportion to how much darker: the photo's own
+    darkness, its average, stays as it was and only the grain is added. Lips
+    and nostrils are kept out, and a face whose jaw reads shaven is left
+    alone. Returns the texture, or the one given.
+
+    ponytail: every hair drawn short and straight down the face, whichever
+    way it grows there; a full beard's strands under the jaw are
+    beard_underside's.
+    """
+    from PIL import Image
+    from facetexture import rasterize
+
+    if jaw_beard < STUBBLE_FROM:
+        return texture
+    h, w = skin_rgb.shape[:2]
+    lightness = cv2.cvtColor(np.ascontiguousarray(skin_rgb, dtype=np.uint8), cv2.COLOR_RGB2LAB)[..., 0].astype(np.float64)
+    xs = np.clip(cheek_pixels[:, 0].astype(int), 0, w - 1)
+    ys = np.clip(cheek_pixels[:, 1].astype(int), 0, h - 1)
+    darker = np.clip((np.median(lightness[ys, xs]) - lightness - STUBBLE_DARKER) / STUBBLE_RAMP, 0.0, 1.0)
+    nose_y, chin_y = landmarks[1].y * h, landmarks[152].y * h
+    below = np.clip((np.arange(h)[:, None] - nose_y) / max(0.1 * (chin_y - nose_y), 1.0), 0.0, 1.0)
+    hair = cv2.GaussianBlur(darker * below * (1 - _lips_and_nostrils(landmarks, (w, h))), (0, 0), max(0.004 * w, 0.8))
+
+    # Each texel's photo pixel, from the vertices' through their triangles.
+    pixels, strength = sampler.sample(vertices)
+    on = (pixels[:, 1] > nose_y)[faces].any(axis=1) & (strength[faces].max(axis=1) > 0)
+    if not on.any():
+        return texture
+    size = texture.size[0]
+    at = lambda values: rasterize(values, faces[on], uv, uv_faces[on], size, fill=0.0).astype(np.float32)
+    density = cv2.remap(hair.astype(np.float32), at(pixels[:, 0]), at(pixels[:, 1]), cv2.INTER_LINEAR) * at(strength)
+
+    # Down the face runs along u on the head's map (see beard_underside).
+    grain = cv2.GaussianBlur(np.random.default_rng(11).standard_normal((size, size)).astype(np.float32),
+                             (0, 0), sigmaX=2 * STUBBLE_GRAIN * size / 2048, sigmaY=STUBBLE_GRAIN * size / 2048)
+    specks = np.clip(grain / grain.std() - 0.6, 0.0, 1.0)     # about a quarter of the skin: dense, fine
+    specks -= specks.mean()
+    pixels_in = np.asarray(texture).astype(np.float64)
+    rgb = pixels_in[..., :3] * (1.0 - STUBBLE_CONTRAST * density * specks)[..., None]
+    out = np.clip(rgb, 0, 255).astype(np.uint8)
+    if texture.mode == "RGBA":
+        return Image.fromarray(np.dstack([out, pixels_in[..., 3].astype(np.uint8)]), "RGBA")
+    return Image.fromarray(out, "RGB")
+
+
 def beard_underside(head, head_uv: np.ndarray, head_texture, sampler, facial_hair_map: np.ndarray,
                     landmarks, photo_size: tuple[int, int], onto=None):
     """A texture with a beard carried round under the jaw.
@@ -851,14 +932,7 @@ def beard_underside(head, head_uv: np.ndarray, head_texture, sampler, facial_hai
 
     target, target_uv, texture = onto if onto is not None else (head, head_uv, head_texture)
     w, h = photo_size
-    exclude = np.zeros((h, w), np.uint8)
-    lips = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in OUTER_LIPS], np.int32)
-    cv2.fillPoly(exclude, [lips], 1)
-    from delight import NOSE_BASE
-    nose = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in NOSE_BASE], np.int32)
-    cv2.fillConvexPoly(exclude, cv2.convexHull(nose), 1)
-    grow = max(int(0.15 * np.ptp(lips[:, 0])), 1)
-    exclude = cv2.dilate(exclude, np.ones((2 * grow + 1,) * 2, np.uint8))
+    exclude = _lips_and_nostrils(landmarks, photo_size)
     beard_map = facial_hair_map * (1 - exclude)
 
     pixels, strength = sampler.sample(head.vertices)
