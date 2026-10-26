@@ -1410,8 +1410,26 @@ and scored (avatar against its own photo):
   identity does not improve. Those vertices are already the nostril wing's
   outermost point at that height (within 0.1%). So the extra width is in
   how the nose renders (the shading and paint round the alae), not its
-  shape. Not kept. Next for the nose: a flat-colour render against the
-  textured one would say whether the paint or the lighting widens it.
+  shape. Not kept.
+- **What widens the nose: no single cause.** Each head was rendered level
+  three ways: textured as built, flat skin colour (shape only), and its
+  texture unlit. The nose width MediaPipe read, in % of the iris spacing
+  against the photo:
+
+  | face | textured | flat colour | texture unlit |
+  |---|---|---|---|
+  | ref-man | +4.2 | -1.5 | +0.5 |
+  | ref-woman | +5.0 | +5.6 | +9.0 |
+  | photo-10 | +3.4 | +6.3 | +2.7 |
+  | photo-14/16 | -2.8 | +1.5 | -5.2 |
+
+  On ref-man the texture under the studio's light widens it. On ref-woman
+  and photo-10 the bare shape already reads wide, although the mesh
+  matches the photo at the landmarks: MediaPipe reads MakeHuman's rounded
+  alae as wider. On photo-14/16 the texture narrows it. One nose swings
+  5-10% between the three versions, so MediaPipe's nose width on a render
+  is too unsteady to steer by. No single fix to paint, light or shape helps
+  every face; none was made. The nose is left to the identity score.
 
 ## An identity score as the keep/drop measure; the side lights back in
 
