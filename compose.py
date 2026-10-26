@@ -924,6 +924,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # lip colour so no teeth get baked across the lips.
     skin_rgb, mouth_filled = appearance.fill_mouth(skin_rgb, landmarks, cheeks)
     skin_rgb = appearance.fill_eyes(skin_rgb, landmarks)
+    # The nostrils are the mesh's own.
+    skin_rgb = appearance.fill_nostrils(skin_rgb, landmarks, keep_out=facial_hair)
     # The lash line back on the lids, and the brows as dense as the photo's.
     skin_rgb = appearance.paint_lashes(skin_rgb, photo_rgb, landmarks)
     skin_rgb = appearance.tighten_brows(skin_rgb, landmarks)

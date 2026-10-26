@@ -525,6 +525,39 @@ def fill_mouth(skin_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray | None 
     return filled, True
 
 
+# A nostril, in the photo: this much darker (OpenCV L, 0-255) than the
+# median of the nose's base around it.
+NOSTRIL_DARK = 18.0
+
+
+def fill_nostrils(skin_rgb: np.ndarray, landmarks, keep_out: np.ndarray | None = None) -> np.ndarray:
+    """The photo with its nostrils' darkness filled from the skin round them.
+
+    The mesh's nose casts its own dark under the tip and alae, and the
+    photo's nostrils, baked on top, landed on the alae and tip instead
+    (ref-woman's 5.5% of the iris spacing above the mesh's): two sets.
+    Carrying the photo's nose base onto the mesh's landmark vertices did
+    not move them, as the mesh's nostrils are not where MediaPipe's points
+    sit on it. `keep_out` (0-1, photo pixels): facial hair, dark but no
+    nostril; filled, ref-man's moustache cost his landmark error 0.1."""
+    from delight import NOSE_BASE
+    h, w = skin_rgb.shape[:2]
+    base = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in NOSE_BASE], np.int32)
+    region = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(region, cv2.convexHull(base), 1)
+    if not region.any():
+        return skin_rgb
+    lab = cv2.cvtColor(np.ascontiguousarray(skin_rgb), cv2.COLOR_RGB2LAB)
+    light = lab[..., 0].astype(np.float32)
+    dark = (region > 0) & (light < np.median(light[region > 0]) - NOSTRIL_DARK)
+    if keep_out is not None:
+        dark &= keep_out < 0.2
+    dark = dark.astype(np.uint8)
+    grow = max(int(0.02 * np.ptp(base[:, 0])), 1)
+    dark = cv2.dilate(dark, np.ones((2 * grow + 1,) * 2, np.uint8))
+    return cv2.inpaint(np.ascontiguousarray(skin_rgb), dark, max(3, 2 * grow), cv2.INPAINT_TELEA)
+
+
 # What the lips are shifted by before the bake, in OpenCV LAB, so they render
 # as the photo shows them against the cheek: rendered, they came out 4.2 L*
 # lighter and 2.4 b* yellower on average over the five test faces. The
