@@ -929,6 +929,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # lip colour so no teeth get baked across the lips.
     skin_rgb, mouth_filled = appearance.fill_mouth(skin_rgb, landmarks, cheeks)
     skin_rgb = appearance.fill_eyes(skin_rgb, landmarks)
+    # The lids lighter than the brow's shade the photo shows over them.
+    skin_rgb = appearance.lift_lids(skin_rgb, landmarks)
     # The nostrils are the mesh's own.
     skin_rgb = appearance.fill_nostrils(skin_rgb, landmarks, keep_out=facial_hair)
     # The lash line back on the lids. The brows are left as the photo has them:

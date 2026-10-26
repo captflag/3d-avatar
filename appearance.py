@@ -336,6 +336,51 @@ def fill_eyes(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
     return cv2.inpaint(np.ascontiguousarray(skin_rgb), opening, 5, cv2.INPAINT_TELEA)
 
 
+# How far the paint on the upper lid, between the eye and the brow, is lifted
+# towards the forehead's lightness (L* only). The photo's lid is a thin band
+# of skin under the brow's shade; the mesh's lid is taller, and that shade
+# stretched over it rendered 26-33 L* darker than the photos' lids on three
+# test faces: brown lids. At 0.5 the identity score rose 0.470 -> 0.481 at
+# the photo's pose and 0.447 -> 0.465 level (0.8 cost ref-woman, whose lids
+# are dark in the photo, 0.04).
+LID_LIFT = 0.5
+
+
+def lift_lids(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
+    """The upper lids' paint, from just above each eye's contour to just below
+    its brow's lower contour, pulled LID_LIFT of the way towards the L* of the
+    forehead above that brow. Nothing is darkened."""
+    from facetexture import BROW_LANDMARKS
+    if len(landmarks) <= max(max(max(c) for c in EYE_CONTOURS), 473):
+        return skin_rgb
+    h, w = skin_rgb.shape[:2]
+    pts = lambda ids: np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in ids])
+    spacing = float(np.linalg.norm(pts([468])[0] - pts([473])[0]))
+    lab = cv2.cvtColor(np.ascontiguousarray(skin_rgb), cv2.COLOR_RGB2LAB).astype(np.float64)
+    lifted = np.zeros((h, w), bool)
+    brows = np.array(BROW_LANDMARKS).reshape(2, 2, 5)              # [brow][upper, lower contour]
+    for contour, (top, low) in zip(EYE_CONTOURS, brows):
+        upper = pts(list(contour[8:]) + [contour[0]])
+        upper = upper[np.argsort(upper[:, 0])]
+        low, top = pts(low), pts(top)
+        low = low[np.argsort(low[:, 0])]
+        fore = lab[max(int(top[:, 1].min() - 0.3 * spacing), 0):max(int(top[:, 1].min() - 0.12 * spacing), 1),
+                   max(int(top[:, 0].min()), 0):int(top[:, 0].max()), 0]
+        if not fore.size:
+            continue
+        band = np.zeros((h, w))
+        for x in range(max(int(upper[:, 0].min()), 0), min(int(upper[:, 0].max()) + 1, w)):
+            y0 = int(np.interp(x, low[:, 0], low[:, 1]) + 0.03 * spacing)
+            y1 = int(np.interp(x, upper[:, 0], upper[:, 1]) - 0.02 * spacing)
+            band[max(y0, 0):min(max(y1, 0), h), x] = 1.0
+        band = cv2.GaussianBlur(band, (0, 0), max(0.02 * spacing, 1.0)) * LID_LIFT
+        lab[..., 0] += band * np.maximum(np.median(fore) - lab[..., 0], 0.0)
+        lifted |= band > 0.01
+    out = skin_rgb.copy()
+    out[lifted] = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)[lifted]
+    return out
+
+
 # The lash line drawn back along the upper lid after the eye is painted
 # over: its width as a share of the eye's width, and how far the photo's own
 # lash-line darkness is kept (1 = as dark as the photo's).

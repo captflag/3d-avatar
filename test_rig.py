@@ -730,7 +730,7 @@ def check_mouth_set():
     print("ok  mouth set: press and draw-in kept as shape on a face at rest, fitted as expression with a smile")
 
 
-def check_lashes():
+def check_lashes_and_lids():
     """After the eye opening is painted over, the lash line is drawn back as
     dark as the photo's along the upper lid; skin away from it is untouched."""
     import cv2
@@ -756,7 +756,16 @@ def check_lashes():
     assert after < before - 15 and abs(after - photo_line) < 20, f"lash line L {photo_line:.0f} in the photo, {before:.0f} filled, {after:.0f} drawn"
     cheek = (slice(int(marks[50].y * h) - 4, int(marks[50].y * h) + 4), slice(int(marks[50].x * w) - 4, int(marks[50].x * w) + 4))
     assert np.array_equal(lashed[cheek], filled[cheek]), "the cheek changed with the lashes"
-    print(f"ok  lashes: lash line L {before:.0f} -> {after:.0f} (photo {photo_line:.0f}), cheek kept")
+    # The lids are only ever lightened, between the eye and the brow.
+    lifted = appearance.lift_lids(filled, marks)
+    lid = (slice(int(marks[386].y * h - 0.1 * abs(marks[473].x - marks[468].x) * w) - 1,
+                 int(marks[386].y * h - 0.1 * abs(marks[473].x - marks[468].x) * w) + 2),
+           slice(int(marks[386].x * w) - 1, int(marks[386].x * w) + 2))
+    assert L(lifted)[lid].mean() > L(filled)[lid].mean(), "the lid above the eye was not lifted"
+    assert (L(lifted) >= L(filled) - 2).all(), "lift_lids darkened something"
+    assert np.array_equal(lifted[cheek], filled[cheek]), "the cheek changed with the lids"
+    print(f"ok  lashes and lids: lash line L {before:.0f} -> {after:.0f} (photo {photo_line:.0f}), "
+          f"lid L {L(filled)[lid].mean():.0f} -> {L(lifted)[lid].mean():.0f}, cheek kept")
 
 
 def check_lip_correction():
@@ -1509,7 +1518,7 @@ if __name__ == "__main__":
         check_hair_tangents()
         check_hair_cap()
         check_lip_correction()
-        check_lashes()
+        check_lashes_and_lids()
         check_mouth_set()
         check_eye_carry()
         check_likeness_details()
