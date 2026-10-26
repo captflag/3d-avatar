@@ -1203,6 +1203,38 @@ def paint_nails(rgb: np.ndarray, nail: np.ndarray) -> np.ndarray:
     return np.dstack([out, rgb[..., 3:]]) if rgb.shape[-1] == 4 else out
 
 
+# The inside of the mouth, in OpenCV LAB: a dark red, as it is in shadow.
+# Generated skin there showed as a pale speck wherever the sealed lips
+# parted a hair under an expression (ref-man's lower lip at his photo's pose),
+# and as skin-coloured walls behind an open mouth's teeth. Darkest from
+# MOUTH_DEPTH in from the lips' rims (mesh units, ~5 mm), half as dark at them.
+MOUTH_INSIDE = np.array([45.0, 155.0, 140.0])
+MOUTH_DEPTH = 0.05
+
+
+def mouth_inside(vertices: np.ndarray, faces: np.ndarray, rims: list[int]) -> np.ndarray:
+    """Per vertex, 0-1, how far it is into the mouth: the part of `faces` (the
+    body's faces off the head's texture, which ends at the lips' `rims`)
+    joined to the rims."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    n = len(vertices)
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    _, part = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n)),
+                                   directed=False)
+    inside = np.isin(part, part[rims]) & np.isin(np.arange(n), faces)
+    depth = np.linalg.norm(vertices[:, None] - vertices[None, rims], axis=2).min(axis=1)
+    return np.where(inside, 0.5 + 0.5 * np.clip(depth / MOUTH_DEPTH, 0.0, 1.0), 0.0)
+
+
+def paint_mouth(rgb: np.ndarray, inside: np.ndarray) -> np.ndarray:
+    """Skin texture with the mouth's inside painted where `inside` (texture-space, 0-1) says."""
+    lab = cv2.cvtColor(np.ascontiguousarray(rgb[..., :3]).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
+    lab += (MOUTH_INSIDE[None, None, :] - lab) * inside[..., None]
+    out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    return np.dstack([out, rgb[..., 3:]]) if rgb.shape[-1] == 4 else out
+
+
 # Ears against the skin around them, in OpenCV LAB: redder and a little
 # darker, most at the rim. They are thin, and blood shows through; generated
 # skin left them the head's flat tone, which under the rim light read grey.

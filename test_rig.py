@@ -332,6 +332,30 @@ def check_mouth_bake():
     print(f"ok  mouth bake: a laughing mouth moved onto the avatar's ({left:.0%} of the gap left), forehead put")
 
 
+def check_lip_seal():
+    """The lips' rims meet at rest, the rest of the face stays put, and the
+    mouth's inside is found as the rims' own region, not the whole body."""
+    import appearance
+    import morph
+    from compose import head_island
+    from catalogue import load_base_uv
+
+    vertices, groups = load_base()
+    sealed = morph.seal_lips(vertices, groups["body"])
+    up, low = sealed[morph.UPPER_RIM], sealed[morph.LOWER_RIM]
+    gap = np.abs(np.interp(low[:, 0], up[:, 0], up[:, 1]) - low[:, 1]).max()
+    before = np.abs(np.interp(low[:, 0], vertices[morph.UPPER_RIM, 0], vertices[morph.UPPER_RIM, 1])
+                    - vertices[morph.LOWER_RIM, 1]).max()
+    assert gap < 0.1 * before, f"the rims still stand {gap:.4f} apart ({before:.4f} before)"
+    far = np.linalg.norm(vertices - up.mean(axis=0), axis=1) > 0.3
+    assert np.abs(sealed[far] - vertices[far]).max() < 1e-3, "the seal moved more than the mouth"
+    in_head = head_island(vertices, groups, groups["body"], load_base_uv()[1]["body"])
+    inside = appearance.mouth_inside(vertices, groups["body"][~in_head], morph.UPPER_RIM + morph.LOWER_RIM)
+    assert 100 < (inside > 0).sum() < 1000, f"{(inside > 0).sum()} vertices taken for the mouth's inside"
+    print(f"ok  lip seal: rims {before * 100:.1f} -> {gap * 100:.2f} mm apart, "
+          f"{(inside > 0).sum()} vertices inside the mouth")
+
+
 def check_hairline_sweep():
     """A stock fringe swept back to a higher hairline: its front edge rises most
     of the way there, the back of the hair stays put, and nothing sinks into
@@ -1441,6 +1465,7 @@ if __name__ == "__main__":
         check_brow_shading()
         check_arkit()
         check_mouth_bake()
+        check_lip_seal()
         check_hairline_sweep()
         check_hair_volume()
         check_hair_width()

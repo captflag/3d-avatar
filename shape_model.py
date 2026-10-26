@@ -179,7 +179,7 @@ def mesh(fitted: dict, weights: np.ndarray, outline: bool = True) -> np.ndarray:
     vertices = morph.correct(morph.apply(base, weights), base, corr,
                              morph.close_lips(fitted["person"]),
                              average, weights, expression, front, fitted["trust"] * marks)
-    vertices = morph.seal_lips(vertices, corr)
+    vertices = morph.seal_lips(vertices, load_base()[1]["body"])
     if outline:
         resting = fitted["person"] - morph.expression_offsets(base, front, expression)
         faces = load_base()[1]["body"]

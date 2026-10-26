@@ -420,19 +420,43 @@ def expression_offsets(base: np.ndarray, at: np.ndarray, expression: dict) -> np
     return shaped[at] - base[at]
 
 
-def seal_lips(vertices: np.ndarray, corr: np.ndarray) -> np.ndarray:
-    """The mesh's inner lip lines brought together, for a resting mouth.
+# Where each lip turns into the mouth: the base mesh's vertices on the edge
+# between the lips' skin and the inside of the mouth, corner to corner (the
+# head's UV island ends there). Upper and lower share the corners.
+UPPER_RIM = [527, 526, 3730, 528, 524, 525, 533, 5359, 532, 531, 539, 538, 537, 7282, 7283, 7276,
+             7277, 11961, 7278, 7270, 7269, 7273, 10398, 7271, 7272]
+LOWER_RIM = [527, 3709, 529, 530, 536, 535, 534, 540, 7279, 7280, 7281, 7275, 7274, 10377, 7272]
+# How far round the rims the seal is carried (mesh units, ~3 mm).
+SEAL_REACH = 0.03
 
-    After the fit and the lips' correction the mesh's inner lips still met
-    about 1% of the eye spacing apart on a closed-mouthed photo, and a sliver
-    of teeth showed through. Each pair of inner lip vertices, upper and lower
-    at the same place along the mouth, is moved to its midpoint; nothing
-    else moves, and the ARKit mouth shapes open it again as before."""
+
+def seal_lips(vertices: np.ndarray, body_faces: np.ndarray) -> np.ndarray:
+    """The lips' inner rims brought together, for a resting mouth.
+
+    MakeHuman's mouth is modelled a little open: its rims stand 1 mm apart
+    at the middle and 2.7 mm towards the corners, and on fitted heads the
+    teeth showed through there from a third of the way out to each corner
+    (355 pixels of teeth on ref-woman's head seen from the front). Moving the
+    landmark vertices did not close it: those sit on the lips' fronts, and
+    meeting there dented the lower lip. Each rim is moved to the middle of
+    the two, and the lip it belongs to with it, fading over SEAL_REACH; the
+    ARKit mouth shapes open it again as before."""
     v = vertices.copy()
-    for up, low in zip(INNER_UPPER, INNER_LOWER):
-        mid = (v[corr[up]] + v[corr[low]]) / 2.0
-        v[corr[up]] = mid
-        v[corr[low]] = mid
+    up, low = v[UPPER_RIM], v[LOWER_RIM]
+    along = lambda chain, x: np.stack([np.interp(x, chain[:, 0], chain[:, k]) for k in range(3)], axis=1)
+    to_up = (up + along(low, up[:, 0])) / 2.0 - up
+    to_low = (low + along(up, low[:, 0])) / 2.0 - low
+    seam = np.concatenate([up + to_up, low + to_low])
+    seam = seam[np.argsort(seam[:, 0])]
+    skin = np.unique(body_faces)
+    p = v[skin]
+    above = p[:, 1] > np.interp(p[:, 0], seam[:, 0], seam[:, 1])
+    for rim, move, side in ((up, to_up, above), (low, to_low, ~above)):
+        w = np.exp(-(np.linalg.norm(p[side, None] - rim[None], axis=2) / SEAL_REACH) ** 2)
+        v[skin[side]] += (w @ move) / np.maximum(w.sum(axis=1, keepdims=True), 1e-12) * w.max(axis=1, keepdims=True)
+    # The rims themselves exactly on the seam: the falloff averages each
+    # rim's move with its neighbours' and left them 0.45 mm apart.
+    v[UPPER_RIM], v[LOWER_RIM] = up + to_up, low + to_low
     return v
 
 

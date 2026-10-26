@@ -71,6 +71,8 @@ PHOTO_NORMAL_ROUNDS = 120
 SKIN_SHEEN = ((0.20, 0.07, 0.04), 0.55)
 # How far teeth and tongue sit back from where the model puts them (mesh units).
 TEETH_RECESS = 0.05
+# How far the mouth's lining is set back into the mouth (mesh units, ~1.5 mm).
+MOUTH_LINING = 0.015
 # Cloth sheen: colour (linear RGB) and roughness. At 0.35 it washed navy out
 # to slate grey.
 CLOTH_SHEEN = ((0.12, 0.12, 0.12), 0.8)
@@ -885,7 +887,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # a photo whose own were 0.4 apart, and a sliver of teeth showed.
     vertices = morph.correct(vertices, base, corr, morph.close_lips(person), average, shape_weights, expression,
                              front, np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks)
-    vertices = morph.seal_lips(vertices, corr)
+    vertices = morph.seal_lips(vertices, groups["body"])
     # The jaw's edge as the camera saw it, with the photo's expression off.
     resting = person[:len(corr)] - morph.expression_offsets(base, front, expression)
     u, _, vt = np.linalg.svd(np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)[:3, :3])
@@ -1080,6 +1082,13 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     head_faces, head_uv_faces = body_faces[in_head], uv_faces[in_head]
     rest_faces, rest_uv_faces = body_faces[~in_head], uv_faces[~in_head]
     head_uv_all = island_uv(uv_all, head_uv_faces)
+    # The mouth's inside, set back into the mouth from the lips it lines,
+    # fully from MOUTH_DEPTH in from the rims: sealed, the lining met the
+    # lips' skin at the seam, and a smile pressed on ref-man's turned head
+    # showed it through his lower lip.
+    mouth = appearance.mouth_inside(vertices, rest_faces, morph.UPPER_RIM + morph.LOWER_RIM)
+    lining = trimesh.Trimesh(vertices, rest_faces, process=False).vertex_normals
+    vertices = vertices + MOUTH_LINING * np.clip(2.0 * mouth - 1.0, 0.0, 1.0)[:, None] * lining
 
     # A skin texture built to the person's own cheek statistics, so skin is
     # mottled rather than one flat colour.
@@ -1171,6 +1180,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     nail_map = facetexture.rasterize(nails, rest_faces[on_nail], uv_all, rest_uv_faces[on_nail],
                                      rest_base.shape[0], fill=0.0)
     rest_base = appearance.paint_nails(rest_base, nail_map)
+    # The inside of the mouth, dark.
+    in_mouth = mouth[rest_faces].max(axis=1) > 0
+    rest_base = appearance.paint_mouth(rest_base, facetexture.rasterize(
+        mouth, rest_faces[in_mouth], uv_all, rest_uv_faces[in_mouth], rest_base.shape[0], fill=0.0))
     body_rough = appearance.SKIN_ROUGHNESS["skin"] + (appearance.NAIL_ROUGHNESS - appearance.SKIN_ROUGHNESS["skin"]) * nail_map
     body_roughness = Image.fromarray(np.dstack([np.full_like(body_rough, 255), body_rough * 255,
                                                 np.zeros_like(body_rough)]).astype(np.uint8))
