@@ -1374,6 +1374,35 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Render-in-the-loop fit and de-lighting through the head: measured, left out
+
+**Analysis by synthesis (route 1).** On
+refs/heads/claude/hungry-hofstadter-b2c2a9 (`refine.py`, Mitsuba 3, BSD-3,
+as a ray caster under torch shading; notes in
+side-session-notes/analysis-by-synthesis.md there). It refines shape sliders,
+a per-vertex displacement, albedo and SH light against the photo's pixels.
+Light and an albedo gain explain the photo's regional brightness within a
+few L*. The shape barely gains: under-eye bags appear on the clear photos,
+the cheeks and nasolabial folds don't change, and on the bearded, smiling
+photo-10 the beard and smile lines become creases. Not wired in (137 MB GPU
+dependency, about 2 minutes a build).
+
+**The light fitted through the head's normals (route 2).** On
+refs/heads/claude/beautiful-easley-c293c0, CPU only, about 0.6 s a build.
+Measured on the merged build:
+
+| | render-minus-photo L* summed (forehead, cheeks, nasolabial, under-eye, chin) | whole-face landmark error per face |
+|---|---|---|
+| at the photo's pose | 277 -> 257 | ref-man +0.06, ref-woman +0.03, photo-10 -0.04, photo-14 +0.04, photo-16 +0.07 |
+| level | 228 -> 213 | +0.06, +0.07, +0.08, -0.04, +0.10 |
+
+The brightness gain is about 7%, mostly photo-14/16's under-eye (-25 ->
+-19) and chin. Landmarks are worse on four of five faces in both views,
+several at or past render noise. Left out on that measure. Like the
+earlier side lights, a better brightness match makes MediaPipe read the
+faces slightly worse. Until an identity score (route 0) decides between
+them, landmarks decide.
+
 ## Lips and nose kept; the skin-finish changes left out
 
 Two parallel sessions (notes in side-session-notes/lips-nose.md; the skin
