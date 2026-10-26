@@ -1374,6 +1374,46 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## An identity score as the keep/drop measure; the side lights back in
+
+Landmark error kept rejecting changes that brought the skin's brightness
+closer to the photos: the side lights, the skin finish, and de-lighting
+through the head. Neither number asks whether the avatar looks like the
+person. `identity_score.py` does: SFace (OpenCV model zoo, Apache-2.0
+weights, trained on research face datasets, so an internal yardstick only)
+gives the cosine similarity of photo and render. On this repo's photos:
+different people 0.15; two real photos of the same man 0.48-0.67;
+OpenCV's same-person threshold 0.363. The same build rendered twice differs
+by 0.008 at most. Each render scores highest against its own photo, except
+ref-woman's, which scores 0.365 against ref-man's photo and 0.349 against
+her own. **From here on it is the main keep/drop measure for likeness;
+landmarks stay as a check on shape.**
+
+The three left-out branches, scored on the current build (avatar against
+its own photo, higher is better):
+
+| face | current | + side lights | + skin finish | + de-light |
+|---|---|---|---|---|
+| at the photo's pose | | | | |
+| ref-man | 0.546 | **0.605** | 0.546 | 0.553 |
+| ref-woman | 0.349 | 0.341 | 0.336 | 0.350 |
+| photo-10 | 0.365 | **0.387** | 0.368 | 0.368 |
+| photo-14 | 0.366 | **0.417** | 0.348 | 0.334 |
+| photo-16 | 0.367 | **0.426** | 0.350 | 0.327 |
+| mean | 0.398 | **0.435** | 0.389 | 0.386 |
+| level, mean | 0.387 | **0.416** | 0.384 | 0.374 |
+
+- **Side lights (+-100 degrees, room tipped 37; a6dc3b7), back in.** They
+  raise likeness on four faces at the pose by 0.02-0.06, well past noise.
+  ref-woman dips 0.008, within noise. Level, all five improve. The baked
+  skin is unchanged: delight's RENDER_LIGHT x RENDER_EXPOSURE stays 2.1
+  (2.0 x 1.05 -> 2.1 x 1.0), and photo-16's head texture differs by at
+  most one level on a handful of pixels. The landmark cost seen before
+  (ref-man, photo-14/16 +0.13-0.18) stands. MediaPipe reads the softer
+  light's jaw slightly differently, but the faces look more like the people.
+- **Skin finish and de-lighting through the head: out**, now on likeness
+  too (0.389 and 0.386 against 0.398).
+
 ## Render-in-the-loop fit and de-lighting through the head: measured, left out
 
 **Analysis by synthesis (route 1).** On

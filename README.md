@@ -52,6 +52,14 @@ image**, **Full body** unticked, **Download**), then:
 credentials (`aws configure`); it needs `boto3` (`uv pip install --python
 .venv/Scripts/python.exe boto3`).
 
+Free and local: `identity_score.py photo.jpg render.png` gives SFace's cosine
+similarity (OpenCV's same-person threshold is 0.363; two real photos of one
+person score about 0.5-0.7, different people about 0.15). It is the keep/drop
+measure for likeness work. It is an internal yardstick only: the weights are
+Apache-2.0 but were trained on research face datasets, so it must never ship
+or be imported by the product. Its two model files go in `assets/`; the URLs
+are in the script.
+
 **Is the photo good enough?** With `ANTHROPIC_API_KEY` set in the studio's
 environment, a chosen photo is first sent to the Claude API (`photo_check.py`,
 claude-sonnet-5-5) and the studio lists what would cost likeness ("Take off the
