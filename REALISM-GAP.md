@@ -1374,6 +1374,42 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Lips and nose kept; the skin-finish changes left out
+
+Two parallel sessions (notes in side-session-notes/lips-nose.md; the skin
+session's notes are on refs/heads/claude/keen-visvesvaraya-fce832), merged
+one at a time and measured on the five test faces. Whole-face landmark
+error:
+
+| face | before | + lips and nose | + skin finish |
+|---|---|---|---|
+| at the photo's pose | | | |
+| ref-man | 1.78 | 1.71 | 1.81 |
+| ref-woman | 1.79 | 1.72 | 1.69 |
+| photo-10 | 1.79 | 1.72 | 1.70 |
+| photo-14 | 1.18 | 1.16 | 1.17 |
+| photo-16 | 1.20 | 1.15 | 1.17 |
+| level | | | |
+| ref-man | 1.55 | 1.55 | 1.60 |
+| ref-woman | 2.49 | 2.55 | 2.73 |
+| photo-10 | 1.97 | 2.01 | 2.06 |
+| photo-14 | 2.77 | 2.69 | 2.71 |
+| photo-16 | 2.79 | 2.67 | 2.71 |
+
+- **Lips and nose, kept.** The lips are sealed with a dark inside and the
+  lip shape and corners corrected. Lip colour is matched, and there is one
+  set of nostrils: the photo's painted nostrils are filled where the mesh
+  casts its own. Better on all five at the photo's pose. Level renders
+  are within noise, net slightly better. Not done: fitting nostril width,
+  and the nose tip's finish.
+- **Skin finish, left out.** Five changes to colour, clean-up and region
+  finish. On the skin itself the gain is small and mixed. Colour error
+  (dE, eight skin patches) summed over the five faces goes 80 -> 77 and hue
+  14 -> 11, but it is worse on ref-man, ref-woman and photo-10 and better on
+  photo-14/16; fine texture is unchanged (4.59 -> 4.62). It costs landmark
+  accuracy beyond render noise: ref-man at pose +0.10, ref-woman level
+  +0.18. Kept out on that measure; the branch keeps it.
+
 ## Hairline from the photo, photographic skin and eye shading, guided capture
 
 Three parallel sessions (notes in side-session-notes/hairline.md,
