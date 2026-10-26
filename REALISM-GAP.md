@@ -1374,6 +1374,52 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## The likeness audit, and its two fixes: eye region, haircut and skin light
+
+**The audit.** Swapping one region at a time between photo and render (the
+photo's region pasted into the aligned render, scored on identity) ranked
+where likeness was lost. Per unit area: eyes (+0.094 median, all faces),
+brows (+0.052), nose (+0.045). By total: the face's outline band (+0.125),
+then hair (+0.091). The mouth showed no loss (-0.009). Three ablations
+confirmed it, checked again against photo-16's two other photos:
+- Hiding the hair in both images raised identity 0.38 -> 0.52 (photo-10)
+  and 0.42 -> 0.56 (photo-16).
+- The texture rendered unlit beat the lit render on three of four faces.
+  The studio's shading doubled the shading the photo had baked in.
+- The shape alone, flat-coloured, scored 0.11-0.25 or near zero: almost
+  all likeness comes from the painted photo.
+
+**The fixes** (side-session-notes/eye-region.md, hair-pick-and-lighting.md),
+merged one at a time. Identity, avatar against its own photo:
+
+| face | before | + eye region | + close crop, skin half lit |
+|---|---|---|---|
+| ref-man | 0.616 | 0.653 | 0.666 |
+| ref-woman | 0.365 | 0.386 | 0.505 |
+| photo-10 | 0.382 | 0.418 | 0.516 |
+| photo-14 | 0.438 | 0.472 | 0.512 |
+| photo-16 | 0.423 | 0.467 | 0.511 |
+| mean at pose | 0.445 | 0.479 | **0.542** |
+| mean level | 0.412 | 0.465 | **0.528** |
+
+Against photo-16's two other photos (not used to choose anything):
+0.386 -> 0.480 and 0.198 -> 0.280. Every face is now above OpenCV's
+same-person threshold (0.363). All five sit at or above 0.5, which is the
+range two real photos of one person score (0.48-0.67).
+
+- **Eye region:** tighten_brows taken out, so the brows stay as the photo
+  has them; the upper lids lifted towards the forehead's lightness.
+- **Haircut:** short hair without a fringe always gets hair_short01, the
+  close crop. The cut is raised and widened to the photo afterwards anyway,
+  and short01's hairline beat short02's.
+- **Skin light:** half the skin's diffuse takes the studio's lights; the
+  other half is the texture itself at the cheeks' light (2.1). So the
+  photo's baked shading is not shaded twice. Hair, eyes, brows and
+  clothes keep the full studio light. The face looks softer-lit.
+- Not kept on the way: picking the cut by score (long01 scored high on
+  short-haired men: hair over the temples hides outline errors), and
+  stronger de-lighting.
+
 ## Lips (route 7) and nostril width (route 8): measured on identity, none kept
 
 Baseline: side-views e8179b0, identity score 0.445 at the photo's pose and
