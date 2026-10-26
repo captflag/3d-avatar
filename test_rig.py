@@ -1041,15 +1041,13 @@ def check_appearance():
 
     pick = appearance.hair_style
     reading = {"amount": 0.5, "top": 0.5, "bottom": -0.6, "fringe": 0.0, "colour": None}
-    assert pick(reading, "x") == "hair_short02"
+    assert pick(reading, "x") == "hair_short01"
     assert pick({**reading, "top": 0.3}, "x") == "hair_short01"
     assert pick({**reading, "fringe": 0.6}, "x") == "hair_short03"
     assert pick({**reading, "bottom": 0.0}, "x") == "hair_bob01"
     assert pick({**reading, "bottom": 0.4}, "x") == "hair_long01"
     assert pick({**reading, "amount": 0.02}, "x") is None, "a bald head was given hair"
     assert pick(None, "hair_short02") == "hair_short02", "no segmenter should keep the default"
-    assert pick({**reading, "sides": 0.08}, "x") == "hair_short_sides", "tight sides not read as a short back and sides"
-    assert pick({**reading, "sides": 0.15}, "x") == "hair_short02", "full sides given a short back and sides"
 
     # The top is the cloth under the chin, not someone else's behind.
     from types import SimpleNamespace as P

@@ -258,12 +258,20 @@ def hair_style(reading: dict | None, default: str) -> str | None:
 
     Thresholds measured on the test photos (hair bottom against the chin, in
     face heights): short hair ends 0.3 to 0.65 above the chin. Hair reaching the
-    jaw reads as a bob, below the chin as long. A close crop rises about a third
-    of a face height above the face mesh; fuller short hair about half.
+    jaw reads as a bob, below the chin as long.
+
+    Short hair without a fringe is the close crop whatever its height or width:
+    the cut is raised and widened to the photo's own outline afterwards
+    (garments.volumise, widen, fit_hair), so the stock cut's fullness only
+    decides its hairline and strands. Built with every cut and scored on
+    likeness (identity_score.py, two builds each), the close crop beat the
+    fuller short02 / short_sides the old rules picked: five test faces 0.443 ->
+    0.471 at the photo's pose, 0.412 -> 0.454 level (photo-10 +0.08, photo-14
+    -0.015 at its pose, within build noise); photo-16's other two photos +0.05
+    and +0.03. short02 left a see-through band at the front of the hairline.
 
     ponytail: five measurements and seven haircuts. The long-hair branch has not
-    yet been checked against a real long-haired photo, and `sides` takes the
-    wider side, so a strongly turned head may read as fuller at the sides.
+    yet been checked against a real long-haired photo.
     """
     if reading is None or reading["top"] is None:
         return default if reading is None else None
@@ -274,15 +282,7 @@ def hair_style(reading: dict | None, default: str) -> str | None:
         return "hair_long01"
     if reading["bottom"] > -0.15:
         return "hair_bob02" if fringe else "hair_bob01"
-    if fringe:
-        return "hair_short03"
-    if reading["top"] < 0.4:
-        return "hair_short01"
-    # Fuller on top: clipped close at the sides (0.08 face widths past the
-    # face on photo-10) or full all round (0.13 to 0.16 on the references).
-    if reading.get("sides") is not None and reading["sides"] < 0.11:
-        return "hair_short_sides"
-    return "hair_short02"
+    return "hair_short03" if fringe else "hair_short01"
 
 
 # ----------------------------------------------------------------- mouth ------
