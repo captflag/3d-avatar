@@ -1374,6 +1374,45 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## Lips (route 7) and nostril width (route 8): measured on identity, none kept
+
+Baseline: side-views e8179b0, identity score 0.445 at the photo's pose and
+0.412 level (mean of the five test faces). Each change was built on its own
+and scored (avatar against its own photo):
+
+| face | baseline | 7a fitted expression | 7a + 7b lip line on the lip's front | 8 nostril-width row |
+|---|---|---|---|---|
+| ref-man | 0.616 | 0.633 | 0.625 | 0.614 |
+| ref-woman | 0.365 | 0.366 | 0.347 | 0.364 |
+| photo-10 | 0.382 | 0.345 | 0.343 | 0.367 |
+| photo-14 | 0.438 | 0.441 | 0.421 | 0.432 |
+| photo-16 | 0.423 | 0.429 | 0.426 | 0.422 |
+| mean at pose | 0.445 | 0.443 | 0.432 | 0.440 |
+| mean level | 0.412 | 0.411 | 0.407 | 0.414 |
+
+- **7a: show exactly the expression the fit took off.** One morph target,
+  `fittedExpression`, after ARKit's 52, holds the fit's MakeHuman units, in
+  place of MediaPipe's ARKit weights through response curves. Hypothesis:
+  the lip-border binding failed on smiling faces because the two
+  expressions differed. On ref-man it helps (identity 0.616 -> 0.633,
+  landmark error 1.87 -> 1.25, mouth 1.61 -> 0.92). On the laughing
+  photo-10 it hurts (0.382 -> 0.345): MakeHuman's units cannot reach a
+  broad laugh, so the exact fitted expression shows less laugh than the
+  photo. A wash on the mean. Not kept.
+- **7b: the outer lip line bound to the lip's front** (`front_of`, on top
+  of 7a). Worse on ref-woman and photo-14 (-0.02 each). The hypothesis is
+  refuted: matching the expression doesn't make the border binding pay.
+  Not kept.
+- **8: nostril width as a PROPORTIONS row (64-294).** The rendered nose is
+  0.5-4.7% of the iris spacing too wide on every face. The row makes the
+  mesh match the photo exactly at the landmark vertices (ref-man 60.8 vs
+  60.8, ref-woman 55.6 vs 55.5). Yet the render still reads 1-4% wide, and
+  identity does not improve. Those vertices are already the nostril wing's
+  outermost point at that height (within 0.1%). So the extra width is in
+  how the nose renders (the shading and paint round the alae), not its
+  shape. Not kept. Next for the nose: a flat-colour render against the
+  textured one would say whether the paint or the lighting widens it.
+
 ## An identity score as the keep/drop measure; the side lights back in
 
 Landmark error kept rejecting changes that brought the skin's brightness
