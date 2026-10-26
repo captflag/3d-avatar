@@ -525,6 +525,28 @@ def fill_mouth(skin_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray | None 
     return filled, True
 
 
+# What the lips are shifted by before the bake, in OpenCV LAB, so they render
+# as the photo shows them against the cheek: rendered, they came out 4.2 L*
+# lighter and 2.4 b* yellower on average over the five test faces. The
+# yellow was alike on all five (1-4 b*), the lightness not (8 L* on ref-man
+# and ref-woman, 0-2 on the others): half of it is taken off, and taking it
+# all made ref-woman's lips read wrong to MediaPipe (landmark error +0.07).
+# Measure again after changing the lights or the lips' finish.
+LIP_RENDER_SHIFT = np.array([-2.1 * 2.55, -0.6, -2.4])
+
+
+def lip_tone(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
+    """The photo's lips shifted by LIP_RENDER_SHIFT, feathered at their edge."""
+    h, w = skin_rgb.shape[:2]
+    lips = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in OUTER_LIPS], np.float32)
+    mask = np.zeros((h, w), np.float32)
+    cv2.fillPoly(mask, [np.round(lips).astype(np.int32)], 1.0)
+    mask = cv2.GaussianBlur(mask, (0, 0), max(0.03 * float(np.ptp(lips[:, 0])), 0.5))
+    lab = cv2.cvtColor(np.ascontiguousarray(skin_rgb), cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab += LIP_RENDER_SHIFT[None, None, :].astype(np.float32) * mask[..., None]
+    return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+
+
 # ------------------------------------------------------------ colour cast -----
 
 # Hue angle of skin in LAB (atan2(b*, a*), degrees): every skin tone falls in a

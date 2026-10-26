@@ -929,6 +929,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb = appearance.tighten_brows(skin_rgb, landmarks)
     # A colour cast that puts skin outside the natural range is pulled back.
     skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
+    # The lips darker and less yellow by what the render adds to them.
+    skin_rgb = appearance.lip_tone(skin_rgb, landmarks)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)
