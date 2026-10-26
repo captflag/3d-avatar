@@ -881,12 +881,17 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # silhouette. The lids: the mesh's eyes rendered 1-4% of the eye spacing
     # more open than every test photo's.
     lip_marks = np.zeros(len(corr))
-    lip_marks[morph.INNER_UPPER + morph.INNER_LOWER + morph.OUTER_UPPER + morph.OUTER_LOWER + [61, 291, 78, 308]] = 1.0
     lip_marks[list(appearance.EYE_CONTOURS[0]) + list(appearance.EYE_CONTOURS[1])] = 1.0
+    lip_marks = np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks
+    # The lips at full trust, on the vertices where the mesh's lips meet:
+    # trusted as little as a laugh's other landmarks (0.4 on ref-man), the
+    # mouth kept the skull's shape. The expression taken off them first is
+    # still the photo's, so a laugh's stretch does not stay.
+    lip_marks[morph.LIP_LANDMARKS] = 1.0
     # Towards the lips closed: the mesh's met 1.4% of the eye spacing apart on
     # a photo whose own were 0.4 apart, and a sliver of teeth showed.
-    vertices = morph.correct(vertices, base, corr, morph.close_lips(person), average, shape_weights, expression,
-                             front, np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks)
+    vertices = morph.correct(vertices, base, morph.lip_corr(base, corr), morph.close_lips(person), average,
+                             shape_weights, expression, front, lip_marks)
     vertices = morph.seal_lips(vertices, groups["body"])
     # The jaw's edge as the camera saw it, with the photo's expression off.
     resting = person[:len(corr)] - morph.expression_offsets(base, front, expression)

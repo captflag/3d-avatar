@@ -428,6 +428,26 @@ UPPER_RIM = [527, 526, 3730, 528, 524, 525, 533, 5359, 532, 531, 539, 538, 537, 
 LOWER_RIM = [527, 3709, 529, 530, 536, 535, 534, 540, 7279, 7280, 7281, 7275, 7274, 10377, 7272]
 # How far round the rims the seal is carried (mesh units, ~3 mm).
 SEAL_REACH = 0.03
+# Every lip landmark: corners, outer and inner contours (MediaPipe's 40).
+LIP_LANDMARKS = [61, 291, 78, 308] + OUTER_UPPER + OUTER_LOWER + INNER_UPPER + INNER_LOWER
+
+
+def lip_corr(base: np.ndarray, corr: np.ndarray) -> np.ndarray:
+    """`corr` with the inner lip landmarks and the corners on the lips' rims.
+
+    The nearest vertex to MediaPipe's average face put the corners on 528,
+    3.6 mm in and 2.4 mm up from where the rims meet (527), and the inner
+    lips on the lips' fronts, 2.4-3.8 mm off the seam: corrected to the
+    photo there, the lips' fronts were pulled onto its lip line. Each inner
+    landmark takes the rim vertex at its own place across the mouth."""
+    out = corr.copy()
+    for marks, rim in ((INNER_UPPER, UPPER_RIM), (INNER_LOWER, LOWER_RIM)):
+        across = base[rim, 0]
+        for i in marks:
+            out[i] = rim[int(np.argmin(np.abs(across - base[corr[i], 0])))]
+    for i in (61, 78, 291, 308):
+        out[i] = UPPER_RIM[0] if base[corr[i], 0] * base[UPPER_RIM[0], 0] > 0 else UPPER_RIM[-1]
+    return out
 
 
 def seal_lips(vertices: np.ndarray, body_faces: np.ndarray) -> np.ndarray:
