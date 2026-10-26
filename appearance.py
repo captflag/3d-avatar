@@ -267,7 +267,7 @@ def hair_style(reading: dict | None, default: str) -> str | None:
     likeness (identity_score.py, two builds each), the close crop beat the
     fuller short02 / short_sides the old rules picked: five test faces 0.443 ->
     0.471 at the photo's pose, 0.412 -> 0.454 level (photo-10 +0.08, photo-14
-    -0.015 at its pose, within build noise); photo-16's other two photos +0.05
+    -0.008 at its pose, within build noise); photo-16's other two photos +0.05
     and +0.03. short02 left a see-through band at the front of the hairline.
 
     ponytail: five measurements and seven haircuts. The long-hair branch has not
