@@ -931,9 +931,13 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb = appearance.fill_eyes(skin_rgb, landmarks)
     # The nostrils are the mesh's own.
     skin_rgb = appearance.fill_nostrils(skin_rgb, landmarks, keep_out=facial_hair)
-    # The lash line back on the lids, and the brows as dense as the photo's.
+    # The lash line back on the lids. The brows are left as the photo has them:
+    # darkened against the skin round them (tighten_brows, gain 1.6), they
+    # rendered 14-34 L* darker than the photos' and the lid under them went
+    # dark with them; without it they render within 9 L* of the photos' and
+    # the identity score rose 0.445 -> 0.471 at the photo's pose, 0.410 ->
+    # 0.446 level (side-session-notes/eye-region.md).
     skin_rgb = appearance.paint_lashes(skin_rgb, photo_rgb, landmarks)
-    skin_rgb = appearance.tighten_brows(skin_rgb, landmarks)
     # A colour cast that puts skin outside the natural range is pulled back.
     skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
     # The lips darker and less yellow by what the render adds to them.

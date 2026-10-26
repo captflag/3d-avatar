@@ -342,9 +342,6 @@ def fill_eyes(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
 LASH_WIDTH = 0.07
 LASH_KEEP = 1.0
 LOWER_LASH = 0.4          # the lower lid's line, as a share of the upper's width and darkness
-# Brows: pixels darker than the brow's surrounding skin are pulled darker by
-# this gain, so a brow blurred by a small photo keeps its density and edge.
-BROW_GAIN = 1.6
 
 
 # How much of the face's fine contrast is put back after de-lighting
@@ -415,43 +412,6 @@ def paint_lashes(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks) -> np.n
             cv2.polylines(band, [pts], False, 1, width_px)
             soft = np.clip(cv2.GaussianBlur(band.astype(np.float64), (0, 0), max(width_px * 0.4, 0.6)) * keep, 0.0, 1.0)[..., None]
             out = (out * (1.0 - soft) + colour * soft).astype(np.uint8)
-    return out
-
-
-def tighten_brows(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
-    """Each brow's hair pulled darker against the skin round it.
-
-    Painted from a small photo the brow spread into a soft band 40% thicker
-    and 25 L* lighter than the photo's (bilinear resampling of a brow a few
-    pixels tall). Inside a region round each brow's landmarks, pixels darker
-    than the region's skin are pushed darker by BROW_GAIN about that skin
-    level, which tightens the edge and restores the density; pixels at or
-    above skin level are left alone."""
-    from facetexture import BROW_LANDMARKS
-    if len(landmarks) <= max(BROW_LANDMARKS):
-        return skin_rgb
-    h, w = skin_rgb.shape[:2]
-    lab = cv2.cvtColor(np.ascontiguousarray(skin_rgb), cv2.COLOR_RGB2LAB).astype(np.float64)
-    ids = np.array(BROW_LANDMARKS).reshape(2, 10)
-    changed = np.zeros((h, w), bool)
-    for brow in ids:
-        pts = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in brow], np.int32)
-        hull = cv2.convexHull(pts)
-        region = np.zeros((h, w), np.uint8)
-        cv2.fillConvexPoly(region, hull, 1)
-        grow = max(int(0.12 * np.ptp(pts[:, 0])), 2)
-        region = cv2.dilate(region, np.ones((2 * grow + 1,) * 2, np.uint8)).astype(bool)
-        if region.sum() < 20:
-            continue
-        skin = np.percentile(lab[..., 0][region], 80)
-        # No darker than the brow's own darkest hairs: on a sharp photo with
-        # dark brows the gain alone took them to black.
-        floor = np.percentile(lab[..., 0][region], 3)
-        deeper = region & (lab[..., 0] < skin)
-        lab[..., 0][deeper] = np.maximum(skin - (skin - lab[..., 0][deeper]) * BROW_GAIN, floor)
-        changed |= deeper
-    out = skin_rgb.copy()
-    out[changed] = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)[changed]
     return out
 
 

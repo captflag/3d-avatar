@@ -730,10 +730,9 @@ def check_mouth_set():
     print("ok  mouth set: press and draw-in kept as shape on a face at rest, fitted as expression with a smile")
 
 
-def check_lashes_and_brows():
+def check_lashes():
     """After the eye opening is painted over, the lash line is drawn back as
-    dark as the photo's along the upper lid, and a brow blurred by a small
-    photo is pulled back to its density; skin away from both is untouched."""
+    dark as the photo's along the upper lid; skin away from it is untouched."""
     import cv2
     import appearance
     from generate import fit_face
@@ -757,17 +756,7 @@ def check_lashes_and_brows():
     assert after < before - 15 and abs(after - photo_line) < 20, f"lash line L {photo_line:.0f} in the photo, {before:.0f} filled, {after:.0f} drawn"
     cheek = (slice(int(marks[50].y * h) - 4, int(marks[50].y * h) + 4), slice(int(marks[50].x * w) - 4, int(marks[50].x * w) + 4))
     assert np.array_equal(lashed[cheek], filled[cheek]), "the cheek changed with the lashes"
-    brows = appearance.tighten_brows(lashed, marks)
-    from facetexture import BROW_LANDMARKS
-    pts = np.array([[marks[i].x * w, marks[i].y * h] for i in BROW_LANDMARKS[:10]], np.int32)
-    region = np.zeros((h, w), np.uint8)
-    cv2.fillConvexPoly(region, cv2.convexHull(pts), 1)
-    region = region.astype(bool)
-    dark_before = np.percentile(L(lashed)[region], 20)
-    dark_after = np.percentile(L(brows)[region], 20)
-    assert dark_after < dark_before - 5, f"brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}"
-    assert np.array_equal(brows[cheek], lashed[cheek]), "the cheek changed with the brows"
-    print(f"ok  lashes and brows: lash line L {before:.0f} -> {after:.0f} (photo {photo_line:.0f}), brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}, cheek kept")
+    print(f"ok  lashes: lash line L {before:.0f} -> {after:.0f} (photo {photo_line:.0f}), cheek kept")
 
 
 def check_lip_correction():
@@ -1520,7 +1509,7 @@ if __name__ == "__main__":
         check_hair_tangents()
         check_hair_cap()
         check_lip_correction()
-        check_lashes_and_brows()
+        check_lashes()
         check_mouth_set()
         check_eye_carry()
         check_likeness_details()
