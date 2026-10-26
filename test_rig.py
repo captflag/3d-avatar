@@ -356,6 +356,53 @@ def check_lip_seal():
           f"{(inside > 0).sum()} vertices inside the mouth")
 
 
+def check_hair_outline():
+    """A cut fitted to a photo whose hair stands taller and wider than it: the
+    crown rises to the photo's outline, less the drawn-to-rendered margin.
+    Fitted to a photo with almost no hair, it is pulled in, but nothing moved
+    goes into the scalp."""
+    import cv2
+    import appearance
+    import garments
+    import morph
+    import trimesh
+    from compose import place_face
+    from scipy.spatial import cKDTree
+
+    vertices, groups = load_base()
+    person = place_face(morph.canonical_face(), vertices, groups).vertices
+    head = morph.head_only(vertices, groups["body"], __import__("rig").load_weights())
+    # A camera straight ahead: 100 photo pixels to a mesh unit.
+    middle = person[:468].mean(axis=0)
+    to_photo = lambda q: np.stack([(q[:, 0] - middle[0]) * 100 + 600, (middle[1] - q[:, 1]) * 100 + 600], axis=1)
+    pixels = to_photo(person[:468])
+
+    def drawn(hair, grow):
+        mask = np.zeros((1200, 1200), np.uint8)
+        for tri in np.round(to_photo(np.asarray(hair.vertices))[hair.faces]).astype(np.int32):
+            cv2.fillConvexPoly(mask, tri, 1)
+        return cv2.dilate(mask, np.ones((2 * grow + 1, 2 * grow + 1), np.uint8)) if grow else mask
+
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    top = appearance.opaque_hair(hair)[:, 1].max()
+    garments.fit_hair(hair, vertices, head, np.eye(3), person, pixels, drawn(hair, 20), appearance.opaque_hair)
+    risen = appearance.opaque_hair(hair)[:, 1].max() - top
+    assert 0.1 < risen < 0.3, f"the crown rose {risen:.2f} towards the photo's 0.2 higher outline"
+
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    original = hair.vertices.copy()
+    sparse = np.zeros((1200, 1200), np.uint8)
+    sparse[int(to_photo(person[[10]])[0, 1]) - 30:int(to_photo(person[[10]])[0, 1]), 590:610] = 1
+    garments.fit_hair(hair, vertices, head, np.eye(3), person, pixels, sparse, appearance.opaque_hair)
+    moved = np.linalg.norm(hair.vertices - original, axis=1) > 1e-6
+    assert moved.any(), "a cut fuller than the photo's hair was not pulled in"
+    skin = np.unique(groups["body"])
+    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
+    near = skin[cKDTree(vertices[skin]).query(hair.vertices[moved])[1]]
+    gap = ((hair.vertices[moved] - vertices[near]) * normals[near]).sum(axis=1)
+    assert gap.min() > 0.0, f"fitted hair went {-gap.min():.3f} into the scalp"
+
+
 def check_hairline_sweep():
     """A stock fringe swept back to a higher hairline: its front edge rises most
     of the way there, the back of the hair stays put, and nothing sinks into
@@ -1467,6 +1514,7 @@ if __name__ == "__main__":
         check_mouth_bake()
         check_lip_seal()
         check_hairline_sweep()
+        check_hair_outline()
         check_hair_volume()
         check_hair_width()
         check_hair_tangents()

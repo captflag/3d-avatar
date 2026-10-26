@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 import trimesh
 from PIL import Image
+from scipy.spatial.transform import Rotation
 
 import appearance
 import skinned_glb
@@ -896,8 +897,12 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The jaw's edge as the camera saw it, with the photo's expression off.
     resting = person[:len(corr)] - morph.expression_offsets(base, front, expression)
     u, _, vt = np.linalg.svd(np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)[:3, :3])
-    vertices = morph.fit_outline(vertices, morph.head_only(vertices, groups["body"], load_weights()),
-                                 resting, u @ vt)
+    rotation = u @ vt
+    # And as the photo-pose render turns it.
+    head_pose = photo_head_pose(result, landmarks, photo)
+    render_turn = rotation if head_pose is None else Rotation.from_quat(head_pose).as_matrix()
+    head_only = morph.head_only(vertices, groups["body"], load_weights())
+    vertices = morph.fit_outline(vertices, head_only, resting, rotation)
 
     # The same expression taken off the landmarks the photo is baked through,
     # and the lips closed, so the photo's smile is warped back onto a relaxed
@@ -1008,6 +1013,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # And out to the photo's outline at the sides.
             garments.widen(mesh, vertices, groups, float(vertices[corr[[105, 334]], 1].mean()), spacing,
                            hair_reading.get("widths"))
+        if item["category"] == "hair" and "mhclo" in item and parts is not None and hair_reading:
+            # And its outline to the photo's, seen as the photo saw the head.
+            garments.fit_hair(mesh, vertices, head_only, render_turn, person,
+                              np.array([[lm.x * pw, lm.y * ph] for lm in landmarks]),
+                              parts == appearance.HAIR, appearance.opaque_hair)
         if item["category"] == "brows":
             mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
         if item["category"] in ("teeth", "tongue"):
@@ -1351,7 +1361,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES,
                        expression=morph.photo_expression(expression_of(result)),
-                       head_pose=photo_head_pose(result, landmarks, photo))
+                       head_pose=head_pose)
 
     info = {
         "advice": photo_advice(landmarks, (pw, ph), expression_of(result)),
