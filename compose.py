@@ -932,7 +932,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)
-    full_face.vertices = mouth_onto_mesh(full_face.vertices, vertices, corr)
+    # Onto the corners where the mesh's lips meet, not 3.6 mm inside them.
+    full_face.vertices = mouth_onto_mesh(full_face.vertices, vertices, morph.lip_corr(base, corr))
     full_face.vertices = eyes_onto_mesh(full_face.vertices, vertices, corr)
     placed = trim_face_border(full_face)
 
