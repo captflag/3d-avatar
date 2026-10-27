@@ -2678,6 +2678,45 @@ within 13 degrees of theirs against short01's 55, and photo-16's other photos
 rate it higher; it ties at the pose and loses 0.017 level, where its sides hang
 over the temples. Left as short01 by the keep/drop measure, for a decision.
 
+## Haircuts from the community packs
+
+No single-image hair model is free to ship: Im2Haircut (ICCV 2025) is CC
+BY-NC-SA, DiffLocks (CVPR 2025) academic-only with commercial use licensed by
+Meshcapade, Perm's single-view pipeline unreleased; TripoSR (MIT, fits 6 GB)
+makes one coarse mesh of the whole picture, no strands. So the hair is still
+MakeHuman cards, from a much larger set: the community's Hair 01 (CC0, 25
+cuts), Hair 02 (CC-BY, 21) and Hair 03 (CC-BY, 14), in the same MHCLO format
+the pipeline already fits, combs and dyes. Most are long, braided or styled;
+eight are short, of which elvs_short_daisy_hair ships a broken normal map.
+The other seven, each built on the five faces with score_run.py against
+short01 (pose / level / photo-16's other photos / strand angle):
+
+| cut | pose | level | other photos | angle |
+|---|---|---|---|---|
+| short01 (was the rule) | 0.570 | 0.544 | 0.410 | 54.6 |
+| culturalibre_hair_05 (CC0), swept up, tousled | **0.582** | 0.559 | **0.460** | 60.0 |
+| elvs_maxwell_hair (CC-BY), spiky | 0.576 | **0.561** | 0.429 | 17.8 |
+| culturalibre_hair_02 (CC0), close crop | 0.562 | 0.541 | 0.393 | 39.4 |
+| elvs_grump_hair (CC-BY), smooth, combed over | 0.560 | 0.547 | 0.413 | 74.4 |
+| elvs_short_side_do (CC-BY), falls over one side | 0.555 | 0.518 | 0.426 | 25.9 |
+| culturalibre_hair_14 (CC-BY), mid-length | 0.535 | 0.514 | 0.377 | 28.1 |
+| cortu_short_messy_hair (CC0) | 0.513 | 0.491 | 0.386 | 20.4 |
+
+culturalibre_hair_05 is now the cut for short hair without a fringe: first at
+the photo's pose and against photo-16's other photos, the two measures with
+the least bias. Per face it is not everyone's best: ref-man scores 0.720 in
+elvs_grump_hair against 0.673 in it, photo-10 0.580 in elvs_short_side_do
+(which hangs across half his face) against 0.522. maxwell scores about as well
+on average but draws a spiky crest. One rule for everyone is the ceiling here;
+picking per photo needs a reading of the style (the Claude photo check now
+sees all fourteen short cuts by descriptive labels, but only decides when the
+segmentation finds no hair).
+
+fetch_assets.py fetches the catalogue's community cuts folder by folder (23 MB
+of the packs' 340) and refuses any item its pack's manifest does not mark CC0
+or CC-BY. CC-BY items carry a `credit` in the catalogue, and an avatar's info
+lists the authors of what it wears (`credits`).
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.

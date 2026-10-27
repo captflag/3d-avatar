@@ -270,8 +270,19 @@ def hair_style(reading: dict | None, default: str) -> str | None:
     -0.008 at its pose, within build noise); photo-16's other two photos +0.05
     and +0.03. short02 left a see-through band at the front of the hairline.
 
-    ponytail: five measurements and seven haircuts. The long-hair branch has not
-    yet been checked against a real long-haired photo.
+    It is now the community's culturalibre_hair_05 (Hair 01 pack, CC0), a
+    short cut swept up and tousled: every short cut of the system and
+    community packs built on the five faces and scored with score_run.py, it
+    led at the photo's pose (0.570 -> 0.582) and on photo-16's other photos
+    (0.410 -> 0.460), level 0.544 -> 0.559; ref-man -0.016 and photo-10 -0.032
+    at the pose, the other three up. elvs_maxwell_hair scored about as well but
+    is a spiky crest; elvs_grump_hair, smooth and combed, was ref-man's best
+    (0.720) and lower on the rest. The others stay in the catalogue for the
+    photo check and --wear.
+
+    ponytail: five measurements and fourteen short cuts, one pick for all.
+    The long-hair branch has not yet been checked against a real long-haired
+    photo.
     """
     if reading is None or reading["top"] is None:
         return default if reading is None else None
@@ -282,7 +293,7 @@ def hair_style(reading: dict | None, default: str) -> str | None:
         return "hair_long01"
     if reading["bottom"] > -0.15:
         return "hair_bob02" if fringe else "hair_bob01"
-    return "hair_short03" if fringe else "hair_short01"
+    return "hair_short03" if fringe else "hair_culturalibre_hair_05"
 
 
 # ----------------------------------------------------------------- mouth ------

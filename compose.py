@@ -1414,6 +1414,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "bones": len(skeleton),
         "gender": gender,
         "wearing": [item["id"] for item, _ in worn],
+        # CC-BY items name their authors, to be credited where the avatar is shown.
+        "credits": sorted({f"{item['label']}: {item['credit']} (CC-BY)" for item, _ in worn if item.get("credit")}),
         "skin_tone": [int(c) for c in tone],
         "hair_colour": None if hair_rgb is None else [int(c) for c in hair_rgb],
         "body_triangles": int(len(body.faces) + len(head.faces)),
