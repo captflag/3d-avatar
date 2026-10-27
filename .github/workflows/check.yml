@@ -17,5 +17,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install numpy pillow scipy trimesh
+      - run: pip install "mediapipe<1" numpy pillow trimesh flask scipy pygltflib opencv-python-headless
       - run: python premerge.py --ci
