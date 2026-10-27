@@ -31,6 +31,13 @@
   .toggle input { accent-color:var(--accent); }
   select.toggle { background:#222730; color:var(--text); border:1px solid var(--line);
                   border-radius:8px; padding:8px 10px; font:inherit; }
+  #guide { margin:18px auto 0; max-width:1000px; text-align:left; }
+  #guide summary { color:var(--muted); font-size:13px; cursor:pointer; text-align:center; }
+  #guide img { display:block; width:100%; height:auto; margin-top:12px; }
+  /* On a phone the guide keeps a readable size and scrolls sideways in its box. */
+  #guide .scroll { overflow-x:auto; }
+  #drop { min-width:0; }        /* a grid item, it would otherwise grow to the guide's width */
+  @media (max-width:760px) { #guide img { width:720px; max-width:none; } }
   #status { min-height:20px; font-size:13px; color:var(--muted); text-align:center; }
   #status.bad { color:var(--bad); }
   #advice { font-size:13px; color:var(--muted); text-align:center; }
@@ -117,6 +124,13 @@
       <button type="submit" id="go" disabled>Generate avatar</button>
       <span id="chosen"></span>
     </div>
+    <!-- A drawn example, not a real person: what costs likeness, measured on
+         the test faces (REALISM-GAP.md, photo-10: a 52-pixel face). -->
+    <details id="guide" open>
+      <summary>What photo works best</summary>
+      <div class="scroll"><img src="/lib/photo-guide.svg" width="1000" height="350"
+           alt="Like this: face fills about a third of the frame, looking straight at the camera, soft even light, relaxed face with mouth closed, no glasses or hat, sharp. Avoid: too far away, sunglasses, head turned, a big laugh, back-lit or dark, blurry."></div>
+    </details>
   </form>
 
   <section id="camera" aria-label="camera">
