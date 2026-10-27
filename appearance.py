@@ -246,11 +246,21 @@ def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dic
     reading["widths"] = widths
 
     reading.update(top=round(float((ty - ys.min()) / face_h), 2),
-                   bottom=round(float((ys.max() - cy) / face_h), 2),
+                   # Where the hair's mass ends, not its lowest pixel: a strip of hair
+                   # beside the ear reached near the jaw on a short back-and-sides cut
+                   # (-0.13, read as a bob over half his face); its 99th percentile,
+                   # -0.22. The five test faces moved 0.05-0.29 further from the chin.
+                   bottom=round(float((np.percentile(ys, 99) - cy) / face_h), 2),
                    fringe=round(float(forehead.mean()) if forehead.size else 0.0, 2),
                    sides=round(float(np.median(overhang)), 2) if overhang else None,
                    colour=_rgb(base))
     return reading
+
+
+# Below this `sides` (read_hair: hair past the face's outline at the temples,
+# face widths) short hair is a close crop. ponytail: set between photo-10's
+# 0.08 and the next test face's 0.12; one close-cropped face so far.
+CROP_SIDES = 0.10
 
 
 def hair_style(reading: dict | None, default: str) -> str | None:
@@ -293,7 +303,14 @@ def hair_style(reading: dict | None, default: str) -> str | None:
         return "hair_long01"
     if reading["bottom"] > -0.15:
         return "hair_bob02" if fringe else "hair_bob01"
-    return "hair_short03" if fringe else "hair_culturalibre_hair_05"
+    if fringe:
+        return "hair_short03"
+    # Hair that barely stands out past the face's outline at the temples is a
+    # close crop, which the tall community cut over-states: photo-10 (sides
+    # 0.08, the others 0.12-0.16) scored 0.554 in short01 against 0.522 in it.
+    if (reading.get("sides") or 1.0) < CROP_SIDES:
+        return "hair_short01"
+    return "hair_culturalibre_hair_05"
 
 
 # ----------------------------------------------------------------- mouth ------
