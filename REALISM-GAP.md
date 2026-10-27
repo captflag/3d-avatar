@@ -2627,6 +2627,57 @@ photos; a real guided capture is the test. `score_run.py` takes `sides` per
 face for it, and any number of people with `others` for a bigger, honest
 test set.
 
+## Three avatars looked at: what the measures said
+
+Looking at ref-man, ref-woman and photo-16 beside their photos gave a list:
+hair choppy and spiky where the photos' is smooth, ref-man's beard pale and
+his face rounder, ref-woman's face fuller and her brows heavier, photo-16's
+jaw too narrow and his smirk lost. Measured, half of it was the eye's reading
+rather than the avatar's (score_run.py; five faces; against the run before).
+
+**Face shape, by landmarks** (eye spacings, photo -> render, at the pose):
+photo-16's face is 4.5% *wider* than the photo at the cheekbones and 3% at the
+jaw, not narrower; ref-woman's 4% narrower, not fuller (what reads as round is
+shading, not outline). Across the faces the renders spread as widely as the
+photos, so the fit is not pulling faces to an average. The one real gap is
+ref-man's lower face, nose to chin 0.73 -> 0.64: his photo's chin outline is
+the beard's edge, which outline_trust trusts less (0.85 off) and the painted
+beard has no bulk to fill. Trusting it more (0.5, 0.2) made the jaw wider, not
+the chin longer: identity at the pose fell on both bearded faces.
+
+**Beard.** Kept: the photo's beard painted 8 L* darker than it shows
+(appearance.darken_beard), by what the studio lifts dark paint (above). Pose
+0.561 -> 0.570, level 0.543 -> 0.544, photo-16 against his other photos
+0.391 -> 0.410; ref-woman +0.012 too (the darker shadows under her lips and
+chin fall in the map); photo-14 level -0.009. At 10 L* +0.006, at 14 photo-16
+fell.
+
+**Brows.** ref-woman's render matches her photo: brow hairs L* 46.7 against
+46.7 on an 1800-pixel render, contrast with the forehead 39 against 40, and
+thinner at their middle (0.089 against 0.144 eye spacings). Nothing to change.
+
+**Mouth.** photo-16's corners sit 4.6 and 6.6% of the eye spacing above his
+lip line, the render's 3.1 and 3.9: the smirk. MediaPipe reads it as barely
+a smile (0.03-0.04). Raising mouthSmileLeft by 0.15 put the corners at 3.2 and
+5.7, but identity at the pose fell 0.561 -> 0.546 (to 0.536 further), the
+other photos 0.410 -> 0.402-0.407. Not kept.
+
+**Haircut**, every cut built and scored now the scores are exact (pose /
+level / photo-16's other photos / strand angle off the photos):
+
+| cut | pose | level | other photos | strand angle |
+|---|---|---|---|---|
+| short01 (rule) | 0.570 | 0.544 | 0.410 | 54.6 |
+| short02 | 0.541 | 0.509 | 0.369 | 77.8 |
+| short04, side parting | 0.568 | 0.527 | 0.429 | 13.0 |
+| short04, sides trimmed (short_sides) | 0.545 | 0.533 | 0.359 | 20.1 |
+| short_sides | 0.524 | 0.509 | 0.349 | 66.1 |
+
+short04, combed, is the smooth, swept cut the photos show: its strands lie
+within 13 degrees of theirs against short01's 55, and photo-16's other photos
+rate it higher; it ties at the pose and loses 0.017 level, where its sides hang
+over the temples. Left as short01 by the keep/drop measure, for a decision.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.

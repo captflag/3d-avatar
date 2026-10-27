@@ -929,6 +929,24 @@ def _lips_and_nostrils(landmarks, photo_size: tuple[int, int]) -> np.ndarray:
     return cv2.dilate(exclude, np.ones((2 * grow + 1,) * 2, np.uint8))
 
 
+# How much darker the beard is painted than the photo shows it, L* (0-100).
+# Dark paint renders lighter than the photo (REALISM-GAP, "Dark paint renders
+# light"): ref-man's jaw +8 L*, photo-10's beard +11. Identity, five faces at
+# the photo's pose: 0.561 -> 0.570 at 8 (photo-16 against his other photos
+# 0.391 -> 0.410), 0.567 at 10; at 14 ref-man rose further and photo-16 fell.
+BEARD_DARKEN = 8.0
+
+
+def darken_beard(skin_rgb: np.ndarray, facial_hair_map: np.ndarray, landmarks) -> np.ndarray:
+    """The photo's beard (facetexture.facial_hair, 0-1) painted BEARD_DARKEN
+    L* darker, lips and nostrils left out."""
+    h, w = skin_rgb.shape[:2]
+    lab = cv2.cvtColor(np.ascontiguousarray(skin_rgb, dtype=np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
+    keep = 1.0 - _lips_and_nostrils(landmarks, (w, h))
+    lab[..., 0] -= BEARD_DARKEN * 2.55 * np.clip(facial_hair_map, 0.0, 1.0) * keep
+    return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+
+
 # Stubble: below STUBBLE_FROM jaw_beard (appearance.outline_trust) the face is
 # taken as shaven and left alone; ref-woman reads 0.06, photo-16's stubble
 # 0.28. Below the nose, skin from STUBBLE_DARKER L* (0-255) under the cheeks'
