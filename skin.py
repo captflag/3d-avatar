@@ -6,9 +6,11 @@ covered in pores that catch light at grazing angles. A body without any of
 that reads as moulded plastic however good the lighting is (REALISM-GAP.md,
 causes 8 and 21).
 
-There is no CC0 skin texture to download — MakeHuman's default skin is
-procedural, with no image behind it — so this one is generated. Being
-procedural also means it carries no licence question at all.
+This one is generated: procedural, so it carries no licence question at all.
+MakeHuman's own skins and the community skin packs are CC0 photo textures
+(fetch_assets.py fetches a set of them to assets/), but nothing here reads
+them yet; taking their pore and mottling detail in place of the noise is the
+next step, kept only if it scores better (REALISM-GAP.md).
 
 Matching follows the advice we received, applied where it makes sense: the
 skin's colour statistics are measured on the person's cheeks in LAB (mean and
