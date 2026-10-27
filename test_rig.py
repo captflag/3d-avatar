@@ -16,6 +16,7 @@ import tempfile
 import numpy as np
 from PIL import Image
 import pygltflib as gl
+import trimesh
 
 from catalogue import build_item, items_by_id, load_base, load_base_uv
 from compose import compose, rest_pose
@@ -564,6 +565,57 @@ def check_hair_cap():
         a = g.accessors[prim.attributes.POSITION]
         assert a.min[1] > 7.3, f"cap reaches down to y {a.min[1]:.2f}, below the brows"
     print(f"ok  hair cap: blended, {partial:.0%} of its texels fading, opaque under the cards, above the brows")
+
+
+def check_hair_comb():
+    """The photo's strands read the right way round, and the cap's strands are
+    painted along the direction asked for, its see-through edge kept."""
+    import cv2
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from facetexture import rasterize
+    import garments
+
+    y, x = np.mgrid[0:120, 0:120]
+    stripes = (127 + 100 * np.sin((x + y) / 3.0))[..., None].repeat(3, axis=2)     # '/' strands
+    angle, clear = garments._strand_field(stripes, np.ones((120, 120)), 60.0)
+    d = np.array([np.cos(angle[60, 60]), np.sin(angle[60, 60])])
+    assert abs(abs(d @ np.array([1.0, -1.0]) / np.sqrt(2)) - 1) < 0.05 and clear[60, 60] > 0.9, \
+        f"'/' strands read as {np.degrees(angle[60, 60]):.0f} deg"
+
+    verts, _ = load_base()
+    hair = build_item(items_by_id()["hair_short01"], (120, 80, 50), verts)
+    edges = hair.edges
+    _, label = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])),
+                                               shape=(len(hair.vertices),) * 2), directed=False)
+    cap = np.bincount(label).argmax()
+    faces = hair.faces[label[hair.faces[:, 0]] == cap]
+    uv = hair.metadata["uv"]
+    before = np.asarray(hair.metadata["texture"].convert("RGBA")).astype(int)
+    readings = []
+    for way in ([0.0, 0.0, -1.0], [1.0, 0.0, 0.0]):
+        painted, _ = garments._paint_cap(hair.metadata["texture"], None, hair.vertices, faces, uv,
+                                         lambda at: np.tile(way, (len(at), 1)), rasterize)
+        after = np.asarray(painted.convert("RGBA")).astype(int)
+        # Requantised to a palette, alpha moves a few levels; the cut at half must not.
+        assert ((after[..., 3] >= 128) == (before[..., 3] >= 128)).all() and \
+            np.abs(after[..., 3] - before[..., 3]).max() <= 8, "the cap's alpha changed"
+        readings.append(after)
+    size = before.shape[0]
+    core = (rasterize(np.ones(len(hair.vertices)), faces, uv, faces, size, fill=0.0) > 0.5) & (before[..., 3] > 250)
+    changed = float((np.abs(readings[0] - before).sum(axis=2) > 6)[core].mean())
+    assert changed > 0.15, f"only {changed:.0%} of the cap repainted"
+    # Back and sideways, the painted strands cross at near right angles over
+    # the crown, where both run along the scalp (on the sides "sideways" points
+    # out of it, behind "back" does).
+    up = trimesh.Trimesh(hair.vertices, faces, process=False).vertex_normals[:, 1]
+    crown = core & (rasterize(up, faces, uv, faces, size, fill=0.0) > 0.8)
+    a = [garments._strand_field(r[..., :3].astype(np.float64), crown.astype(np.uint8), 20.0) for r in readings]
+    both = np.minimum(a[0][1], a[1][1]) > 0.3
+    diff = np.abs((a[0][0] - a[1][0] + np.pi / 2) % np.pi - np.pi / 2)[both]
+    assert np.degrees(np.median(diff)) > 60, f"back and sideways painted {np.degrees(np.median(diff)):.0f} deg apart"
+    print(f"ok  hair comb: strands read the right way round; the cap painted along the asked direction "
+          f"({changed:.0%} repainted, back and sideways {np.degrees(np.median(diff)):.0f} deg apart), alpha kept")
 
 
 def check_hair_width():
@@ -1515,6 +1567,7 @@ if __name__ == "__main__":
         check_hair_width()
         check_hair_tangents()
         check_hair_cap()
+        check_hair_comb()
         check_lip_correction()
         check_lashes_and_lids()
         check_mouth_set()

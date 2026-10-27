@@ -866,6 +866,22 @@ def _last_along(mask: np.ndarray, centre: np.ndarray, directions: np.ndarray, le
     return np.where(last >= 0, r[np.maximum(last, 0)], 0.0)
 
 
+def _photo_view(person: np.ndarray, rotation: np.ndarray, pixels: np.ndarray):
+    """The head seen as the photo saw it: `view` takes head points to a
+    picture of the head turned by `rotation`, HAIR_FIT_SCALE pixels per eye
+    spacing, and `to_view` (2x3) takes the photo's pixels into that picture by
+    a similarity fit of its landmarks (`pixels`) onto the face's (`person`).
+    Returns view, to_view, the picture's size, its scale and the eye spacing."""
+    centre = person[:468].mean(axis=0)
+    spacing = float(np.linalg.norm(person[33] - person[263]))
+    scale = HAIR_FIT_SCALE / spacing
+    size = int(7 * HAIR_FIT_SCALE)
+    view = lambda q: np.stack([((q - centre) @ rotation.T)[:, 0] * scale + size / 2,
+                               -((q - centre) @ rotation.T)[:, 1] * scale + size / 2], axis=1)
+    to_view = _similarity(np.asarray(pixels[:468], dtype=np.float64), view(person[:468]))
+    return view, to_view, size, scale, spacing
+
+
 def fit_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray, rotation: np.ndarray,
              person: np.ndarray, pixels: np.ndarray, photo_hair: np.ndarray, opaque) -> np.ndarray:
     """A haircut's outline moved until, seen as the photo saw the head, it runs
@@ -887,13 +903,7 @@ def fit_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray
     """
     import cv2
 
-    centre = person[:468].mean(axis=0)
-    spacing = float(np.linalg.norm(person[33] - person[263]))
-    scale = HAIR_FIT_SCALE / spacing
-    size = int(7 * HAIR_FIT_SCALE)
-    view = lambda q: np.stack([((q - centre) @ rotation.T)[:, 0] * scale + size / 2,
-                               -((q - centre) @ rotation.T)[:, 1] * scale + size / 2], axis=1)
-    to_view = _similarity(np.asarray(pixels[:468], dtype=np.float64), view(person[:468]))
+    view, to_view, size, scale, spacing = _photo_view(person, rotation, pixels)
     # The photo's hair, one piece: the largest connected part, holes closed.
     hair_mask = cv2.morphologyEx(np.asarray(photo_hair, np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     count, labels, stats, _ = cv2.connectedComponentsWithStats(hair_mask)
@@ -962,6 +972,294 @@ def fit_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray
     near = skull[tree.query(hair.vertices)[1]]
     hair.vertices = hair.vertices + normals[near] * np.maximum(keep - now, 0.0)[:, None]
     return gaps / HAIR_FIT_SCALE
+
+
+# The hair combed the way the photo's runs (comb_hair). How far a direction
+# read off the photo carries over the head, in eye spacings; how strongly the
+# combed-back default holds where the photo says little (against a photo
+# reading's full weight of 1); and a painted strand's reach either way along
+# the cap's map, in texels of a 1024 map.
+COMB_REACH = 0.8
+COMB_PRIOR = 0.3
+COMB_STRAND = 14
+# Cards longer than this (eye spacings) are the cut's flaps at the front and
+# temples, not tufts: turned about one root they swung off the head.
+COMB_CARD_MAX = 0.6
+
+
+def _strand_field(photo_rgb: np.ndarray, hair: np.ndarray, eye_px: float):
+    """The photo's strand direction (radians, image axes) and how clearly it
+    reads (coherence 0-1, zero off the hair and near its outline)."""
+    import cv2
+    grey = cv2.GaussianBlur(photo_rgb.astype(np.float32).mean(axis=2), (0, 0), max(0.01 * eye_px, 0.6))
+    gx, gy = cv2.Sobel(grey, cv2.CV_32F, 1, 0), cv2.Sobel(grey, cv2.CV_32F, 0, 1)
+    sigma = max(0.06 * eye_px, 2.0)
+    jxx, jyy, jxy = (cv2.GaussianBlur(a, (0, 0), sigma) for a in (gx * gx, gy * gy, gx * gy))
+    strand = 0.5 * np.arctan2(2 * jxy, jxx - jyy) + np.pi / 2      # across the brightness gradient
+    clear = np.sqrt((jxx - jyy) ** 2 + 4 * jxy ** 2) / (jxx + jyy + 1e-6)
+    # Kept off the hair's outline: its edge against background or forehead
+    # reads as one long strand along it.
+    inner = cv2.erode(hair.astype(np.uint8), np.ones((int(0.25 * eye_px) * 2 + 1,) * 2, np.uint8))
+    return strand, clear * inner
+
+
+def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray, rotation: np.ndarray,
+              person: np.ndarray, pixels: np.ndarray, photo_rgb: np.ndarray, photo_hair: np.ndarray) -> dict:
+    """A haircut combed the way the photo's hair runs.
+
+    The stock cuts carry their own parting: short01's cap is painted with
+    strands running from the middle of the crown out to the ears (on the
+    crown 0.63 of their direction sideways, 0.52 front to back), and its 200
+    tuft cards stand out from the scalp every which way. Rendered, the top of
+    the head read sideways where the test photos' hair runs up from the
+    forehead and over to one side: the strands the render shows lay 68-74
+    degrees off the photos' on ref-man, photo-14 and photo-16 (random would
+    be 45). Combed, 56, 38 and 66; the identity score at the photo's pose
+    0.541 -> 0.562, every face up (level 0.529 -> 0.535, within noise).
+
+    A direction is read at every hair point: where the photo sees it, the
+    photo's strand direction there (`_strand_field`), lifted into the scalp's
+    tangent plane through the photo's head pose (`_photo_view`); elsewhere,
+    and blended in where the photo reads weakly, hair combed back from the
+    hairline and down behind. Readings carry over COMB_REACH. Then each card
+    is turned about its root, round the scalp's normal, to run that way (its
+    height off the scalp kept), and the cap's strands are painted again along
+    it, keeping the stock texture's shading at a larger scale and its
+    see-through edge. Returns how far the cards turned and how much of the
+    photo was read, for the log.
+
+    ponytail: one direction per point, no curl; a cut whose largest piece is
+    not a cap (bobs, long) gets its cards combed only.
+    """
+    import cv2
+    from PIL import Image
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+    from facetexture import rasterize
+
+    view, to_view, size, scale, spacing = _photo_view(person, rotation, pixels)
+    eye_px = float(np.linalg.norm(pixels[33] - pixels[263]))
+    strand, clear = _strand_field(photo_rgb, photo_hair, eye_px)
+    ph, pw = clear.shape
+
+    skull = np.unique(head_faces)
+    normals = trimesh.Trimesh(vertices, head_faces, process=False).vertex_normals
+    tree = cKDTree(vertices[skull])
+    eyes_y = float(person[[33, 263], 1].mean())
+    cranium = vertices[skull[vertices[skull, 1] > eyes_y]]
+    centre = np.array([0.0, cranium[:, 1].mean(), (cranium[:, 2].max() + cranium[:, 2].min()) / 2.0])
+    radius = float(np.median(np.linalg.norm(cranium - centre, axis=1)))
+
+    def normal_at(points):
+        return normals[skull[tree.query(points)[1]]]
+
+    def tangent(d, n):
+        d = d - (d * n).sum(axis=1, keepdims=True) * n
+        return d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-9)
+
+    sweep = 0.0
+
+    def combed_back(points, n):
+        # Away from a point ahead of the face: up and back from the hairline,
+        # back over the crown and above the ears; down behind. Over the top,
+        # to the side the photo's hair goes (`sweep`, + towards the head's left).
+        q = points - centre
+        away = q - np.array([0.0, -0.3 * radius, 1.2 * radius])
+        behind = np.clip(-q[:, 2] / radius, 0.0, 1.0)
+        top = np.clip(q[:, 1] / radius, 0.0, 1.0)
+        return tangent(away / radius - np.array([0.0, 2.0, 0.0]) * behind[:, None]
+                       + np.array([sweep, 0.0, 0.0]) * top[:, None], n)
+
+    # The photo's reading at each hair vertex.
+    points = hair.vertices
+    n = normal_at(points)
+    in_view = view(points)
+    inverse = np.linalg.inv(to_view[:, :2])
+    photo_px = (in_view - to_view[:, 2]) @ inverse.T
+    xs, ys = np.round(photo_px[:, 0]).astype(int), np.round(photo_px[:, 1]).astype(int)
+    inside = (xs >= 0) & (xs < pw) & (ys >= 0) & (ys < ph)
+    weight = np.zeros(len(points))
+    weight[inside] = clear[ys[inside], xs[inside]]
+    facing = np.clip((n @ rotation.T)[:, 2], 0.0, 1.0)
+    weight *= facing ** 2
+    angle = np.zeros(len(points))
+    angle[inside] = strand[ys[inside], xs[inside]]
+    seen = to_view[:, :2] @ np.stack([np.cos(angle), np.sin(angle)])          # (2, N) in the picture
+    # Lifted to the tangent plane: the direction there whose picture runs along it.
+    helper = np.where(np.abs(n[:, :1]) < 0.9, np.array([[1.0, 0.0, 0.0]]), np.array([[0.0, 0.0, 1.0]]))
+    e1 = np.cross(n, helper); e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
+    e2 = np.cross(n, e1)
+    drawn = lambda e: np.stack([(e @ rotation.T)[:, 0], -(e @ rotation.T)[:, 1]], axis=1)
+    cross = lambda a, b: a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+    d1, d2 = drawn(e1), drawn(e2)
+    lifted = cross(d2, seen.T)[:, None] * e1 - cross(d1, seen.T)[:, None] * e2
+    lifted /= np.maximum(np.linalg.norm(lifted, axis=1, keepdims=True), 1e-9)
+    # A strand read off the photo is a line, not an arrow. Those that clearly
+    # rise point away from the hairline; the side they lean to is the sweep,
+    # and strands lying across the head are turned to go with it (matched to
+    # the default alone, they went either way and the sweep came out mirrored).
+    default = combed_back(points, n)
+    lifted *= np.sign((lifted * default).sum(axis=1) + 1e-9)[:, None]
+    rising = weight * (np.abs((lifted * default).sum(axis=1)) > 0.5)
+    sweep = float((rising * lifted[:, 0]).sum() / max(rising.sum(), 1e-9))
+    default = combed_back(points, n)
+    lifted *= np.sign((lifted * default).sum(axis=1) + 1e-9)[:, None]       # growing away from the hairline
+    sources = np.nonzero(weight > 0.05)[0]
+    source_tree = cKDTree(points[sources]) if len(sources) else None
+    reach = COMB_REACH * spacing
+
+    def direction(at):
+        """The combed direction at head points `at`."""
+        nn = normal_at(at)
+        out = COMB_PRIOR * combed_back(at, nn)
+        if source_tree is not None:
+            for i, near in enumerate(source_tree.query_ball_point(at, 2.0 * reach)):
+                if near:
+                    k = sources[near]
+                    g = weight[k] * np.exp(-((points[k] - at[i]) ** 2).sum(axis=1) / (2 * reach ** 2))
+                    out[i] += (g[:, None] * lifted[k]).sum(axis=0)
+        return tangent(out, nn)
+
+    # The pieces: cards and, if there is one, the cap.
+    edges = hair.edges
+    count, label = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])),
+                                                   shape=(len(points),) * 2), directed=False)
+    sizes = np.bincount(label)
+    # The cap: one piece many times any card (short01's is 1138 vertices, its
+    # largest card 28); cuts made of cards alone have none.
+    ordered = np.sort(sizes)[::-1]
+    cap = int(np.argmax(sizes)) if len(ordered) > 1 and ordered[0] > 10 * ordered[1] else -1
+
+    v = np.asarray(hair.vertices).copy()
+    turns = []
+    cards = [c for c in range(count) if c != cap]
+    roots, axes, members = [], [], []
+    for c in cards:
+        idx = np.nonzero(label == c)[0]
+        if np.linalg.norm(np.ptp(v[idx], axis=0)) > COMB_CARD_MAX * spacing:
+            continue
+        r = np.linalg.norm(v[idx] - centre, axis=1)
+        roots.append(v[idx[r.argmin()]]); axes.append(v[idx[r.argmax()]] - v[idx[r.argmin()]])
+        members.append(idx)
+    roots, axes = np.array(roots).reshape(-1, 3), np.array(axes).reshape(-1, 3)
+    if len(members):
+        want = direction(roots)
+        n_root = normal_at(roots)
+        lying = tangent(axes, n_root)
+        for j, idx in enumerate(members):
+            k = n_root[j]
+            phi = np.arctan2(np.dot(k, np.cross(lying[j], want[j])), np.dot(lying[j], want[j]))
+            # Rodrigues, about the scalp's normal through the card's root.
+            p = v[idx] - roots[j]
+            v[idx] = roots[j] + (p * np.cos(phi) + np.cross(k, p) * np.sin(phi)
+                                 + np.outer(p @ k, k) * (1 - np.cos(phi)))
+            turns.append(abs(np.degrees(phi)))
+    hair.vertices = v
+
+    texture = hair.metadata.get("texture")
+    uv = hair.metadata.get("uv")
+    if cap >= 0 and texture is not None and uv is not None:
+        cap_faces = hair.faces[label[hair.faces[:, 0]] == cap]
+        hair.metadata["texture"], normal = _paint_cap(texture, hair.metadata.get("normal_texture"), v, cap_faces, uv,
+                                                       direction, rasterize)
+        if normal is not None:
+            hair.metadata["normal_texture"] = normal
+    return {"cards_combed": len(members), "cards_turned_deg": round(float(np.median(turns)), 1) if turns else 0.0,
+            "photo_points": int(len(sources)), "sweep": round(sweep, 2)}
+
+
+def _paint_cap(texture, normal_texture, v: np.ndarray, faces: np.ndarray, uv: np.ndarray, direction, rasterize):
+    """The cap's strands painted again along `direction`: line integral
+    convolution of fine noise along the direction carried into the map
+    through each triangle's texture coordinates. The stock texture's shading
+    at a few texels' scale stays, and its edge, where the alpha thins out into
+    strands, is left as it was."""
+    import cv2
+    from PIL import Image
+
+    rgba = np.asarray(texture.convert("RGBA")).astype(np.float32)
+    size = rgba.shape[0]
+    to_px = lambda t: np.stack([t[:, 0] * (size - 1), (1.0 - t[:, 1]) * (size - 1)], axis=1)
+    # Per vertex, the direction on the map, as a doubled angle so opposite
+    # directions agree when averaged across a vertex's triangles.
+    want = direction(v[np.unique(faces)])
+    at_vertex = np.zeros((len(v), 3)); at_vertex[np.unique(faces)] = want
+    c2, s2, w = np.zeros(len(v)), np.zeros(len(v)), np.zeros(len(v))
+    for f in faces:
+        e3 = (v[f[1:]] - v[f[0]]).T                               # 3x2
+        t = to_px(uv[f]); e2 = (t[1:] - t[0]).T                   # 2x2
+        if abs(np.linalg.det(e2)) < 1e-9:
+            continue
+        d = at_vertex[f].mean(axis=0)
+        a = np.linalg.lstsq(e3, d, rcond=None)[0]
+        m = e2 @ a
+        ang = np.arctan2(m[1], m[0])
+        c2[f] += np.cos(2 * ang); s2[f] += np.sin(2 * ang); w[f] += 1
+    c2, s2 = c2 / np.maximum(w, 1), s2 / np.maximum(w, 1)
+    covered = rasterize(np.ones(len(v)), faces, uv, faces, size, fill=0.0) > 0.5
+    fc = rasterize(c2, faces, uv, faces, size, fill=0.0).astype(np.float32)
+    fs = rasterize(s2, faces, uv, faces, size, fill=0.0).astype(np.float32)
+
+    # Fine noise streaked along the field, both ways from each texel.
+    rng = np.random.default_rng(7)
+    noise = cv2.GaussianBlur(rng.random((size, size)).astype(np.float32), (0, 0), 0.6)
+    gy, gx = np.mgrid[0:size, 0:size].astype(np.float32)
+    steps = max(int(round(COMB_STRAND * size / 1024)), 2)
+    total = noise.copy()
+    for sign in (1.0, -1.0):
+        px, py = gx.copy(), gy.copy()
+        prev = None
+        for _ in range(steps):
+            c = cv2.remap(fc, px, py, cv2.INTER_LINEAR); s = cv2.remap(fs, px, py, cv2.INTER_LINEAR)
+            ang = 0.5 * np.arctan2(s, c)
+            dx, dy = np.cos(ang), np.sin(ang)
+            if prev is None:
+                dx, dy = sign * dx, sign * dy
+            else:
+                flip = np.where(dx * prev[0] + dy * prev[1] < 0, -1.0, 1.0)
+                dx, dy = dx * flip, dy * flip
+            prev = (dx, dy)
+            px, py = (px + dx).astype(np.float32), (py + dy).astype(np.float32)
+            total += cv2.remap(noise, px, py, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    streaks = total - cv2.GaussianBlur(total, (0, 0), 3.0)
+
+    luma = np.array([0.299, 0.587, 0.114], np.float32)
+    bright = rgba[..., :3] @ luma
+    core = covered & (rgba[..., 3] > 250)
+    core = cv2.erode(core.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
+    if core.sum() < 100:
+        return texture, None
+    colour = rgba[..., :3][core].sum(axis=0) / max(float(bright[core].sum()), 1.0)    # per unit brightness
+    # Shading at a few texels' scale from the stock map, inside the cap only.
+    inside = core.astype(np.float32)
+    low = cv2.GaussianBlur(bright * inside, (0, 0), 4.0) / np.maximum(cv2.GaussianBlur(inside, (0, 0), 4.0), 1e-6)
+    detail = (bright - low)[core].std()
+    new_bright = np.clip(low + detail * streaks / max(float(streaks[core].std()), 1e-6), 0, 255)
+    blend = cv2.GaussianBlur(inside, (0, 0), 2.0)[..., None]
+    rgb = rgba[..., :3] * (1 - blend) + (new_bright[..., None] * colour[None, None, :]) * blend
+    out = np.dstack([np.clip(rgb, 0, 255), rgba[..., 3]]).astype(np.uint8)
+    painted = Image.fromarray(out, "RGBA")
+    if texture.mode == "P":
+        painted = painted.quantize(256, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.NONE)
+
+    normal = None
+    if normal_texture is not None:
+        # The strands' relief again from the new strands, as deep as the stock
+        # map's over the cap.
+        old = np.asarray(normal_texture.convert("RGB").resize((size, size))).astype(np.float32) / 127.5 - 1.0
+        slope = np.hypot(old[..., 0], old[..., 1])[core].std()
+        height = cv2.GaussianBlur(new_bright / 255.0, (0, 0), 1.0)
+        dx = cv2.Sobel(height, cv2.CV_32F, 1, 0, ksize=3); dy = cv2.Sobel(height, cv2.CV_32F, 0, 1, ksize=3)
+        depth = slope / max(float(np.hypot(dx, dy)[core].std()), 1e-6)
+        n = np.dstack([-dx * depth, dy * depth, np.ones_like(height)])
+        n /= np.linalg.norm(n, axis=2, keepdims=True)
+        new = np.where(blend > 0.5, n, old)
+        new /= np.linalg.norm(new, axis=2, keepdims=True)
+        normal = Image.fromarray(((new * 0.5 + 0.5) * 255).astype(np.uint8), "RGB")
+        if normal.size != normal_texture.size:
+            normal = normal.resize(normal_texture.size)
+    return painted, normal
 
 
 def enclosed_by_shoe(shoes: trimesh.Trimesh, points: np.ndarray, margin: float = 0.05) -> np.ndarray:

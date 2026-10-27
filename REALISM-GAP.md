@@ -2456,6 +2456,84 @@ its strands, the longest flat run is 20, at the same size (299 KB); dithered
 onto the median-cut palette instead, the map doubled and banded more.
 ref-man's score is unchanged (0.663 against 0.661-0.666).
 
+## Hair direction: combed the way the photo's runs
+
+The haircut's outline was fitted to the photo's (hairline, height, width), but
+never its direction. short01, the cut every short-haired face gets, is a cap
+painted with strands running from a centre parting out to the ears (on the
+crown 0.63 of their direction sideways, 0.52 front to back) under 200 tuft
+cards standing out every which way (crown cards' mean direction near zero).
+Rendered, the top of the head read as strands lying ear to ear; the photos'
+rise from the forehead and fan to one side (ref-man's up and over to his
+right, photo-14/16's straight up and back).
+
+Measured as the angle between the strands the photo shows and the ones the
+render shows, aligned pixel by pixel where both read clearly
+(`garments._strand_field`, the same structure tensor both sides; 0 = same
+way, 90 = across, 45 = no relation): ref-man 68, photo-14 74, photo-16 73.
+ref-woman and photo-10 show too little readable hair at their size to count.
+
+`garments.comb_hair` reads the photo's strand direction at every hair point
+it sees, through the photo's head pose (the projection fit_hair uses, now
+`_photo_view`), lifts it into the scalp's tangent plane, and blends it over
+COMB_REACH with hair combed back from the hairline where the photo says
+little. The side the photo's hair sweeps to is taken from the strands that
+clearly rise; strands lying across the head follow it (matched to the
+combed-back default alone they went either way and the sweep came out
+mirrored). Each tuft card is turned about its root round the scalp's normal,
+its height off the scalp kept; the cap's strands are painted again along the
+same directions (line integral convolution of fine noise), keeping the stock
+map's shading at a few texels' scale and its alpha.
+
+| | identity pose | identity level | direction error (man / p14 / p16) |
+|---|---|---|---|
+| before (two renders) | 0.541 / 0.541 | 0.529 / 0.528 | 68 / 74 / 73 |
+| combed (two renders) | 0.562 / 0.561 | 0.535 / 0.531 | 56 / 38 / 66 |
+| combed, tufts laid down to half their height | 0.559 | 0.528 | 57 / 76 / 78 |
+
+Every face rose at the pose (ref-man +0.024, ref-woman +0.006, photo-10
++0.024, photo-14 +0.020, photo-16 +0.031). Kept. Not kept: laying the tufts
+down (flatter read sideways again from the front), and turning every card:
+short01's 13 long flaps (0.6 eye spacings and more, at the front and
+temples), turned about one root, swung off the head and hung over the
+forehead, so only cards shorter than COMB_CARD_MAX are combed.
+
+Still open: the tufts still stand up as spikes against the sky where the
+photos' hair is smooth, and ref-woman's thin band of hair reads nothing
+past the outline margin, so she gets the default.
+
+## photo-10: the neck's beard bands and the parted mouth
+
+photo-10 is 236x293 pixels with a face 52 across (the build's advice says
+so; the photo check asks for 250), a fifth of the other test faces, so its
+skin, eyes and beard are blown up from a few pixels each: soft whatever is
+done. Two faults on top of that were the pipeline's own.
+
+The beard carried under the jaw onto the body's map came out as five flat
+stripes from beard to skin. The k-means refinement had not reached them:
+median cut shares the palette out by how much of the map a colour covers,
+and that fade is a small part of it. Now 64 of the 255 entries are spread
+over the colours present, each counted once, and every texel takes its
+nearest entry exactly (Pillow's own mapping onto a given palette runs
+through a coarse colour cache and quadrupled the skin's error). On
+photo-10's map the worst step went 18 -> 6 levels, the skin's mean error
+0.37 -> 0.42, 389 -> 379 KB.
+
+The laugh's open mouth is painted over as lips (fill_mouth, the avatar's
+mouth being closed), but the expression then parted them (mouthUpperUp
+0.3, mouthLowerDown 0.4-0.5 as applied), showing that paint as a thick pink
+band over a slit of grey teeth. Where the mouth was painted over, the lips
+now stay together and the smile is kept:
+
+| photo-10 | pose | level |
+|---|---|---|
+| lips parted (two renders) | 0.538 / 0.543 | 0.507 / 0.506 |
+| lips together, smile kept (two renders) | 0.533 / 0.543 | 0.518 / 0.516 |
+| jaw opened as the photo's (teeth show, grey) | 0.545 | 0.515 |
+| no mouth expression | 0.520 | 0.479 |
+
+Only photo-10 among the five has its mouth painted over.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.
