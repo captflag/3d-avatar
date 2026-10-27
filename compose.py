@@ -982,7 +982,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # and what an opened jaw shows.
     outfit = outfit + [items_by_id()[i] for i in ("teeth", "tongue") if i not in {o["id"] for o in outfit}]
 
-    worn, hair_rgb, curve = [], None, None
+    worn, hair_rgb, curve, hair_comb = [], None, None, None
     brow_depth = facetexture.brow_depth(photo_rgb, landmarks)
     for item in outfit:
         colour = None
@@ -1003,6 +1003,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                                      float(item.get("hairline_lift", 0.0)))}
             item.pop("y_min", None)
         mesh = build_item(item, colour, vertices)
+        if item["category"] == "hair" and "mhclo" in item and parts is not None and hair_reading:
+            # Combed the way the photo's hair runs, before it is shaped to its outline.
+            hair_comb = garments.comb_hair(mesh, vertices, head_only, render_turn, person,
+                                           np.array([[lm.x * pw, lm.y * ph] for lm in landmarks]),
+                                           photo_rgb, parts == appearance.HAIR)
         if item["category"] == "hair" and "mhclo" in item and hair_reading and hair_reading.get("hairline"):
             # The fringe up to where the photo's hair ends, in eye spacings
             # above the brows on the shaped head.
@@ -1364,9 +1369,17 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The arms are posed on the male base body; on a fuller figure they are
     # swung out until the hands clear the hips.
     body_part = next(p for p in parts if p.name == "body")
+    photo_face = morph.photo_expression(expression_of(result))
+    if mouth_filled:
+        # The photo's open mouth was painted over as lips (fill_mouth), so the
+        # lips stay together: parted, they showed that paint as a thick pink
+        # band over a slit of grey teeth. photo-10's laugh, smile kept:
+        # identity 0.538-0.543 -> 0.537 at the pose, 0.506 -> 0.515 level;
+        # with no mouth expression at all, 0.520 / 0.479.
+        photo_face = {k: v for k, v in photo_face.items() if not k.startswith(("mouthUpperUp", "mouthLowerDown"))}
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES,
-                       expression=morph.photo_expression(expression_of(result)),
+                       expression=photo_face,
                        head_pose=head_pose)
 
     info = {
@@ -1397,6 +1410,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "mouth_filled": mouth_filled,
         "top_colour": None if top_rgb is None else [int(c) for c in top_rgb],
         "jaw_beard": jaw_beard,
+        "hair_comb": hair_comb,
         "cast_corrected": list(cast_shift),
         "hair_reading": None if hair_reading is None else
             {k: v for k, v in hair_reading.items() if k != "colour"},

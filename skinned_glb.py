@@ -198,6 +198,11 @@ def _quantise_weights(weights: np.ndarray) -> np.ndarray:
     return np.clip(q, 0, 255).astype(np.uint8)
 
 
+# Of a cut-out texture's 255 palette entries, how many are spread over the
+# colours it has rather than shared out by how much of the map each covers.
+PALETTE_SPREAD = 64
+
+
 def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None,
                  smooth_alpha: bool = False) -> int:
     """Embed an image and return its texture index.
@@ -220,19 +225,34 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None,
         # Every RGBA texture here is a cut-out (alpha MASK at 0.5), so its alpha
         # is one transparent palette slot and its colour 255 entries, median
         # cut: the body's skin went from 947 to 432 KB at about 1.4 delta-E as
-        # seen, below what shows. Refined by k-means: median cut alone gave the
-        # carried beard under the jaw, a small part of the map, so few entries
-        # that its fade showed as flat bands (quantize() does not dither when
-        # asked for a colour count; dithered onto the palette instead, the map
-        # doubled in size and banded more than this).
+        # seen, below what shows. Median cut shares the entries out by how many
+        # texels a colour covers, and the beard carried under the jaw is a small
+        # part of the map: its fade from beard to skin came out as flat bands,
+        # steps of up to 28 levels on photo-10's dark beard. So most entries
+        # are median cut over every texel, refined by k-means, and
+        # PALETTE_SPREAD are spread over the colours present, each counted
+        # once; each texel then takes its nearest entry exactly (Pillow maps
+        # onto a given palette through a coarse colour cache, which quadrupled
+        # the skin's error). photo-10's worst step went 18 -> 6, the skin's
+        # mean error 0.37 -> 0.42, 389 -> 379 KB. Dithering instead doubled
+        # the map and banded more.
+        from scipy.spatial import cKDTree
         rgba = np.asarray(image)
         shown = rgba[..., 3] >= 128
-        palette = Image.fromarray(np.ascontiguousarray(rgba[..., :3])).quantize(
-            255, method=Image.Quantize.MEDIANCUT, kmeans=3)
-        index = np.asarray(palette).copy()
+        rgb = np.ascontiguousarray(rgba[..., :3])
+        popular = Image.fromarray(rgb).quantize(255 - PALETTE_SPREAD, method=Image.Quantize.MEDIANCUT, kmeans=3)
+        packed, inverse = np.unique(rgb.reshape(-1, 3).astype(np.int32) @ np.array([65536, 256, 1]), return_inverse=True)
+        colours = np.stack([packed >> 16, (packed >> 8) & 255, packed & 255], axis=1)
+        coarse = np.unique(colours >> 3, axis=0) * 8 + 4
+        side = int(np.ceil(np.sqrt(len(coarse))))
+        grid = np.vstack([coarse, np.repeat(coarse[:1], side * side - len(coarse), axis=0)]).reshape(side, side, 3)
+        spread = Image.fromarray(grid.astype(np.uint8)).quantize(PALETTE_SPREAD, method=Image.Quantize.MEDIANCUT)
+        entries = np.vstack([np.array(popular.getpalette()[:(255 - PALETTE_SPREAD) * 3]).reshape(-1, 3),
+                             np.array(spread.getpalette()[:PALETTE_SPREAD * 3]).reshape(-1, 3)])
+        index = cKDTree(entries).query(colours.astype(np.float64))[1][inverse.reshape(-1)].reshape(rgb.shape[:2])
         index[~shown] = 255
         out = Image.fromarray(index.astype(np.uint8), "P")
-        out.putpalette(palette.getpalette()[:255 * 3] + [0, 0, 0])
+        out.putpalette([int(c) for c in entries.reshape(-1)] + [0, 0, 0])
         out.save(data, format="PNG", optimize=True, transparency=255)
         mime = "image/png"
     elif image.mode == "P":
