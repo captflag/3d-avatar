@@ -425,6 +425,7 @@
       "_why": "Worn by every avatar: hidden with the mouth closed, shown when a blendshape opens the jaw. The lower teeth hang from the lower jaw's helper, which the jaw-open unit moves.",
       "mhclo": "mh_system/teeth/teeth_base/teeth_base.mhclo",
       "roughness": 0.3,
+      "tooth_colour": [232, 224, 208],
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {

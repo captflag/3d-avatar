@@ -898,6 +898,15 @@ def clothing_colour(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None):
         return None
     mine = cv2.erode((label == ids[hits.argmax()]).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
     lab = _lab(photo_rgb[mine])
+    # The cloth's own colour, the largest of three colour groups: the
+    # segmenter's cloth also takes in skin at a V-neck and the photo's frame,
+    # and a median over all of it read ref-woman's white top as mid grey.
+    if len(lab) >= 30:
+        _, group, _ = cv2.kmeans(lab.astype(np.float32), 3, None,
+                                 (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5), 3,
+                                 cv2.KMEANS_PP_CENTERS)
+        group = group.ravel()
+        lab = lab[group == np.bincount(group).argmax()]
     lo, hi = np.percentile(lab[:, 0], [20, 70])
     return _rgb(np.median(lab[(lab[:, 0] >= lo) & (lab[:, 0] <= hi)], axis=0))
 

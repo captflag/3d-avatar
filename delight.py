@@ -91,6 +91,25 @@ def rendered(albedo: np.ndarray, light: float = RENDER_LIGHT) -> np.ndarray:
     return np.where(peak < start, c, squeezed)
 
 
+def albedo_for(rgb) -> np.ndarray:
+    """The sRGB albedo the studio renders as `rgb` (sRGB, as a photo shows it),
+    same hue: the inverse of `rendered`, by its brightness.
+
+    Clothes were dyed the photo's colour as it was, and the studio's lights
+    then brightened them: a denim shirt read at L* 66 rendered at 86, black
+    shirts at 11-14 rendered at 27. Never lighter than `rgb`: near black the
+    curve's toe asks for a lighter dye, but the studio's fill light lifts dark
+    cloth anyway, and that took photo-10's black shirt from 27 to 33."""
+    shown = to_linear(np.asarray(rgb, dtype=np.float64))
+    luma = np.array([0.2126, 0.7152, 0.0722])
+    want = float(shown @ luma)
+    lo, hi = 0.0, 1.0
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if float(rendered(shown * mid) @ luma) < want else (lo, mid)
+    return to_srgb(shown * lo).astype(np.float64)
+
+
 def sh_basis(normals: np.ndarray) -> np.ndarray:
     """First-order spherical harmonics: ambient plus one direction."""
     return np.column_stack([np.ones(len(normals)), normals])

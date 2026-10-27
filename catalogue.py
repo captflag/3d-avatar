@@ -240,6 +240,9 @@ def build_item(item: dict, colour=None, vertices: np.ndarray | None = None) -> t
                 for part, dye in item["recolour"].items():
                     texture = recolour(texture, mesh, top if part == "top" else ~top, dye,
                                        plain=part in item.get("plain", ()))
+            if texture is not None and item.get("tooth_colour"):
+                from garments import whiten_teeth
+                texture = whiten_teeth(texture, item["tooth_colour"])
         if texture is not None:
             # Authored texture: fabric, stitching, folds, hair strands.
             mesh.metadata.update(texture=texture, normal_texture=normal,

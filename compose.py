@@ -74,6 +74,10 @@ SKIN_SHEEN = ((0.20, 0.07, 0.04), 0.55)
 TEETH_RECESS = 0.05
 # How far the mouth's lining is set back into the mouth (mesh units, ~1.5 mm).
 MOUTH_LINING = 0.015
+# jawOpen given a photo whose open mouth was painted over (fill_mouth), so its
+# laugh shows teeth. ponytail: one value, from photo-10, the one laughing test
+# face; read it from the photo's own lip gap once there are more.
+OPEN_JAW = 0.25
 # Cloth sheen: colour (linear RGB) and roughness. At 0.35 it washed navy out
 # to slate grey.
 CLOTH_SHEEN = ((0.12, 0.12, 0.12), 0.8)
@@ -86,7 +90,11 @@ HAIR_ANISOTROPY = (0.7, np.pi / 2)
 # cotton and wrong for everything else: skin read as dry plaster and the eyes
 # had no wet highlight. Our own viewer hid it by overriding the values.
 # A catalogue item can set its own `roughness`; these are the defaults.
-ROUGHNESS = {"skin": 0.5, "eyes": 0.18, "hair": 0.45,
+# Eyes 0.4, with the studio's cornea coat at 0.3 (scene-setup SHADING.cornea):
+# at 0.18 under a full coat the highlight over a light iris rendered 86-88 L*
+# against the photos' 55, and the irises 2-9 L* dark. Measured on 1800-pixel
+# renders of four faces, summed: highlight 77 -> 53 L* off, iris 20 -> 8.
+ROUGHNESS = {"skin": 0.5, "eyes": 0.4, "hair": 0.45,
              "top": 0.85, "bottom": 0.85, "shoes": 0.4}
 
 
@@ -975,7 +983,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         # The default top dyed the colour of the one in the photo.
         top_rgb = appearance.clothing_colour(photo_rgb, landmarks, parts)
         if top_rgb is not None:
-            outfit = [{**i, "recolour": {**i["recolour"], "top": [int(c) for c in top_rgb]}}
+            dye = delight.albedo_for(top_rgb)
+            outfit = [{**i, "recolour": {**i["recolour"], "top": [int(c) for c in dye]}}
                       if i.get("recolour") else i for i in outfit]
 
     # Teeth and tongue go in every mouth, whatever is worn: hidden at rest,
@@ -1371,12 +1380,14 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     body_part = next(p for p in parts if p.name == "body")
     photo_face = morph.photo_expression(expression_of(result))
     if mouth_filled:
-        # The photo's open mouth was painted over as lips (fill_mouth), so the
-        # lips stay together: parted, they showed that paint as a thick pink
-        # band over a slit of grey teeth. photo-10's laugh, smile kept:
-        # identity 0.538-0.543 -> 0.537 at the pose, 0.506 -> 0.515 level;
-        # with no mouth expression at all, 0.520 / 0.479.
-        photo_face = {k: v for k, v in photo_face.items() if not k.startswith(("mouthUpperUp", "mouthLowerDown"))}
+        # The photo's open mouth was painted over as lips (fill_mouth): opened
+        # by the jaw as well, its laugh shows the teeth (whitened, see
+        # garments.whiten_teeth) where the photo does. photo-10, identity at
+        # the pose / level: lips together 0.534 / 0.514, lips parted as the
+        # photo's 0.527 / 0.504, parted with the jaw at OPEN_JAW 0.545 / 0.515.
+        # (With the stock grey teeth, parting them showed a slit of grey under
+        # a pink band, and lips together scored best.)
+        photo_face = {**photo_face, "jawOpen": max(photo_face.get("jawOpen", 0.0), OPEN_JAW)}
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES,
                        expression=photo_face,

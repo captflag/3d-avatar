@@ -2534,6 +2534,99 @@ now stay together and the smile is kept:
 
 Only photo-10 among the five has its mouth painted over.
 
+## Repeatable scoring, and a round of upgrades measured with it
+
+**Renders were not repeatable; builds were.** Two renders of one GLB differed
+at 48,000 pixels (6% of the image), by up to 94 levels, and ref-man's identity
+moved 0.681-0.686. The cause was three.js's GTAOPass: its denoiser's noise
+comes from SimplexNoise, which fills its table from Math.random, so each
+render's occlusion was speckled differently. Built under a fixed seed
+(scene-setup.withOcclusion) four renders, across two browsers, differ at 1-3
+pixels by 1 level and score 0.6819-0.6820. Two builds of one photo, with BLAS
+on one thread, were already identical to the byte. So the 0.008 render noise
+and 0.017 build noise measured before were all render noise, and a single run
+now resolves any change.
+
+`render.py` renders as the studio does with no window (its own page in
+headless Chrome, called through `renderPng`), and `score_run.py` builds,
+renders and scores the test set in about 90 s, printing identity at the pose
+and level, against other photos where listed, and the hair's strand angle
+(README). Two full runs gave the same table to the last digit. Everything
+below is scored with it, against the run before it (mean of five faces).
+
+| change | identity pose | level | other photos | kept |
+|---|---|---|---|---|
+| exposure per pixel through the tone curve | 0.561 -> 0.565 | 0.538 -> 0.541 | 0.391 -> 0.392 | no: ref-woman +0.05, the other four down at the pose |
+| skin specular off (a test) | 0.561 -> 0.559 | 0.538 -> 0.549 | 0.391 -> 0.392 | no: mixed per face |
+| comb: read the photo's strands nearer the outline (0.12 eye spacings) | 0.561 -> 0.557 | 0.538 -> 0.537 | 0.391 -> 0.385 | no: hair angle 53 -> 65 |
+| comb: tufts standing off the scalp shortened to 0.6 | 0.561 -> 0.549 | 0.538 -> 0.535 | 0.391 -> 0.371 | no: hair angle 53 -> 73 |
+| teeth whitened, a painted-over laugh opened by the jaw | 0.561 -> 0.563 | 0.538 -> 0.538 | 0.391 -> 0.391 | yes |
+| eyes: cornea coat 0.3, roughness 0.4 | 0.563 -> 0.560 | 0.538 -> 0.543 | 0.391 -> 0.391 | yes, on the eye measures |
+| shirt dyed through the render model, read from its largest colour group | 0.560 -> 0.561 | 0.543 -> 0.543 | 0.391 -> 0.391 | yes |
+
+**Dark paint renders light.** Binned by the photo's lightness, render minus
+photo over the face: on ref-man, ref-woman and photo-10 +12 L* where the photo
+is 30-45, +8 at 45-60, +6 at 60-75, within 1 on the bright cheeks; photo-14/16
++1-4. Beards, brows, lash lines and creases are where it shows. Part is the
+exposure: it is solved at the cheek through the tone curve and applied as one
+factor, and light cheeks sit on the curve's shoulder; solved per pixel instead,
+the 60-75 band went +6 -> +2 on ref-man, but the darkest band stayed +9-12 and
+identity fell on four faces of five. Part is the skin's specular: off, photo-10's
+dark beard went +10 -> +2, but the light faces' darks barely moved. Neither is
+kept; what lifts the darkest paint on light faces is still open.
+
+**Beard by colour.** The beard map was not the loss: on ref-man it catches the
+beard along the jaw and most of the chin, and the bake takes the chin's colour
+from the photo inside the face sheet whatever the map says. What reads short
+and pale is dark paint rendering light (above). A texture cue (local variance)
+caught lip edges and the neckline as much as beard; not used.
+
+**Hair.** ref-woman's thin band of hair reads no direction because the strand
+reading keeps a quarter of an eye spacing off the outline; narrowed, she got
+146 readings but the outline's edge read as strands on every face. The tufts
+that stand up are what make the comb read as rising hair from the front:
+shortened, the hair angle went 53 -> 73. Neither kept; growing cards from the
+photo (`hair_from_photo`, its own branch) remains the larger route.
+
+**Teeth.** MakeHuman's teeth map is mid grey with deep occlusion painted into
+each tooth: open, the teeth rendered at L* 72 with dark gaps. Whitened
+(`garments.whiten_teeth`, catalogue `tooth_colour`, a quarter of the stock
+shading kept, gums untouched) they render at 91; photo-10's laughing teeth read
+88. With white teeth, opening a painted-over laugh by the jaw (OPEN_JAW 0.25)
+beat keeping the lips together on photo-10: 0.534/0.514 -> 0.545/0.515; the
+other faces' mouths are closed and their scores did not move.
+
+**Eyes.** SFace sees a 112-pixel crop, so render size cannot make it see the
+eyes; they were measured directly instead, on 1800-pixel renders of four faces
+(photo-10's eyes are 32 pixels apart in its photo, too small to read).
+Highlight over the iris (p95 L*): ref-man 86 against the photo's 55, ref-woman
+88 against 55, photo-14/16 44-47 against 51. A cornea coat of 0.3 and eye
+roughness 0.4: highlight off by 77 -> 53 L* summed over the four, iris 20 -> 8.
+Identity moved -0.016 to +0.016 per face, mean -0.003 at the pose and +0.005
+level; kept for the eye measures. The lash line is light on ref-man (57 against
+46) and dark on photo-14/16 (25 against 32): no one setting helps both.
+
+**Clothes.** The shirt was dyed the colour the photo showed, and the studio's
+lights brightened it: ref-man's denim (read L* 68) rendered at 86. Dyed with
+`delight.albedo_for` (the inverse of the render model, never lighter than the
+reading) it renders at 76; ref-woman's grey jacket (46) 69 -> 53. Dark cloth
+stays near 27-29 against 15-16: switching the cloth sheen off did not darken
+it, so it is the studio's fill lifting dark surfaces, as on skin. The reading
+took a median over the segmenter's whole cloth, which also covers skin at a
+V-neck and the photo's frame; it now takes the largest of three colour groups
+first. Earrings need a CC0 jewellery asset, which MakeHuman's system packs do
+not have.
+
+**Side photos.** compose.py already fuses turned photos (`--side`,
+views.fuse), as guided capture sends them. The only turned photos of a test
+person are photo-16's sk-20 (21.7 degrees) and sk-22 (-11.7), 148 pixels
+across: fused, identity fell 0.549 -> 0.510 at the pose and 0.499 -> 0.450
+against sk-21, the photo held out. They are far short of guided capture's
+25-40 degrees and 400 pixels, so this says nothing yet about proper side
+photos; a real guided capture is the test. `score_run.py` takes `sides` per
+face for it, and any number of people with `others` for a bigger, honest
+test set.
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.

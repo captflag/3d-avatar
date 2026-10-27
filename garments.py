@@ -451,6 +451,36 @@ def garment_regions(mesh: trimesh.Trimesh, vertices: np.ndarray, groups: dict) -
     return ~bottom[label[mesh.faces[:, 0]]]
 
 
+# Of the stock teeth map's own shading, how much the whitened teeth keep.
+TOOTH_SHADING = 0.25
+
+
+def whiten_teeth(texture, colour) -> "Image.Image":
+    """MakeHuman's teeth map with the teeth (not the gums) at `colour` (sRGB).
+
+    Its teeth are mid grey (the brightest tenth about 166 of 255) with deep
+    occlusion painted into every tooth, and rendered they came out grey with
+    dark gaps, where a laughing photo's teeth read near white (photo-10's about
+    230). The grey texels, told from the red gums by their lack of colour, take
+    `colour`, keeping TOOTH_SHADING of their own variation about its mean.
+    """
+    import cv2
+    from PIL import Image
+
+    rgb = np.asarray(texture.convert("RGB")).astype(np.float64)
+    grey = rgb.mean(axis=2)
+    chroma = rgb.max(axis=2) - rgb.min(axis=2)
+    tooth = (grey > 40) & (chroma < 0.25 * grey)
+    if not tooth.any():
+        return texture
+    relative = grey / max(float(np.median(grey[tooth])), 1.0)
+    shade = 1.0 + TOOTH_SHADING * (np.clip(relative, 0.0, 1.5) - 1.0)
+    # Feathered over a few texels so the gum line does not show a hard edge.
+    weight = cv2.GaussianBlur(tooth.astype(np.float32), (0, 0), 1.0)[..., None]
+    out = rgb * (1 - weight) + np.asarray(colour, np.float64)[None, None, :] * shade[..., None] * weight
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+
+
 def recolour(texture, mesh: trimesh.Trimesh, faces_mask: np.ndarray, colour,
              plain: bool = False) -> "Image.Image":
     """`texture` with the cloth under `faces_mask` dyed `colour` (sRGB).
