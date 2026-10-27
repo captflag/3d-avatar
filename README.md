@@ -160,6 +160,13 @@ the haircut so no pale scalp shows between strands. Outfits with a MakeHuman
 logo print are deliberately left out. `python fetch_assets.py` fetches exactly
 the folders the catalogue names.
 
+Seven more haircuts come from the MakeHuman community's asset packs (Hair 01,
+CC0; Hair 02 and 03, CC-BY), fetched the same way and checked against each
+pack's own manifest. The short cut every photo with short hair and no fringe
+gets is `hair_culturalibre_hair_05` (CC0), which outscored all fourteen short
+cuts on the test faces (`appearance.hair_style` has the numbers); the rest are
+there for the photo check and `--wear`.
+
 **Garments from files.** An item can name a mesh under `assets/garments/`
 instead of a base-mesh group (`"file": "jacket.obj"`), positioned with `scale`
 and `translate`, and marked `"fit": "tight"` or `"loose"`. It has no base-mesh
@@ -410,6 +417,18 @@ on the same terms, so both can be edited and shipped as our own: repaint weights
 drop bones we do not need, rename them to a convention an engine expects. Weights
 are indexed by base-mesh vertex, so the one rule is that changing mesh topology
 means remapping them, and `test_rig.py` is what catches it when that goes wrong. Their application code is AGPL, but we use none of it.
+
+Four of the community haircuts are CC-BY: they can be shipped and sold, but
+their authors must be credited wherever an avatar wearing one is shown or
+distributed. The catalogue marks each with a `credit`, and an avatar's info
+file (`credits`) lists the authors of what it wears:
+
+| item | author | source |
+|---|---|---|
+| `hair_elvs_grump_hair`, `hair_elvs_short_side_do`, `hair_elvs_maxwell_hair` | Elvaerwyn | MakeHuman community asset repository, Hair 02 pack |
+| `hair_culturalibre_hair_14` | culturalibre | MakeHuman community asset repository, Hair 03 pack |
+
+The default cut and the other community cuts are CC0 and need no credit.
 
 Both were chosen over the better-known research face and body models, which are
 free for research only and need a paid licence to ship. Keep that constraint when

@@ -374,6 +374,73 @@
       "licence": "CC0-1.0 (derived from MakeHuman's short02, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
+      "id": "hair_cortu_short_messy_hair",
+      "category": "hair",
+      "label": "Short, messy",
+      "mhclo": "community_packs/hair01_cc0/hair/cortu_short_messy_hair/cortu_short_messy_hair.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC0-1.0 (Cortu, MakeHuman community asset repository http://www.makehumancommunity.org/node/2809; hair01_cc0.zip from files2.makehumancommunity.org/asset_packs)"
+    },
+    {
+      "id": "hair_culturalibre_hair_02",
+      "category": "hair",
+      "label": "Short crop, close to the head",
+      "mhclo": "community_packs/hair01_cc0/hair/culturalibre_hair_02/culturalibre_hair_02.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC0-1.0 (culturalibre, MakeHuman community asset repository http://www.makehumancommunity.org/node/2892; hair01_cc0.zip from files2.makehumancommunity.org/asset_packs)"
+    },
+    {
+      "id": "hair_culturalibre_hair_05",
+      "category": "hair",
+      "label": "Short, swept up and tousled",
+      "mhclo": "community_packs/hair01_cc0/hair/culturalibre_hair_05/culturalibre_hair_05.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC0-1.0 (culturalibre, MakeHuman community asset repository http://www.makehumancommunity.org/node/2445; hair01_cc0.zip from files2.makehumancommunity.org/asset_packs)"
+    },
+    {
+      "id": "hair_elvs_grump_hair",
+      "category": "hair",
+      "label": "Short, smooth and combed over",
+      "mhclo": "community_packs/hair02_ccby/hair/elvs_grump_hair/elvs_grump_hair.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC-BY 4.0 (Elvaerwyn, MakeHuman community asset repository http://www.makehumancommunity.org/node/2796; hair02_ccby.zip from files2.makehumancommunity.org/asset_packs)",
+      "credit": "Elvaerwyn"
+    },
+    {
+      "id": "hair_elvs_short_side_do",
+      "category": "hair",
+      "label": "Side-swept, falling to one side",
+      "mhclo": "community_packs/hair02_ccby/hair/elvs_short_side_do/elvs_short_side_do.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC-BY 4.0 (Elvaerwyn, MakeHuman community asset repository http://www.makehumancommunity.org/node/1479; hair02_ccby.zip from files2.makehumancommunity.org/asset_packs)",
+      "credit": "Elvaerwyn"
+    },
+    {
+      "id": "hair_elvs_maxwell_hair",
+      "category": "hair",
+      "label": "Short and spiky",
+      "mhclo": "community_packs/hair02_ccby/hair/elvs_maxwell_hair/elvs_maxwell_hair.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC-BY 4.0 (Elvaerwyn, MakeHuman community asset repository http://www.makehumancommunity.org/node/1639; hair02_ccby.zip from files2.makehumancommunity.org/asset_packs)",
+      "credit": "Elvaerwyn"
+    },
+    {
+      "id": "hair_culturalibre_hair_14",
+      "category": "hair",
+      "label": "Mid-length, side-swept",
+      "mhclo": "community_packs/hair03_ccby/hair/culturalibre_hair_14/culturalibre_hair_14.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC-BY 4.0 (culturalibre, MakeHuman community asset repository http://www.makehumancommunity.org/node/2428; hair03_ccby.zip from files2.makehumancommunity.org/asset_packs)",
+      "credit": "culturalibre"
+    },
+    {
       "id": "hair_bob01",
       "category": "hair",
       "label": "Bob",

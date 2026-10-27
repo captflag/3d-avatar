@@ -6,6 +6,10 @@ packs/makehuman_system_assets.json, marks each one so — but we use a few dozen
 megabytes of it. A zip keeps its index at the end, so this reads the index with
 an HTTP range request and then fetches only the folders catalogue.json names.
 
+The haircuts from MakeHuman's community asset packs (Hair 01, CC0; Hair 02
+and 03, CC-BY) are fetched the same way, folder by folder, each checked
+against its pack's own manifest.
+
 Also fetches the six regional macro targets `morph.body_for` blends to make a
 man's or a woman's body, and the expression units `morph.fit` uses to tell a
 smile from a wide mouth, each checked for its CC0 header.
@@ -63,15 +67,45 @@ class RemoteFile(io.RawIOBase):
         return len(data)
 
 
-def wanted_folders() -> set[str]:
-    """Pack folders named by the catalogue, e.g. `hair/short02/`."""
+def wanted_folders(prefix: str = "mh_system/") -> set[str]:
+    """Pack folders named by the catalogue under `prefix`, e.g. `hair/short02/`."""
     catalogue = json.loads((HERE / "catalogue.json").read_text(encoding="utf-8"))
     folders = set()
     for item in catalogue["items"]:
         path = item.get("mhclo", "")
-        if path.startswith("mh_system/"):
-            folders.add(path[len("mh_system/"):].rsplit("/", 1)[0] + "/")
+        if path.startswith(prefix):
+            folders.add(path[len(prefix):].rsplit("/", 1)[0] + "/")
     return folders
+
+
+# The community's asset packs the catalogue takes items from: hair01_cc0 is
+# CC0, hair02/03_ccby are CC-BY (each item's author credited, see README).
+COMMUNITY = "https://files2.makehumancommunity.org/asset_packs/{base}/{pack}.zip"
+COMMUNITY_LICENCES = ("CC0", "CC-BY")
+
+
+def fetch_community() -> None:
+    """The catalogue's items from the community packs, checked against each
+    pack's own manifest: an item not marked CC0 or CC-BY there is refused."""
+    catalogue = json.loads((HERE / "catalogue.json").read_text(encoding="utf-8"))
+    packs = {item["mhclo"].split("/")[1] for item in catalogue["items"]
+             if item.get("mhclo", "").startswith("community_packs/")}
+    for pack in sorted(packs):
+        folders = wanted_folders(f"community_packs/{pack}/")
+        url = COMMUNITY.format(base=pack.split("_")[0], pack=pack)
+        archive = zipfile.ZipFile(io.BufferedReader(RemoteFile(url), buffer_size=1 << 20))
+        manifest = next(m for m in archive.namelist() if m.startswith("packs/") and m.endswith(".json"))
+        licences = json.loads(archive.read(manifest))
+        for folder in folders:
+            name = folder.rstrip("/").rsplit("/", 1)[-1]
+            if licences.get(name, {}).get("license") not in COMMUNITY_LICENCES:
+                raise SystemExit(f"{pack}/{name} is not marked {' or '.join(COMMUNITY_LICENCES)}; not using it")
+        members = [m for m in archive.infolist() if not m.is_dir()
+                   and (any(m.filename.startswith(f) for f in folders) or m.filename == manifest)]
+        for member in members:
+            if not (ASSETS / "community_packs" / pack / member.filename).exists():
+                archive.extract(member, ASSETS / "community_packs" / pack)
+        print(f"{pack}: {len(members)} files for {len(folders)} catalogue items")
 
 
 def main() -> None:
@@ -85,6 +119,7 @@ def main() -> None:
         if not target.exists():
             pack.extract(member, ASSETS / "mh_system")
     print(f"mh_system: {len(members)} files for {len(folders)} catalogue items")
+    fetch_community()
 
     out = ASSETS / "targets" / "macrodetails"
     out.mkdir(parents=True, exist_ok=True)
