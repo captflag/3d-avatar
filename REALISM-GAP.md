@@ -2712,10 +2712,70 @@ picking per photo needs a reading of the style (the Claude photo check now
 sees all fourteen short cuts by descriptive labels, but only decides when the
 segmentation finds no hair).
 
+photo-10 came out worst with it: his hair is a close crop and the community
+cut stands tall over it (0.554 in short01 against 0.522). His hair is as tall
+in the photo as ref-woman's (read_hair `top` 0.47 against 0.48), so height
+does not tell them apart; how far it stands past the face's outline at the
+temples does (`sides` 0.08 against 0.12-0.16 for the others). Below
+CROP_SIDES 0.10 short hair now gets short01: photo-10 0.522 -> 0.554 at the
+pose, 0.527 -> 0.533 level, the others unchanged, mean 0.582 -> 0.588. The
+rig's sample portrait, which its own check calls close-cropped, reads 0.08 as
+well and gets short01 too.
+
+A new photo, a short swept-back cut with the hair longer behind the ears,
+came out in hair_bob01, which hung over half the face (identity 0.451). The
+segmenter had the hair right; the reading took its lowest pixel, a strip
+beside the ear 0.13 face heights above the chin, past the bob threshold
+(-0.15). Read as the hair rows' 99th percentile it is -0.22: short, the
+community cut, identity 0.581. The five test faces' readings moved 0.05-0.29
+further from the chin and their cuts and scores did not change.
+
 fetch_assets.py fetches the catalogue's community cuts folder by folder (23 MB
 of the packs' 340) and refuses any item its pack's manifest does not mark CC0
 or CC-BY. CC-BY items carry a `credit` in the catalogue, and an avatar's info
 lists the authors of what it wears (`credits`).
+
+## Small photos, warm light, dark details, side photos
+
+**Small photos.** The studio now measures the chosen photo's face in the
+browser (MediaPipe, cheek to cheek, as compose.photo_advice does) before
+anything is sent. Under 250 pixels (compose.GOOD_FACE_PX) Generate waits and
+the page says why, with "Choose another photo" and "Build anyway". photo-10
+(52) is held; ref-man passes. If the detector cannot load, nothing is held.
+
+**Warm light.** The new photo's avatar looked orange, but measured it matched
+its photo: cheeks a*/b* 28/38 in both, nose and forehead within 2, no
+blotchier (L* spread at mid scale 11.3 against the photo's 12.5). The photo is
+lit warm (backdrop a*/b* +17/+43) and its skin reads chroma 44 where the test
+photos read 20-33. correct_cast only turns hues outside skin's range; a warm
+light keeps the hue and adds saturation. A ceiling at chroma 33 on the de-lit
+skin (above the most tanned test face, 31; this face 36 there) trimmed it, but
+identity against its only photo fell 0.581 -> 0.570 with nothing to say it
+looked more like him. Not kept; the tested option if warm-lit photos become a
+pattern.
+
+**Dark details.** The gap between rendered and photographed dark paint (+8-13
+L* where the photo is 30-60) was mostly the measure: pixels chosen for being
+dark in the photo are brow hairs and lash lines, and wherever the render sits a
+pixel off or a little softer they read lighter, whatever is drawn. Binned by
+the render's lightness instead, ref-woman's darkest bands go +12.7 / +8.4 ->
+-1.2 / +0.1 and photo-10's 30-45 band +8.1 -> +0.6. What is real is light
+skin's mid-tones on ref-man, +5-6 L* both ways: the cheek exposure through the
+tone curve's shoulder, whose fix lost identity (above). The beard's darkening
+works because a beard is an area, not a line.
+
+**Side photos, on a stand-in head.** ref-woman's avatar rendered straight on
+and turned 35 degrees (MediaPipe read 27.6), rebuilt from the front render alone
+and from all three, heads compared vertex for vertex after a similarity fit:
+face shape error 3.1% -> 6.3% of the eye spacing, depth 1.4% -> 5.0% with the
+sides. The earlier test (above, "Depth from turned photos") gave its stand-in a
+stronger nose, chin and mouth than one photo can carry, and there the sides cut
+depth error 4.7 -> 3.5 mm. So the fusion recovers a profile the single-photo fit
+cannot express and adds noise to one it can. Which wins on people is only
+answerable with real turned photos: guided capture with a camera.
+
+**A haircut per person** needs the photo check's reading of the style, which
+needs ANTHROPIC_API_KEY; not available in this session, so not measured.
 
 ## What changed in the first pass
 

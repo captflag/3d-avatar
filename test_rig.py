@@ -1093,6 +1093,8 @@ def check_appearance():
     reading = {"amount": 0.5, "top": 0.5, "bottom": -0.6, "fringe": 0.0, "colour": None}
     assert pick(reading, "x") == "hair_culturalibre_hair_05"
     assert pick({**reading, "top": 0.3}, "x") == "hair_culturalibre_hair_05"
+    assert pick({**reading, "sides": 0.14}, "x") == "hair_culturalibre_hair_05"
+    assert pick({**reading, "sides": 0.06}, "x") == "hair_short01", "a close crop was given the tall cut"
     assert pick({**reading, "fringe": 0.6}, "x") == "hair_short03"
     assert pick({**reading, "bottom": 0.0}, "x") == "hair_bob01"
     assert pick({**reading, "bottom": 0.4}, "x") == "hair_long01"
@@ -1117,7 +1119,7 @@ def check_appearance():
         _, marks, _, upright_photo = fit_face(photo)
         rgb = np.asarray(upright_photo)
         hair = appearance.read_hair(rgb, marks, appearance.segment(rgb))
-        assert pick(hair, "x") == "hair_culturalibre_hair_05", f"close-cropped hair read as {pick(hair, 'x')}"
+        assert pick(hair, "x") == "hair_short01", f"close-cropped hair read as {pick(hair, 'x')}"
         assert max(hair["colour"]) < 140, f"dark grey hair read as {hair['colour'].tolist()}"
         _, family = appearance.iris_colour(rgb, marks)
         assert family in ("dark brown", "brown"), f"brown eyes read as {family}"
@@ -1130,7 +1132,7 @@ def check_appearance():
             _, marks, _, upright_photo = fit_face(sideways)
             rgb = np.asarray(upright_photo)
             turned = appearance.read_hair(rgb, marks, appearance.segment(rgb))
-        assert pick(turned, "x") == "hair_culturalibre_hair_05", f"a sideways photo's hair read as {pick(turned, 'x')}"
+        assert pick(turned, "x") == "hair_short01", f"a sideways photo's hair read as {pick(turned, 'x')}"
         assert abs(turned["amount"] - hair["amount"]) < 0.05, f"sideways hair amount {turned['amount']} vs {hair['amount']}"
 
     outfit = ASSET_DIR / "mh_system" / "clothes" / "male_casualsuit01" / "male_casualsuit01.mhclo"
