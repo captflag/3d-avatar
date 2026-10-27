@@ -120,7 +120,7 @@ class FaceSampler:
     def __init__(self, patch_vertices: np.ndarray, pixels: np.ndarray,
                  border: np.ndarray, depth_tolerance: float = 0.6,
                  keep: np.ndarray | None = None, lips=None,
-                 beyond: np.ndarray | None = None):
+                 beyond: np.ndarray | None = None, lip_outline=None):
         xy = patch_vertices[:, :2]
         self._pixels = LinearNDInterpolator(xy, pixels)
         # A closed mouth's lips sit a hair apart on the sheet, and a
@@ -139,6 +139,15 @@ class FaceSampler:
                 sides.append(LinearNDInterpolator(xy[own], pixels[own]))
             self._lips = (seam, *sides)
         self._depth = LinearNDInterpolator(xy, patch_vertices[:, 2])
+        # The photo's lips, as a mask in photo pixels, from a ring of landmark
+        # indices round their outer edge: the bake paints them whichever way
+        # they face (on_lips).
+        self._lip_mask = None
+        if lip_outline is not None:
+            ring = np.asarray(pixels)[np.asarray(lip_outline)]
+            mask = np.zeros((int(ring[:, 1].max()) + 2, int(ring[:, 0].max()) + 2), np.uint8)
+            cv2.fillPoly(mask, [np.round(ring).astype(np.int32)], 1)
+            self._lip_mask = mask
         # How far inside the face each landmark is, 0 on the outline, for a
         # fade that leaves no edge.
         width = np.ptp(xy[:, 0])
@@ -178,6 +187,34 @@ class FaceSampler:
         valid = ~np.isnan(depth) & (np.abs(points[:, 2] - np.nan_to_num(depth)) < self.depth_tolerance)
         return np.where(valid, np.clip(inside / KEEP_EDGE, 0.0, 1.0), 0.0)
 
+    def on_lips(self, points: np.ndarray) -> np.ndarray:
+        """Which points look up a pixel on the photo's lips (given lip_outline).
+
+        The resting mouth's lips curl back into it, facing down and away from
+        the camera, and the bake left that part generated skin: on
+        samples/portrait.jpg, flat tan patches over 59% of the upper lip's
+        inner side, which a smile played back turns outwards."""
+        if self._lip_mask is None:
+            return np.zeros(len(points), bool)
+        pixels = np.nan_to_num(self._lookup(points[:, :2]), nan=-1.0).round().astype(int)
+        h, w = self._lip_mask.shape
+        inside = (pixels[:, 0] >= 0) & (pixels[:, 0] < w) & (pixels[:, 1] >= 0) & (pixels[:, 1] < h)
+        out = np.zeros(len(points), bool)
+        out[inside] = self._lip_mask[pixels[inside, 1], pixels[inside, 0]] > 0
+        return out
+
+    def _lookup(self, xy: np.ndarray) -> np.ndarray:
+        """Photo pixels for sheet positions, each lip looked up on its own side."""
+        pixels = self._pixels(xy)
+        if self._lips is not None:
+            seam, above, below = self._lips
+            across = (xy[:, 0] > seam[0, 0]) & (xy[:, 0] < seam[-1, 0])
+            under = xy[:, 1] < np.interp(xy[:, 0], seam[:, 0], seam[:, 1])
+            for side, chosen in ((above, across & ~under), (below, across & under)):
+                if chosen.any():
+                    pixels[chosen] = side(xy[chosen])
+        return pixels
+
     def sample(self, points: np.ndarray, facing: np.ndarray | float | None = None):
         """Pixels for `points`, and how strongly each should take the photo (0-1).
 
@@ -187,14 +224,7 @@ class FaceSampler:
         the scalp onto a few rows of pixels at the hairline and smeared them.
         """
         xy = points[:, :2]
-        pixels = self._pixels(xy)
-        if self._lips is not None:
-            seam, above, below = self._lips
-            across = (xy[:, 0] > seam[0, 0]) & (xy[:, 0] < seam[-1, 0])
-            under = xy[:, 1] < np.interp(xy[:, 0], seam[:, 0], seam[:, 1])
-            for side, chosen in ((above, across & ~under), (below, across & under)):
-                if chosen.any():
-                    pixels[chosen] = side(xy[chosen])
+        pixels = self._lookup(xy)
         depth = self._depth(xy)
         inside = self._inside(xy)
         off_sheet = np.isnan(pixels).any(axis=1)
@@ -293,9 +323,10 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
     np.add.at(vertex_normals, faces, face_normals[:, None, :].repeat(3, axis=1))
     toward = vertex_normals[:, 2] / np.maximum(np.linalg.norm(vertex_normals, axis=1), 1e-12)
 
-    for fi in candidates:
+    lips = sampler.on_lips(centroids[candidates])
+    for fi, on_lips in zip(candidates, lips):
         tri = vertices[faces[fi]]
-        if face_normals[fi, 2] <= 0:
+        if face_normals[fi, 2] <= 0 and not on_lips:
             continue                            # facing away from the camera
 
         tri_uv = uv[uv_faces[fi]]

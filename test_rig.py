@@ -1357,6 +1357,34 @@ def check_forehead():
     print("ok  forehead: baked to the hairline, only on surface facing the camera")
 
 
+def check_lip_underside():
+    """The lips' underside, which faces away from the camera in a resting
+    mouth, is painted from the photo; other surfaces facing away are not."""
+    from facetexture import FaceSampler, bake
+
+    grid = np.stack(np.meshgrid(np.linspace(0, 1, 11), np.linspace(0, 1, 11)), -1).reshape(-1, 2)
+    sheet = np.c_[grid, np.zeros(len(grid))]
+    rim = np.nonzero((grid == 0).any(axis=1) | (grid == 1).any(axis=1))[0]
+    # The lips: the square 0.3-0.7 on the sheet, as a ring of landmarks.
+    ring = ([3 * 11 + c for c in range(3, 8)] + [r * 11 + 7 for r in range(4, 8)]
+            + [7 * 11 + c for c in range(6, 2, -1)] + [r * 11 + 3 for r in range(6, 3, -1)])
+    sampler = FaceSampler(sheet, grid * 100, rim, lip_outline=ring)
+    assert sampler.on_lips(np.array([[0.5, 0.5, 0.0], [0.15, 0.5, 0.0]])).tolist() == [True, False]
+    # Two small triangles turned away from the camera (clockwise seen from +z):
+    # one on the lips, one on the cheek.
+    vertices = np.array([[0.45, 0.45, 0], [0.5, 0.55, 0], [0.55, 0.45, 0],
+                         [0.10, 0.45, 0], [0.15, 0.55, 0], [0.20, 0.45, 0]], float)
+    faces = np.array([[0, 1, 2], [3, 4, 5]])
+    uv = np.array([[0.1, 0.1], [0.25, 0.4], [0.4, 0.1], [0.6, 0.1], [0.75, 0.4], [0.9, 0.1]])
+    photo = np.zeros((120, 120, 3), np.uint8)
+    photo[...] = (200, 40, 40)
+    texture = np.asarray(bake(vertices, faces, uv, faces, sampler, vertices.mean(axis=0), 1.0,
+                              photo, np.array([40.0, 40.0, 200.0]), size=64, blend="none"))
+    lip, cheek = texture[64 - 1 - int(0.2 * 63), int(0.25 * 63)], texture[64 - 1 - int(0.2 * 63), int(0.75 * 63)]
+    assert lip[0] > 150 and cheek[2] > 150, f"lip underside {lip}, cheek turned away {cheek}"
+    print("ok  lip underside: painted from the photo though it faces away; a cheek facing away is not")
+
+
 def check_details():
     """The detail audit's faults: feet hidden inside shoes, hands clear of a
     woman's hips, irises with fibres rather than a flat disc."""
@@ -1593,6 +1621,7 @@ if __name__ == "__main__":
         check_finishing()
         check_review_fixes()
         check_forehead()
+        check_lip_underside()
         check_brows()
         check_details()
         check_stubble()

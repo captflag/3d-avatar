@@ -1116,7 +1116,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                       keep=beard_map,
                                       lips=([78] + morph.INNER_UPPER + [308],
                                             [78] + morph.INNER_LOWER + [308]),
-                                      beyond=forehead)
+                                      beyond=forehead, lip_outline=appearance.OUTER_LIPS)
     face_centre = full_face.vertices.mean(axis=0)
     face_radius = float(np.linalg.norm(full_face.vertices - face_centre, axis=1).max())
 
