@@ -75,8 +75,15 @@ def check_export():
             assert attrs.WEIGHTS_0 is not None, f"primitive {i} has no WEIGHTS_0"
             assert attrs.POSITION is not None, f"primitive {i} has no POSITION"
 
+        # The cornea travels with the file, for viewers other than the studio.
+        eyes = next(m for m in gltf.materials if m.name == "eyes")
+        coat = (eyes.extensions or {}).get("KHR_materials_clearcoat")
+        assert coat and coat["clearcoatFactor"] > 0 and "KHR_materials_clearcoat" in gltf.extensionsUsed, \
+            "the eyes have no clear coat in the file"
+        assert "KHR_materials_clearcoat" not in (gltf.extensionsRequired or []), "a viewer without it must still open the file"
+
         print(f"ok  export: {len(skin.joints)} joints, "
-              f"{len(gltf.meshes[0].primitives)} primitives, all skinned")
+              f"{len(gltf.meshes[0].primitives)} primitives, all skinned, the cornea's coat in the file")
 
         # The compat copy for old viewers: no quantisation left, same geometry.
         compat = pathlib.Path(tmp) / "compat.glb"

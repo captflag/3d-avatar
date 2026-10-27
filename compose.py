@@ -96,6 +96,10 @@ HAIR_ANISOTROPY = (0.7, np.pi / 2)
 # renders of four faces, summed: highlight 77 -> 53 L* off, iris 20 -> 8.
 ROUGHNESS = {"skin": 0.5, "eyes": 0.4, "hair": 0.45,
              "top": 0.85, "bottom": 0.85, "shoes": 0.4}
+# The cornea as a clear coat over the eye (strength, roughness), written into
+# the file so other viewers show its wet highlight too; the studio reads it
+# from there. Without it, Blender, Unity or a web viewer drew a matte eye.
+CORNEA_COAT = (0.3, 0.03)
 
 
 def body_mesh(vertices: np.ndarray | None = None) -> trimesh.Trimesh:
@@ -1358,6 +1362,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         texture=eye_texture, normals=eyes.vertex_normals,
         roughness=ROUGHNESS["eyes"],                 # wet, so the highlight shows
     ))
+    parts[-1].clearcoat = CORNEA_COAT
     parts[-1].morphs = expression_morphs(eyes, face_shapes)
 
     if face_patch:
