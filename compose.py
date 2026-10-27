@@ -1267,7 +1267,9 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # --- rig it --- (skeleton and weights made above, with the nails)
 
     parts = []
-    face_shapes = morph.arkit_shapes(vertices, corr, groups)
+    # The lips' and cheeks' as the average face moves, so a laugh does not
+    # turn the fitted lips inside out (morph.transfer_shapes).
+    face_shapes = morph.transfer_shapes(base, vertices, groups["body"], corr, groups)
     # Normals from the whole skin, not from each part's own triangles: split
     # at the neck, each side averaged only its own, and light broke along the
     # seam in angular patches under the ear.

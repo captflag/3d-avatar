@@ -318,6 +318,40 @@ def check_arkit():
           "photo expression read back")
 
 
+def check_shape_transfer():
+    """The mouth's shapes carried onto a fitted face as the average face moves:
+    unchanged onto the average face itself, and onto lips squashed thin, a
+    smile turns fewer of their triangles inside out than the plain offsets."""
+    import morph
+    from compose import place_face
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    faces = groups["body"]
+    plain = morph.arkit_shapes(vertices, corr, groups)
+    same = morph.transfer_shapes(vertices, vertices, faces, corr, groups)
+    off = np.abs(same - plain).max()
+    assert off < 2 * morph.TRANSFER_FLOOR, f"onto the average face itself the shapes moved by {off:.4f}"
+
+    lips = np.linalg.norm(plain[morph.ARKIT_NAMES.index("mouthPucker")], axis=1)
+    lips = lips / lips.max()
+    middle = float((vertices[:, 1] * lips).sum() / lips.sum())
+    thin = vertices.copy()
+    thin[:, 1] = middle + (thin[:, 1] - middle) * (1.0 - 0.6 * lips)
+
+    def inside_out(shapes):
+        smile = sum(shapes[morph.ARKIT_NAMES.index(f"mouthSmile{s}")] for s in ("Left", "Right"))
+        normals = lambda p: np.cross(p[faces[:, 1]] - p[faces[:, 0]], p[faces[:, 2]] - p[faces[:, 0]])
+        return int(((normals(thin + smile) * normals(thin)).sum(axis=1) < 0).sum())
+
+    before = inside_out(morph.arkit_shapes(thin, corr, groups))
+    after = inside_out(morph.transfer_shapes(vertices, thin, faces, corr, groups))
+    assert after < before, f"transferred, a smile on thin lips turned {after} triangles inside out, {before} as offsets"
+    print(f"ok  shape transfer: unchanged on the average face; a smile on thin lips turns {before} -> {after} "
+          f"triangles inside out")
+
+
 def check_mouth_bake():
     """A laughing photo's mouth, wider than the avatar's closed one, is moved
     onto the avatar's mouth before the bake, and the forehead stays put."""
@@ -1596,6 +1630,7 @@ if __name__ == "__main__":
         check_side_views()
         check_brow_shading()
         check_arkit()
+        check_shape_transfer()
         check_mouth_bake()
         check_lip_seal()
         check_hairline_sweep()
