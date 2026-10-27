@@ -1249,6 +1249,18 @@ def check_finishing():
         filled, did = appearance.fill_mouth(rgb, marks)
         bright = lambda img: int((cv2.cvtColor(img, cv2.COLOR_RGB2LAB)[..., 0][mouth > 0] > 200).sum())
         assert did and bright(rgb) > 50 and bright(filled) == 0, "teeth were left in the mouth"
+        # Lips darker and browner than a lip made from the cheek keep their
+        # colour, and the opening is filled with it, for a smile to turn out.
+        lip_ring = np.array([[marks[i].x * w, marks[i].y * h] for i in appearance.OUTER_LIPS], np.int32)
+        painted = np.full_like(rgb, (215, 170, 140))                          # cheek
+        cv2.fillPoly(painted, [lip_ring], (165, 125, 110))                    # brown lips, not moustache-dark
+        painted[mouth > 0] = (245, 245, 240)                                  # teeth
+        cheek_px = np.array([[marks[i].x * w, marks[i].y * h] for i in (50, 280, 205, 425)])
+        filled, _ = appearance.fill_mouth(painted, marks, cheek_px)
+        inner = cv2.erode(mouth, np.ones((5, 5), np.uint8)) > 0
+        lab = lambda c: cv2.cvtColor(np.uint8([[c]]), cv2.COLOR_RGB2LAB)[0, 0].astype(float)
+        fill_a = np.median(cv2.cvtColor(filled, cv2.COLOR_RGB2LAB)[inner][:, 1].astype(float))
+        assert fill_a < lab((165, 125, 110))[1] + 4, f"dark lips' mouth filled pinker: a {fill_a:.0f}, lips {lab((165, 125, 110))[1]:.0f}"
 
         mask = np.zeros((h, w), bool)
         mask[int(marks[10].y * h):int(marks[152].y * h), int(marks[234].x * w):int(marks[454].x * w)] = True

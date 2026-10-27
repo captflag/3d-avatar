@@ -537,8 +537,18 @@ def fill_mouth(skin_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray | None 
             cv2.fillPoly(band, [outer], 1)
             # Lips only, not the moustache over them: nothing far darker.
             band = (band > 0) & (opening == 0) & (lab[..., 0] > target[0] - 40.0)
-            lab[band, 1:] = 0.5 * lab[band, 1:] + 0.5 * target[1:]
-            lab[band, 0] = 0.7 * lab[band, 0] + 0.3 * target[0]
+            # Only what the laugh added: lips lighter, pinker or yellower than
+            # the target are pulled to it, never darker lips the other way.
+            excess = np.maximum(lab[band] - target, 0.0)
+            lab[band] -= excess * np.array([0.3, 0.5, 0.5])
+            # And the opening filled with the lips as they came out, not the
+            # target: a smile turns the lips' meeting surfaces outwards, and
+            # they showed the fill. On samples/portrait.jpg, darker lips than
+            # the target, the two made the lips' colour 1.35x as strong for
+            # their lightness as the photo's (chroma / L* 0.62 against 0.46;
+            # cheeks 0.40 against 0.39), and pink when rendered.
+            if band.any():
+                target = np.median(lab[band], axis=0)
         else:
             lip_lab = _lab(lips)
             # Lips are the reddest thing round the mouth: on a small photo the
