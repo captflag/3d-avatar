@@ -2407,6 +2407,55 @@ beside jaw_beard 0.25 and 0.49, so only sk-22's beard is carried. Its
 (75, 70, 80) where the others read 16-32: a soft, highlit photo. Neither is
 acted on yet.
 
+## The red and yellow items, split into colour and detail
+
+The likeness audit's biggest remaining losses were the face outline (+0.096),
+the eyes (+0.075), the nose (+0.031) and the jaw (+0.030). Each region was
+swapped three ways into the aligned render, scored against the photo (and,
+for photo-16, against sk-21 and sk-22): the photo itself, only its colour (the
+render times the ratio of the two blurred), and only its detail (the render
+blurred plus the photo less its own blur). Median over the faces:
+
+| region | full | colour only | detail only |
+|---|---|---|---|
+| eyes | +0.075 | +0.030 | +0.054 |
+| nose | +0.031 | +0.014 | +0.022 |
+| jaw/chin | +0.030 | +0.007 | +0.026 |
+| cheeks | +0.026 | +0.015 | +0.013 |
+
+The outline band was split by part as well: the skin just inside the face's
+edge (+0.019 to +0.094, all faces), neck skin below it, the ears (photo-16
+only, +0.075), hair edge and background (small). Inside the rim and on the
+neck the colour-only swap gains nothing (-0.04 to +0.03); the full swap
++0.07 to +0.15.
+
+So what costs likeness now is where the fine edges sit (lid creases, the
+beard's edge, the jaw's line), the photo's own detail, which carries its
+shape: that is cause 1 again. Paint and light reach the colour column, and
+of that only photo-16's cheeks hold against his other photos (+0.037,
++0.040); the eyes' colour gain does not (-0.014, -0.012), it is the photo
+matching its own light. Measured and not kept:
+
+| change | pose | level |
+|---|---|---|
+| side lights 2.0 -> 1.5 (outer cheeks rendered 4-12 L* light on three faces, sockets 5-7) | +0.005 | +0.002 |
+| side lights 2.0 -> 1.0 | +0.003 | 0.000 |
+| neck under the jaw darkened to the photo's (swap only) | +0.004 to +0.006 | |
+| the render sharpened (unsharp mask, swap only) | -0.04 to +0.02 | |
+
+Baselines rendered the same day: 0.542/0.528 and 0.541/0.529. The eyes'
+own leftovers (highlight, lash line, lid cover, under-eye) were each
+measured in side-session-notes/eye-region.md, none beyond noise.
+
+Kept, for how it looks rather than the score: the body's cut-out texture was
+quantised to 255 colours by median cut alone, and `quantize()` does not
+dither when asked for a colour count, so the beard carried under the jaw (a
+small part of the map, few palette entries) came out as flat bands of one
+colour each, up to 61 texels wide. Refined by k-means (`kmeans=3`) it shows
+its strands, the longest flat run is 20, at the same size (299 KB); dithered
+onto the median-cut palette instead, the map doubled and banded more.
+ref-man's score is unchanged (0.663 against 0.661-0.666).
+
 ## What changed in the first pass
 
 - Environment lighting, key and fill, ACES tone mapping, per-surface roughness.

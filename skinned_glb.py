@@ -219,12 +219,16 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None,
     elif image.mode == "RGBA":
         # Every RGBA texture here is a cut-out (alpha MASK at 0.5), so its alpha
         # is one transparent palette slot and its colour 255 entries, median
-        # cut and dithered: the body's skin went from 947 to 432 KB at about
-        # 1.4 delta-E as seen, below what shows.
+        # cut: the body's skin went from 947 to 432 KB at about 1.4 delta-E as
+        # seen, below what shows. Refined by k-means: median cut alone gave the
+        # carried beard under the jaw, a small part of the map, so few entries
+        # that its fade showed as flat bands (quantize() does not dither when
+        # asked for a colour count; dithered onto the palette instead, the map
+        # doubled in size and banded more than this).
         rgba = np.asarray(image)
         shown = rgba[..., 3] >= 128
         palette = Image.fromarray(np.ascontiguousarray(rgba[..., :3])).quantize(
-            255, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG)
+            255, method=Image.Quantize.MEDIANCUT, kmeans=3)
         index = np.asarray(palette).copy()
         index[~shown] = 255
         out = Image.fromarray(index.astype(np.uint8), "P")
