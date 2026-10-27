@@ -1395,6 +1395,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         # (With the stock grey teeth, parting them showed a slit of grey under
         # a pink band, and lips together scored best.)
         photo_face = {**photo_face, "jawOpen": max(photo_face.get("jawOpen", 0.0), OPEN_JAW)}
+        # The upper lip not lifted: on the fitted lips the smile's lift folds
+        # the upper lip's rim over (mouthSmile and mouthUpperUp together
+        # turned 96 of the mouth's triangles inside out, 68 without the lift),
+        # and its back showed as a dark jagged band (samples/portrait.jpg).
+        photo_face = {k: v for k, v in photo_face.items() if not k.startswith("mouthUpperUp")}
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES,
                        expression=photo_face,
