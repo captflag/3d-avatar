@@ -22,6 +22,7 @@ from compose import compose, rest_pose
 from generate import load_canonical_faces
 from garments import GARMENT_DIR, deform, make_test_vest, skinning_matrices, transfer_weights
 from rig import MAX_INFLUENCES, load_skeleton, weight_table
+import skinned_glb
 from skinned_glb import axis_angle
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -75,6 +76,20 @@ def check_export():
 
         print(f"ok  export: {len(skin.joints)} joints, "
               f"{len(gltf.meshes[0].primitives)} primitives, all skinned")
+
+        # The compat copy for old viewers: no quantisation left, same geometry.
+        compat = pathlib.Path(tmp) / "compat.glb"
+        compat.write_bytes(skinned_glb.dequantised(out.read_bytes()))
+        old = gl.GLTF2().load(str(compat))
+        assert "KHR_mesh_quantization" not in (old.extensionsUsed or []) + (old.extensionsRequired or [])
+        for primitive in old.meshes[0].primitives:
+            for name in ("NORMAL", "TEXCOORD_0"):
+                index = getattr(primitive.attributes, name)
+                if index is not None:
+                    assert old.accessors[index].componentType == gl.FLOAT, f"{name} still quantised"
+        assert old.accessors[old.meshes[0].primitives[0].attributes.POSITION].count \
+            == gltf.accessors[gltf.meshes[0].primitives[0].attributes.POSITION].count
+        print("ok  compat export: normals and UVs as floats, KHR_mesh_quantization dropped")
 
 
 def check_transfer():
@@ -317,6 +332,77 @@ def check_mouth_bake():
     print(f"ok  mouth bake: a laughing mouth moved onto the avatar's ({left:.0%} of the gap left), forehead put")
 
 
+def check_lip_seal():
+    """The lips' rims meet at rest, the rest of the face stays put, and the
+    mouth's inside is found as the rims' own region, not the whole body."""
+    import appearance
+    import morph
+    from compose import head_island
+    from catalogue import load_base_uv
+
+    vertices, groups = load_base()
+    sealed = morph.seal_lips(vertices, groups["body"])
+    up, low = sealed[morph.UPPER_RIM], sealed[morph.LOWER_RIM]
+    gap = np.abs(np.interp(low[:, 0], up[:, 0], up[:, 1]) - low[:, 1]).max()
+    before = np.abs(np.interp(low[:, 0], vertices[morph.UPPER_RIM, 0], vertices[morph.UPPER_RIM, 1])
+                    - vertices[morph.LOWER_RIM, 1]).max()
+    assert gap < 0.1 * before, f"the rims still stand {gap:.4f} apart ({before:.4f} before)"
+    far = np.linalg.norm(vertices - up.mean(axis=0), axis=1) > 0.3
+    assert np.abs(sealed[far] - vertices[far]).max() < 1e-3, "the seal moved more than the mouth"
+    in_head = head_island(vertices, groups, groups["body"], load_base_uv()[1]["body"])
+    inside = appearance.mouth_inside(vertices, groups["body"][~in_head], morph.UPPER_RIM + morph.LOWER_RIM)
+    assert 100 < (inside > 0).sum() < 1000, f"{(inside > 0).sum()} vertices taken for the mouth's inside"
+    print(f"ok  lip seal: rims {before * 100:.1f} -> {gap * 100:.2f} mm apart, "
+          f"{(inside > 0).sum()} vertices inside the mouth")
+
+
+def check_hair_outline():
+    """A cut fitted to a photo whose hair stands taller and wider than it: the
+    crown rises to the photo's outline, less the drawn-to-rendered margin.
+    Fitted to a photo with almost no hair, it is pulled in, but nothing moved
+    goes into the scalp."""
+    import cv2
+    import appearance
+    import garments
+    import morph
+    import trimesh
+    from compose import place_face
+    from scipy.spatial import cKDTree
+
+    vertices, groups = load_base()
+    person = place_face(morph.canonical_face(), vertices, groups).vertices
+    head = morph.head_only(vertices, groups["body"], __import__("rig").load_weights())
+    # A camera straight ahead: 100 photo pixels to a mesh unit.
+    middle = person[:468].mean(axis=0)
+    to_photo = lambda q: np.stack([(q[:, 0] - middle[0]) * 100 + 600, (middle[1] - q[:, 1]) * 100 + 600], axis=1)
+    pixels = to_photo(person[:468])
+
+    def drawn(hair, grow):
+        mask = np.zeros((1200, 1200), np.uint8)
+        for tri in np.round(to_photo(np.asarray(hair.vertices))[hair.faces]).astype(np.int32):
+            cv2.fillConvexPoly(mask, tri, 1)
+        return cv2.dilate(mask, np.ones((2 * grow + 1, 2 * grow + 1), np.uint8)) if grow else mask
+
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    top = appearance.opaque_hair(hair)[:, 1].max()
+    garments.fit_hair(hair, vertices, head, np.eye(3), person, pixels, drawn(hair, 20), appearance.opaque_hair)
+    risen = appearance.opaque_hair(hair)[:, 1].max() - top
+    assert 0.1 < risen < 0.3, f"the crown rose {risen:.2f} towards the photo's 0.2 higher outline"
+
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    original = hair.vertices.copy()
+    sparse = np.zeros((1200, 1200), np.uint8)
+    sparse[int(to_photo(person[[10]])[0, 1]) - 30:int(to_photo(person[[10]])[0, 1]), 590:610] = 1
+    garments.fit_hair(hair, vertices, head, np.eye(3), person, pixels, sparse, appearance.opaque_hair)
+    moved = np.linalg.norm(hair.vertices - original, axis=1) > 1e-6
+    assert moved.any(), "a cut fuller than the photo's hair was not pulled in"
+    skin = np.unique(groups["body"])
+    normals = trimesh.Trimesh(vertices, groups["body"], process=False).vertex_normals
+    near = skin[cKDTree(vertices[skin]).query(hair.vertices[moved])[1]]
+    gap = ((hair.vertices[moved] - vertices[near]) * normals[near]).sum(axis=1)
+    assert gap.min() > 0.0, f"fitted hair went {-gap.min():.3f} into the scalp"
+
+
 def check_hairline_sweep():
     """A stock fringe swept back to a higher hairline: its front edge rises most
     of the way there, the back of the hair stays put, and nothing sinks into
@@ -344,7 +430,33 @@ def check_hairline_sweep():
     moved = np.linalg.norm(hair.vertices - original, axis=1) > 1e-6
     gap = ((hair.vertices - vertices[near]) * normals[near]).sum(axis=1)[moved]
     assert gap.min() > 0.04, f"swept hair sank to {gap.min():.3f} from the scalp"
-    print(f"ok  hairline sweep: fringe turned back {turned:.0f} deg, edge rose {risen:.2f} of 0.30, back kept, off the scalp")
+
+    # The photo's hairline as a curve, receding at the temples: the temples
+    # rise further than the middle, each about to the curve, the crown and
+    # the back stay put.
+    hair = build_item(items_by_id()["hair_short02"], None, vertices)
+    original = hair.vertices.copy()
+    opaque = appearance.opaque_hair(hair)
+    import morph
+    from compose import place_face
+    corr = morph.correspondences(vertices, groups["body"],
+                                 place_face(morph.canonical_face(), vertices, groups).vertices[:468])
+    brow = vertices[corr[[105, 334]], 1].mean()
+    ahead = opaque[(opaque[:, 2] > np.median(opaque[:, 2])) & (opaque[:, 1] > brow)]
+    low = lambda pts, a, b: np.percentile(pts[(np.abs(pts[:, 0]) >= a) & (np.abs(pts[:, 0]) < b), 1], 3)
+    xs = np.linspace(-0.6, 0.6, 7)
+    ys = low(ahead, 0.0, 0.1) + 0.15 + 0.25 * (xs / 0.6) ** 2
+    garments.sweep_back(hair, vertices, groups, opaque, (xs, ys), above=brow)
+    opaque = appearance.opaque_hair(hair)
+    after = opaque[(opaque[:, 2] > np.median(opaque[:, 2])) & (opaque[:, 1] > brow)]
+    middle, temples = low(after, 0.0, 0.1) - low(ahead, 0.0, 0.1), low(after, 0.4, 0.55) - low(ahead, 0.4, 0.55)
+    assert temples > middle + 0.08, f"the temples rose {temples:.2f}, the middle {middle:.2f}"
+    assert abs(low(after, 0.0, 0.1) - ys[3]) < 0.08, "the middle missed the curve"
+    crown = original[:, 1] > np.percentile(original[:, 1], 97)
+    assert np.median(np.linalg.norm(hair.vertices[crown] - original[crown], axis=1)) < 0.03, "the crown moved"
+    assert np.abs(hair.vertices[back] - original[back]).max() < 1e-6, "the back of the hair moved"
+    print(f"ok  hairline sweep: fringe turned back {turned:.0f} deg, edge rose {risen:.2f} of 0.30, back kept, "
+          f"off the scalp; to a receding curve the temples rose {temples:.2f}, the middle {middle:.2f}")
 
 
 def check_hair_volume():
@@ -589,6 +701,12 @@ def check_likeness_details():
         x, y = int(uv[i, 0] * 511), int((1 - uv[i, 1]) * 511)
         dark.append(lab(tinted[y, x]))
     assert np.mean(dark) < lab((200, 160, 140)) - 40, f"under the edge the skin stayed L {np.mean(dark):.0f}"
+    # With the photo's hairline above the cards' edge, the skin below it stays bare.
+    floored = np.asarray(appearance.hairline_tint(plain, vertices, faces, uv, uv_faces, hair, (30, 25, 24), spare=spare,
+                                                  hairline=(np.array([-spacing, spacing]), np.full(2, line_y + 0.2))))
+    bare = [lab(floored[int((1 - uv[uv_faces[h[0][0], h[1][0]], 1]) * 511), int(uv[uv_faces[h[0][0], h[1][0]], 0] * 511)])
+            for h in rows]
+    assert np.mean(bare) > lab((200, 160, 140)) - 3, f"below the photo's hairline the skin was tinted (L {np.mean(bare):.0f})"
     print(f"ok  likeness details: skin renders at {ratio:.2f} of the photo, closed mouth kept, "
           f"thin lips thinned, hairline tint solid under the edge (L {np.mean(dark):.0f})")
 
@@ -612,10 +730,9 @@ def check_mouth_set():
     print("ok  mouth set: press and draw-in kept as shape on a face at rest, fitted as expression with a smile")
 
 
-def check_lashes_and_brows():
+def check_lashes_and_lids():
     """After the eye opening is painted over, the lash line is drawn back as
-    dark as the photo's along the upper lid, and a brow blurred by a small
-    photo is pulled back to its density; skin away from both is untouched."""
+    dark as the photo's along the upper lid; skin away from it is untouched."""
     import cv2
     import appearance
     from generate import fit_face
@@ -639,17 +756,16 @@ def check_lashes_and_brows():
     assert after < before - 15 and abs(after - photo_line) < 20, f"lash line L {photo_line:.0f} in the photo, {before:.0f} filled, {after:.0f} drawn"
     cheek = (slice(int(marks[50].y * h) - 4, int(marks[50].y * h) + 4), slice(int(marks[50].x * w) - 4, int(marks[50].x * w) + 4))
     assert np.array_equal(lashed[cheek], filled[cheek]), "the cheek changed with the lashes"
-    brows = appearance.tighten_brows(lashed, marks)
-    from facetexture import BROW_LANDMARKS
-    pts = np.array([[marks[i].x * w, marks[i].y * h] for i in BROW_LANDMARKS[:10]], np.int32)
-    region = np.zeros((h, w), np.uint8)
-    cv2.fillConvexPoly(region, cv2.convexHull(pts), 1)
-    region = region.astype(bool)
-    dark_before = np.percentile(L(lashed)[region], 20)
-    dark_after = np.percentile(L(brows)[region], 20)
-    assert dark_after < dark_before - 5, f"brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}"
-    assert np.array_equal(brows[cheek], lashed[cheek]), "the cheek changed with the brows"
-    print(f"ok  lashes and brows: lash line L {before:.0f} -> {after:.0f} (photo {photo_line:.0f}), brow's darkest fifth {dark_before:.0f} -> {dark_after:.0f}, cheek kept")
+    # The lids are only ever lightened, between the eye and the brow.
+    lifted = appearance.lift_lids(filled, marks)
+    lid = (slice(int(marks[386].y * h - 0.1 * abs(marks[473].x - marks[468].x) * w) - 1,
+                 int(marks[386].y * h - 0.1 * abs(marks[473].x - marks[468].x) * w) + 2),
+           slice(int(marks[386].x * w) - 1, int(marks[386].x * w) + 2))
+    assert L(lifted)[lid].mean() > L(filled)[lid].mean(), "the lid above the eye was not lifted"
+    assert (L(lifted) >= L(filled) - 2).all(), "lift_lids darkened something"
+    assert np.array_equal(lifted[cheek], filled[cheek]), "the cheek changed with the lids"
+    print(f"ok  lashes and lids: lash line L {before:.0f} -> {after:.0f} (photo {photo_line:.0f}), "
+          f"lid L {L(filled)[lid].mean():.0f} -> {L(lifted)[lid].mean():.0f}, cheek kept")
 
 
 def check_lip_correction():
@@ -923,15 +1039,13 @@ def check_appearance():
 
     pick = appearance.hair_style
     reading = {"amount": 0.5, "top": 0.5, "bottom": -0.6, "fringe": 0.0, "colour": None}
-    assert pick(reading, "x") == "hair_short02"
+    assert pick(reading, "x") == "hair_short01"
     assert pick({**reading, "top": 0.3}, "x") == "hair_short01"
     assert pick({**reading, "fringe": 0.6}, "x") == "hair_short03"
     assert pick({**reading, "bottom": 0.0}, "x") == "hair_bob01"
     assert pick({**reading, "bottom": 0.4}, "x") == "hair_long01"
     assert pick({**reading, "amount": 0.02}, "x") is None, "a bald head was given hair"
     assert pick(None, "hair_short02") == "hair_short02", "no segmenter should keep the default"
-    assert pick({**reading, "sides": 0.08}, "x") == "hair_short_sides", "tight sides not read as a short back and sides"
-    assert pick({**reading, "sides": 0.15}, "x") == "hair_short02", "full sides given a short back and sides"
 
     # The top is the cloth under the chin, not someone else's behind.
     from types import SimpleNamespace as P
@@ -1394,13 +1508,15 @@ if __name__ == "__main__":
         check_brow_shading()
         check_arkit()
         check_mouth_bake()
+        check_lip_seal()
         check_hairline_sweep()
+        check_hair_outline()
         check_hair_volume()
         check_hair_width()
         check_hair_tangents()
         check_hair_cap()
         check_lip_correction()
-        check_lashes_and_brows()
+        check_lashes_and_lids()
         check_mouth_set()
         check_eye_carry()
         check_likeness_details()

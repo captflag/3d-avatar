@@ -1374,6 +1374,250 @@ photos may do better on photos, which have no ground truth here. Turned photos
 CompareFaces, photo against head render, 0-100. Wired up; no scores yet, for
 want of credentials.
 
+## The likeness audit, and its two fixes: eye region, haircut and skin light
+
+**The audit.** Swapping one region at a time between photo and render (the
+photo's region pasted into the aligned render, scored on identity) ranked
+where likeness was lost. Per unit area: eyes (+0.094 median, all faces),
+brows (+0.052), nose (+0.045). By total: the face's outline band (+0.125),
+then hair (+0.091). The mouth showed no loss (-0.009). Three ablations
+confirmed it, checked again against photo-16's two other photos:
+- Hiding the hair in both images raised identity 0.38 -> 0.52 (photo-10)
+  and 0.42 -> 0.56 (photo-16).
+- The texture rendered unlit beat the lit render on three of four faces.
+  The studio's shading doubled the shading the photo had baked in.
+- The shape alone, flat-coloured, scored 0.11-0.25 or near zero: almost
+  all likeness comes from the painted photo.
+
+**The fixes** (side-session-notes/eye-region.md, hair-pick-and-lighting.md),
+merged one at a time. Identity, avatar against its own photo:
+
+| face | before | + eye region | + close crop, skin half lit |
+|---|---|---|---|
+| ref-man | 0.616 | 0.653 | 0.666 |
+| ref-woman | 0.365 | 0.386 | 0.505 |
+| photo-10 | 0.382 | 0.418 | 0.516 |
+| photo-14 | 0.438 | 0.472 | 0.512 |
+| photo-16 | 0.423 | 0.467 | 0.511 |
+| mean at pose | 0.445 | 0.479 | **0.542** |
+| mean level | 0.412 | 0.465 | **0.528** |
+
+Against photo-16's two other photos (not used to choose anything):
+0.386 -> 0.480 and 0.198 -> 0.280. Every face is now above OpenCV's
+same-person threshold (0.363). All five sit at or above 0.5, which is the
+range two real photos of one person score (0.48-0.67).
+
+- **Eye region:** tighten_brows taken out, so the brows stay as the photo
+  has them; the upper lids lifted towards the forehead's lightness.
+- **Haircut:** short hair without a fringe always gets hair_short01, the
+  close crop. The cut is raised and widened to the photo afterwards anyway,
+  and short01's hairline beat short02's.
+- **Skin light:** half the skin's diffuse takes the studio's lights; the
+  other half is the texture itself at the cheeks' light (2.1). So the
+  photo's baked shading is not shaded twice. Hair, eyes, brows and
+  clothes keep the full studio light. The face looks softer-lit.
+- Not kept on the way: picking the cut by score (long01 scored high on
+  short-haired men: hair over the temples hides outline errors), and
+  stronger de-lighting.
+
+## Lips (route 7) and nostril width (route 8): measured on identity, none kept
+
+Baseline: side-views e8179b0, identity score 0.445 at the photo's pose and
+0.412 level (mean of the five test faces). Each change was built on its own
+and scored (avatar against its own photo):
+
+| face | baseline | 7a fitted expression | 7a + 7b lip line on the lip's front | 8 nostril-width row |
+|---|---|---|---|---|
+| ref-man | 0.616 | 0.633 | 0.625 | 0.614 |
+| ref-woman | 0.365 | 0.366 | 0.347 | 0.364 |
+| photo-10 | 0.382 | 0.345 | 0.343 | 0.367 |
+| photo-14 | 0.438 | 0.441 | 0.421 | 0.432 |
+| photo-16 | 0.423 | 0.429 | 0.426 | 0.422 |
+| mean at pose | 0.445 | 0.443 | 0.432 | 0.440 |
+| mean level | 0.412 | 0.411 | 0.407 | 0.414 |
+
+- **7a: show exactly the expression the fit took off.** One morph target,
+  `fittedExpression`, after ARKit's 52, holds the fit's MakeHuman units, in
+  place of MediaPipe's ARKit weights through response curves. Hypothesis:
+  the lip-border binding failed on smiling faces because the two
+  expressions differed. On ref-man it helps (identity 0.616 -> 0.633,
+  landmark error 1.87 -> 1.25, mouth 1.61 -> 0.92). On the laughing
+  photo-10 it hurts (0.382 -> 0.345): MakeHuman's units cannot reach a
+  broad laugh, so the exact fitted expression shows less laugh than the
+  photo. A wash on the mean. Not kept.
+- **7b: the outer lip line bound to the lip's front** (`front_of`, on top
+  of 7a). Worse on ref-woman and photo-14 (-0.02 each). The hypothesis is
+  refuted: matching the expression doesn't make the border binding pay.
+  Not kept.
+- **8: nostril width as a PROPORTIONS row (64-294).** The rendered nose is
+  0.5-4.7% of the iris spacing too wide on every face. The row makes the
+  mesh match the photo exactly at the landmark vertices (ref-man 60.8 vs
+  60.8, ref-woman 55.6 vs 55.5). Yet the render still reads 1-4% wide, and
+  identity does not improve. Those vertices are already the nostril wing's
+  outermost point at that height (within 0.1%). So the extra width is in
+  how the nose renders (the shading and paint round the alae), not its
+  shape. Not kept.
+- **What widens the nose: no single cause.** Each head was rendered level
+  three ways: textured as built, flat skin colour (shape only), and its
+  texture unlit. The nose width MediaPipe read, in % of the iris spacing
+  against the photo:
+
+  | face | textured | flat colour | texture unlit |
+  |---|---|---|---|
+  | ref-man | +4.2 | -1.5 | +0.5 |
+  | ref-woman | +5.0 | +5.6 | +9.0 |
+  | photo-10 | +3.4 | +6.3 | +2.7 |
+  | photo-14/16 | -2.8 | +1.5 | -5.2 |
+
+  On ref-man the texture under the studio's light widens it. On ref-woman
+  and photo-10 the bare shape already reads wide, although the mesh
+  matches the photo at the landmarks: MediaPipe reads MakeHuman's rounded
+  alae as wider. On photo-14/16 the texture narrows it. One nose swings
+  5-10% between the three versions, so MediaPipe's nose width on a render
+  is too unsteady to steer by. No single fix to paint, light or shape helps
+  every face; none was made. The nose is left to the identity score.
+
+## An identity score as the keep/drop measure; the side lights back in
+
+Landmark error kept rejecting changes that brought the skin's brightness
+closer to the photos: the side lights, the skin finish, and de-lighting
+through the head. Neither number asks whether the avatar looks like the
+person. `identity_score.py` does: SFace (OpenCV model zoo, Apache-2.0
+weights, trained on research face datasets, so an internal yardstick only)
+gives the cosine similarity of photo and render. On this repo's photos:
+different people 0.15; two real photos of the same man 0.48-0.67;
+OpenCV's same-person threshold 0.363. The same build rendered twice differs
+by 0.008 at most. Each render scores highest against its own photo, except
+ref-woman's, which scores 0.365 against ref-man's photo and 0.349 against
+her own. **From here on it is the main keep/drop measure for likeness;
+landmarks stay as a check on shape.**
+
+The three left-out branches, scored on the current build (avatar against
+its own photo, higher is better):
+
+| face | current | + side lights | + skin finish | + de-light |
+|---|---|---|---|---|
+| at the photo's pose | | | | |
+| ref-man | 0.546 | **0.605** | 0.546 | 0.553 |
+| ref-woman | 0.349 | 0.341 | 0.336 | 0.350 |
+| photo-10 | 0.365 | **0.387** | 0.368 | 0.368 |
+| photo-14 | 0.366 | **0.417** | 0.348 | 0.334 |
+| photo-16 | 0.367 | **0.426** | 0.350 | 0.327 |
+| mean | 0.398 | **0.435** | 0.389 | 0.386 |
+| level, mean | 0.387 | **0.416** | 0.384 | 0.374 |
+
+- **Side lights (+-100 degrees, room tipped 37; a6dc3b7), back in.** They
+  raise likeness on four faces at the pose by 0.02-0.06, well past noise.
+  ref-woman dips 0.008, within noise. Level, all five improve. The baked
+  skin is unchanged: delight's RENDER_LIGHT x RENDER_EXPOSURE stays 2.1
+  (2.0 x 1.05 -> 2.1 x 1.0), and photo-16's head texture differs by at
+  most one level on a handful of pixels. The landmark cost seen before
+  (ref-man, photo-14/16 +0.13-0.18) stands. MediaPipe reads the softer
+  light's jaw slightly differently, but the faces look more like the people.
+- **Skin finish and de-lighting through the head: out**, now on likeness
+  too (0.389 and 0.386 against 0.398).
+
+## Render-in-the-loop fit and de-lighting through the head: measured, left out
+
+**Analysis by synthesis (route 1).** On
+refs/heads/claude/hungry-hofstadter-b2c2a9 (`refine.py`, Mitsuba 3, BSD-3,
+as a ray caster under torch shading; notes in
+side-session-notes/analysis-by-synthesis.md there). It refines shape sliders,
+a per-vertex displacement, albedo and SH light against the photo's pixels.
+Light and an albedo gain explain the photo's regional brightness within a
+few L*. The shape barely gains: under-eye bags appear on the clear photos,
+the cheeks and nasolabial folds don't change, and on the bearded, smiling
+photo-10 the beard and smile lines become creases. Not wired in (137 MB GPU
+dependency, about 2 minutes a build).
+
+**The light fitted through the head's normals (route 2).** On
+refs/heads/claude/beautiful-easley-c293c0, CPU only, about 0.6 s a build.
+Measured on the merged build:
+
+| | render-minus-photo L* summed (forehead, cheeks, nasolabial, under-eye, chin) | whole-face landmark error per face |
+|---|---|---|
+| at the photo's pose | 277 -> 257 | ref-man +0.06, ref-woman +0.03, photo-10 -0.04, photo-14 +0.04, photo-16 +0.07 |
+| level | 228 -> 213 | +0.06, +0.07, +0.08, -0.04, +0.10 |
+
+The brightness gain is about 7%, mostly photo-14/16's under-eye (-25 ->
+-19) and chin. Landmarks are worse on four of five faces in both views,
+several at or past render noise. Left out on that measure. Like the
+earlier side lights, a better brightness match makes MediaPipe read the
+faces slightly worse. Until an identity score (route 0) decides between
+them, landmarks decide.
+
+## Lips and nose kept; the skin-finish changes left out
+
+Two parallel sessions (notes in side-session-notes/lips-nose.md; the skin
+session's notes are on refs/heads/claude/keen-visvesvaraya-fce832), merged
+one at a time and measured on the five test faces. Whole-face landmark
+error:
+
+| face | before | + lips and nose | + skin finish |
+|---|---|---|---|
+| at the photo's pose | | | |
+| ref-man | 1.78 | 1.71 | 1.81 |
+| ref-woman | 1.79 | 1.72 | 1.69 |
+| photo-10 | 1.79 | 1.72 | 1.70 |
+| photo-14 | 1.18 | 1.16 | 1.17 |
+| photo-16 | 1.20 | 1.15 | 1.17 |
+| level | | | |
+| ref-man | 1.55 | 1.55 | 1.60 |
+| ref-woman | 2.49 | 2.55 | 2.73 |
+| photo-10 | 1.97 | 2.01 | 2.06 |
+| photo-14 | 2.77 | 2.69 | 2.71 |
+| photo-16 | 2.79 | 2.67 | 2.71 |
+
+- **Lips and nose, kept.** The lips are sealed with a dark inside and the
+  lip shape and corners corrected. Lip colour is matched, and there is one
+  set of nostrils: the photo's painted nostrils are filled where the mesh
+  casts its own. Better on all five at the photo's pose. Level renders
+  are within noise, net slightly better. Not done: fitting nostril width,
+  and the nose tip's finish.
+- **Skin finish, left out.** Five changes to colour, clean-up and region
+  finish. On the skin itself the gain is small and mixed. Colour error
+  (dE, eight skin patches) summed over the five faces goes 80 -> 77 and hue
+  14 -> 11, but it is worse on ref-man, ref-woman and photo-10 and better on
+  photo-14/16; fine texture is unchanged (4.59 -> 4.62). It costs landmark
+  accuracy beyond render noise: ref-man at pose +0.10, ref-woman level
+  +0.18. Kept out on that measure; the branch keeps it.
+
+## Hairline from the photo, photographic skin and eye shading, guided capture
+
+Three parallel sessions (notes in side-session-notes/hairline.md,
+photo-shading.md, guided-capture.md), merged and measured together on the
+five test faces. Each was measured on its own: the new builds rendered with
+the old renderer, then with the new one. Whole-face landmark error:
+
+| face | before | + hairline | + skin/eye shading |
+|---|---|---|---|
+| at the photo's pose | | | |
+| ref-man | 1.88 | 1.74 | 1.78 |
+| ref-woman | 1.75 | 1.71 | 1.79 |
+| photo-10 | 1.85 | 1.86 | 1.79 |
+| photo-14 | 1.30 | 1.19 | 1.18 |
+| photo-16 | 1.29 | 1.21 | 1.20 |
+| level | | | |
+| ref-man | 1.74 | 1.57 | 1.55 |
+| ref-woman | 2.69 | 2.51 | 2.49 |
+| photo-10 | 2.07 | 2.01 | 1.97 |
+| photo-14 | 2.92 | 2.78 | 2.77 |
+| photo-16 | 2.92 | 2.82 | 2.79 |
+
+- **Hairline, kept.** The hair's front edge now follows the photo's hairline
+  curve, temples included. Jaw error falls on every face as well (MediaPipe
+  frames the face from the hairline): photo-16 at pose 2.28 -> 1.80.
+- **Skin scattering, a wet lower lid and a refracting cornea, kept.** Its
+  point is looking photographic, not moving landmarks. Landmarks hold within
+  render noise (0.06), except ref-woman at pose (+0.08), and level renders are
+  slightly better on all five. The visible change is modest: softer,
+  more translucent skin.
+- **Guided capture, kept.** It takes front, left and right shots, each
+  checked before it is taken. In the in-app browser (no camera) it fell back
+  to choosing a photo per step. On photo-16 it flagged the face as 214 px
+  (needs 500) and the chin as not level, and passed the rest. Live camera
+  capture is still untested.
+
 ## A shape model trained on our own synthetic heads: better on synthetic, worse on photos
 
 `shape_model.py` (session notes: side-session-notes/shape-model.md) is a ridge
@@ -2162,6 +2406,55 @@ beside jaw_beard 0.25 and 0.49, so only sk-22's beard is carried. Its
 "black" hair is closer than the pipeline's read on sk-22, which is grey
 (75, 70, 80) where the others read 16-32: a soft, highlit photo. Neither is
 acted on yet.
+
+## The red and yellow items, split into colour and detail
+
+The likeness audit's biggest remaining losses were the face outline (+0.096),
+the eyes (+0.075), the nose (+0.031) and the jaw (+0.030). Each region was
+swapped three ways into the aligned render, scored against the photo (and,
+for photo-16, against sk-21 and sk-22): the photo itself, only its colour (the
+render times the ratio of the two blurred), and only its detail (the render
+blurred plus the photo less its own blur). Median over the faces:
+
+| region | full | colour only | detail only |
+|---|---|---|---|
+| eyes | +0.075 | +0.030 | +0.054 |
+| nose | +0.031 | +0.014 | +0.022 |
+| jaw/chin | +0.030 | +0.007 | +0.026 |
+| cheeks | +0.026 | +0.015 | +0.013 |
+
+The outline band was split by part as well: the skin just inside the face's
+edge (+0.019 to +0.094, all faces), neck skin below it, the ears (photo-16
+only, +0.075), hair edge and background (small). Inside the rim and on the
+neck the colour-only swap gains nothing (-0.04 to +0.03); the full swap
++0.07 to +0.15.
+
+So what costs likeness now is where the fine edges sit (lid creases, the
+beard's edge, the jaw's line), the photo's own detail, which carries its
+shape: that is cause 1 again. Paint and light reach the colour column, and
+of that only photo-16's cheeks hold against his other photos (+0.037,
++0.040); the eyes' colour gain does not (-0.014, -0.012), it is the photo
+matching its own light. Measured and not kept:
+
+| change | pose | level |
+|---|---|---|
+| side lights 2.0 -> 1.5 (outer cheeks rendered 4-12 L* light on three faces, sockets 5-7) | +0.005 | +0.002 |
+| side lights 2.0 -> 1.0 | +0.003 | 0.000 |
+| neck under the jaw darkened to the photo's (swap only) | +0.004 to +0.006 | |
+| the render sharpened (unsharp mask, swap only) | -0.04 to +0.02 | |
+
+Baselines rendered the same day: 0.542/0.528 and 0.541/0.529. The eyes'
+own leftovers (highlight, lash line, lid cover, under-eye) were each
+measured in side-session-notes/eye-region.md, none beyond noise.
+
+Kept, for how it looks rather than the score: the body's cut-out texture was
+quantised to 255 colours by median cut alone, and `quantize()` does not
+dither when asked for a colour count, so the beard carried under the jaw (a
+small part of the map, few palette entries) came out as flat bands of one
+colour each, up to 61 texels wide. Refined by k-means (`kmeans=3`) it shows
+its strands, the longest flat run is 20, at the same size (299 KB); dithered
+onto the median-cut palette instead, the map doubled and banded more.
+ref-man's score is unchanged (0.663 against 0.661-0.666).
 
 ## What changed in the first pass
 

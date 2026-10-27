@@ -219,12 +219,16 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None,
     elif image.mode == "RGBA":
         # Every RGBA texture here is a cut-out (alpha MASK at 0.5), so its alpha
         # is one transparent palette slot and its colour 255 entries, median
-        # cut and dithered: the body's skin went from 947 to 432 KB at about
-        # 1.4 delta-E as seen, below what shows.
+        # cut: the body's skin went from 947 to 432 KB at about 1.4 delta-E as
+        # seen, below what shows. Refined by k-means: median cut alone gave the
+        # carried beard under the jaw, a small part of the map, so few entries
+        # that its fade showed as flat bands (quantize() does not dither when
+        # asked for a colour count; dithered onto the palette instead, the map
+        # doubled in size and banded more than this).
         rgba = np.asarray(image)
         shown = rgba[..., 3] >= 128
         palette = Image.fromarray(np.ascontiguousarray(rgba[..., :3])).quantize(
-            255, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG)
+            255, method=Image.Quantize.MEDIANCUT, kmeans=3)
         index = np.asarray(palette).copy()
         index[~shown] = 255
         out = Image.fromarray(index.astype(np.uint8), "P")
@@ -415,3 +419,57 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     gltf.save_binary(str(out_path))
+
+
+def dequantised(glb: bytes) -> bytes:
+    """The same GLB with its quantised normals and texture coordinates written
+    back as floats, and KHR_mesh_quantization dropped, for viewers that do not
+    know the extension (Windows' 3D Viewer refused every avatar: "Couldn't load
+    3D model"). About a third larger. Skin weights and vertex colours stay
+    normalised integers, which core glTF allows."""
+    import json
+    json_len = struct.unpack_from("<I", glb, 12)[0]
+    doc = json.loads(glb[20:20 + json_len])
+    bin_start = 20 + json_len + 8
+    blob = bytearray(glb[bin_start:bin_start + struct.unpack_from("<I", glb, 20 + json_len)[0]])
+    scale = {gl.BYTE: (np.int8, 127.0), gl.UNSIGNED_BYTE: (np.uint8, 255.0),
+             gl.SHORT: (np.int16, 32767.0), gl.UNSIGNED_SHORT: (np.uint16, 65535.0)}
+    width = {"VEC2": 2, "VEC3": 3, "VEC4": 4}
+    done = set()
+    for mesh in doc.get("meshes", []):
+        for primitive in mesh["primitives"]:
+            for name, index in primitive["attributes"].items():
+                accessor = doc["accessors"][index]
+                if index in done or not (name == "NORMAL" or name.startswith("TEXCOORD")) \
+                        or accessor["componentType"] == gl.FLOAT:
+                    continue
+                done.add(index)
+                kind, top = scale[accessor["componentType"]]
+                view = doc["bufferViews"][accessor["bufferView"]]
+                n, k = accessor["count"], width[accessor["type"]]
+                size = np.dtype(kind).itemsize
+                stride = view.get("byteStride", k * size)
+                start = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+                rows = np.frombuffer(bytes(blob[start:start + stride * n]).ljust(stride * n, b"\0"),
+                                     dtype=np.uint8).reshape(n, stride)[:, :k * size]
+                values = np.ascontiguousarray(rows).view(kind).reshape(n, k).astype(np.float32) / top
+                values = np.maximum(values, -1.0) if np.dtype(kind).kind == "i" else values
+                blob.extend(b"\0" * (-len(blob) % 4))
+                doc["bufferViews"].append({"buffer": 0, "byteOffset": len(blob),
+                                           "byteLength": values.nbytes, "target": gl.ARRAY_BUFFER})
+                blob.extend(values.tobytes())
+                accessor.update(bufferView=len(doc["bufferViews"]) - 1, componentType=gl.FLOAT, normalized=False)
+                accessor.pop("byteOffset", None)
+                if name == "NORMAL":
+                    accessor["min"], accessor["max"] = values.min(axis=0).tolist(), values.max(axis=0).tolist()
+    for key in ("extensionsUsed", "extensionsRequired"):
+        if key in doc:
+            doc[key] = [e for e in doc[key] if e != "KHR_mesh_quantization"]
+            if not doc[key]:
+                del doc[key]
+    blob.extend(b"\0" * (-len(blob) % 4))
+    doc["buffers"][0]["byteLength"] = len(blob)
+    text = json.dumps(doc, separators=(",", ":")).encode()
+    text += b" " * (-len(text) % 4)
+    body = struct.pack("<II", len(text), 0x4E4F534A) + text + struct.pack("<II", len(blob), 0x004E4942) + bytes(blob)
+    return struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body

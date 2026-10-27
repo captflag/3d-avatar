@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 import trimesh
 from PIL import Image
+from scipy.spatial.transform import Rotation
 
 import appearance
 import skinned_glb
@@ -71,6 +72,8 @@ PHOTO_NORMAL_ROUNDS = 120
 SKIN_SHEEN = ((0.20, 0.07, 0.04), 0.55)
 # How far teeth and tongue sit back from where the model puts them (mesh units).
 TEETH_RECESS = 0.05
+# How far the mouth's lining is set back into the mouth (mesh units, ~1.5 mm).
+MOUTH_LINING = 0.015
 # Cloth sheen: colour (linear RGB) and roughness. At 0.35 it washed navy out
 # to slate grey.
 CLOTH_SHEEN = ((0.12, 0.12, 0.12), 0.8)
@@ -635,6 +638,24 @@ def hairline_for(face: trimesh.Trimesh, vertices: np.ndarray, groups: dict, lift
     return line
 
 
+def hairline_on_head(points, landmarks, photo_size, sheet: np.ndarray):
+    """The photo's hairline (read_hair's `hairline_points`, photo pixels) on the
+    head, as (xs, ys) in head units, or None.
+
+    Through the placed landmark sheet: an affine from the photo to the sheet,
+    fitted over the upper face, which the hairline sits just above.
+    """
+    if not points or len(points) < 4:
+        return None
+    pw, ph = photo_size
+    pixels = np.array([[lm.x * pw, lm.y * ph] for lm in landmarks[:len(sheet)]])
+    upper = sheet[:, 1] > np.percentile(sheet[:, 1], 66)
+    fit = np.linalg.lstsq(np.c_[pixels[upper], np.ones(upper.sum())], sheet[upper, :2], rcond=None)[0]
+    on_head = np.c_[np.asarray(points, dtype=np.float64), np.ones(len(points))] @ fit
+    on_head = on_head[np.argsort(on_head[:, 0])]
+    return on_head[:, 0], on_head[:, 1]
+
+
 def brows_to_photo(card: trimesh.Trimesh, sheet: np.ndarray, depth: np.ndarray,
                    vertices: np.ndarray, groups: dict) -> trimesh.Trimesh:
     """Move the brow cards onto the photo's own brows, which the bake paints on.
@@ -861,18 +882,27 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # silhouette. The lids: the mesh's eyes rendered 1-4% of the eye spacing
     # more open than every test photo's.
     lip_marks = np.zeros(len(corr))
-    lip_marks[morph.INNER_UPPER + morph.INNER_LOWER + morph.OUTER_UPPER + morph.OUTER_LOWER + [61, 291, 78, 308]] = 1.0
     lip_marks[list(appearance.EYE_CONTOURS[0]) + list(appearance.EYE_CONTOURS[1])] = 1.0
+    lip_marks = np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks
+    # The lips at full trust, on the vertices where the mesh's lips meet:
+    # trusted as little as a laugh's other landmarks (0.4 on ref-man), the
+    # mouth kept the skull's shape. The expression taken off them first is
+    # still the photo's, so a laugh's stretch does not stay.
+    lip_marks[morph.LIP_LANDMARKS] = 1.0
     # Towards the lips closed: the mesh's met 1.4% of the eye spacing apart on
     # a photo whose own were 0.4 apart, and a sliver of teeth showed.
-    vertices = morph.correct(vertices, base, corr, morph.close_lips(person), average, shape_weights, expression,
-                             front, np.asarray(outline_trust, dtype=np.float64)[:len(corr)] * lip_marks)
-    vertices = morph.seal_lips(vertices, corr)
+    vertices = morph.correct(vertices, base, morph.lip_corr(base, corr), morph.close_lips(person), average,
+                             shape_weights, expression, front, lip_marks)
+    vertices = morph.seal_lips(vertices, groups["body"])
     # The jaw's edge as the camera saw it, with the photo's expression off.
     resting = person[:len(corr)] - morph.expression_offsets(base, front, expression)
     u, _, vt = np.linalg.svd(np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)[:3, :3])
-    vertices = morph.fit_outline(vertices, morph.head_only(vertices, groups["body"], load_weights()),
-                                 resting, u @ vt)
+    rotation = u @ vt
+    # And as the photo-pose render turns it.
+    head_pose = photo_head_pose(result, landmarks, photo)
+    render_turn = rotation if head_pose is None else Rotation.from_quat(head_pose).as_matrix()
+    head_only = morph.head_only(vertices, groups["body"], load_weights())
+    vertices = morph.fit_outline(vertices, head_only, resting, rotation)
 
     # The same expression taken off the landmarks the photo is baked through,
     # and the lips closed, so the photo's smile is warped back onto a relaxed
@@ -899,15 +929,26 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # lip colour so no teeth get baked across the lips.
     skin_rgb, mouth_filled = appearance.fill_mouth(skin_rgb, landmarks, cheeks)
     skin_rgb = appearance.fill_eyes(skin_rgb, landmarks)
-    # The lash line back on the lids, and the brows as dense as the photo's.
+    # The lids lighter than the brow's shade the photo shows over them.
+    skin_rgb = appearance.lift_lids(skin_rgb, landmarks)
+    # The nostrils are the mesh's own.
+    skin_rgb = appearance.fill_nostrils(skin_rgb, landmarks, keep_out=facial_hair)
+    # The lash line back on the lids. The brows are left as the photo has them:
+    # darkened against the skin round them (tighten_brows, gain 1.6), they
+    # rendered 14-34 L* darker than the photos' and the lid under them went
+    # dark with them; without it they render within 9 L* of the photos' and
+    # the identity score rose 0.445 -> 0.471 at the photo's pose, 0.410 ->
+    # 0.446 level (side-session-notes/eye-region.md).
     skin_rgb = appearance.paint_lashes(skin_rgb, photo_rgb, landmarks)
-    skin_rgb = appearance.tighten_brows(skin_rgb, landmarks)
     # A colour cast that puts skin outside the natural range is pulled back.
     skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
+    # The lips darker and less yellow by what the render adds to them.
+    skin_rgb = appearance.lip_tone(skin_rgb, landmarks)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)
-    full_face.vertices = mouth_onto_mesh(full_face.vertices, vertices, corr)
+    # Onto the corners where the mesh's lips meet, not 3.6 mm inside them.
+    full_face.vertices = mouth_onto_mesh(full_face.vertices, vertices, morph.lip_corr(base, corr))
     full_face.vertices = eyes_onto_mesh(full_face.vertices, vertices, corr)
     placed = trim_face_border(full_face)
 
@@ -941,7 +982,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # and what an opened jaw shows.
     outfit = outfit + [items_by_id()[i] for i in ("teeth", "tongue") if i not in {o["id"] for o in outfit}]
 
-    worn, hair_rgb = [], None
+    worn, hair_rgb, curve = [], None, None
     brow_depth = facetexture.brow_depth(photo_rgb, landmarks)
     for item in outfit:
         colour = None
@@ -967,7 +1008,9 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # above the brows on the shaped head.
             spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
             hairline_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["hairline"] * spacing
-            garments.sweep_back(mesh, vertices, groups, appearance.opaque_hair(mesh), hairline_y)
+            curve = hairline_on_head(hair_reading.get("hairline_points"), landmarks, photo.size, full_face.vertices)
+            garments.sweep_back(mesh, vertices, groups, appearance.opaque_hair(mesh),
+                                hairline_y if curve is None else curve, above=float(vertices[corr[[105, 334]], 1].mean()))
         if item["category"] == "hair" and "mhclo" in item and hair_reading and hair_reading.get("rise"):
             # And up to the photo's height over the forehead: the stock cuts lie flat.
             spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
@@ -976,6 +1019,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # And out to the photo's outline at the sides.
             garments.widen(mesh, vertices, groups, float(vertices[corr[[105, 334]], 1].mean()), spacing,
                            hair_reading.get("widths"))
+        if item["category"] == "hair" and "mhclo" in item and parts is not None and hair_reading:
+            # And its outline to the photo's, seen as the photo saw the head.
+            garments.fit_hair(mesh, vertices, head_only, render_turn, person,
+                              np.array([[lm.x * pw, lm.y * ph] for lm in landmarks]),
+                              parts == appearance.HAIR, appearance.opaque_hair)
         if item["category"] == "brows":
             mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
         if item["category"] in ("teeth", "tongue"):
@@ -1060,6 +1108,13 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     head_faces, head_uv_faces = body_faces[in_head], uv_faces[in_head]
     rest_faces, rest_uv_faces = body_faces[~in_head], uv_faces[~in_head]
     head_uv_all = island_uv(uv_all, head_uv_faces)
+    # The mouth's inside, set back into the mouth from the lips it lines,
+    # fully from MOUTH_DEPTH in from the rims: sealed, the lining met the
+    # lips' skin at the seam, and a smile pressed on ref-man's turned head
+    # showed it through his lower lip.
+    mouth = appearance.mouth_inside(vertices, rest_faces, morph.UPPER_RIM + morph.LOWER_RIM)
+    lining = trimesh.Trimesh(vertices, rest_faces, process=False).vertex_normals
+    vertices = vertices + MOUTH_LINING * np.clip(2.0 * mouth - 1.0, 0.0, 1.0)[:, None] * lining
 
     # A skin texture built to the person's own cheek statistics, so skin is
     # mottled rather than one flat colour.
@@ -1108,7 +1163,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         # bare forehead in a hard line.
         head_texture, hair_cover, hair_below = appearance.hairline_tint(head_texture, vertices, head_faces, head_uv_all,
                                                             head_uv_faces, appearance.opaque_hair(haircut), hair_rgb,
-                                                            spare=sampler.sample(vertices)[1], return_weight=True)
+                                                            spare=sampler.sample(vertices)[1], return_weight=True,
+                                                            hairline=curve)
     # The body's one map runs neck to toe; at 1024 a nail was 8 texels wide.
     rest_base = skin.albedo(SKIN_SIZE, skin_mean, skin_spread, seed=7)
 
@@ -1150,6 +1206,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     nail_map = facetexture.rasterize(nails, rest_faces[on_nail], uv_all, rest_uv_faces[on_nail],
                                      rest_base.shape[0], fill=0.0)
     rest_base = appearance.paint_nails(rest_base, nail_map)
+    # The inside of the mouth, dark.
+    in_mouth = mouth[rest_faces].max(axis=1) > 0
+    rest_base = appearance.paint_mouth(rest_base, facetexture.rasterize(
+        mouth, rest_faces[in_mouth], uv_all, rest_uv_faces[in_mouth], rest_base.shape[0], fill=0.0))
     body_rough = appearance.SKIN_ROUGHNESS["skin"] + (appearance.NAIL_ROUGHNESS - appearance.SKIN_ROUGHNESS["skin"]) * nail_map
     body_roughness = Image.fromarray(np.dstack([np.full_like(body_rough, 255), body_rough * 255,
                                                 np.zeros_like(body_rough)]).astype(np.uint8))
@@ -1307,7 +1367,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES,
                        expression=morph.photo_expression(expression_of(result)),
-                       head_pose=photo_head_pose(result, landmarks, photo))
+                       head_pose=head_pose)
 
     info = {
         "advice": photo_advice(landmarks, (pw, ph), expression_of(result)),
@@ -1370,6 +1430,9 @@ def main() -> int:
                              "except for a hard edge across the forehead")
     parser.add_argument("--pose", choices=sorted(POSES), default="relaxed",
                         help="the stance the file opens in (the skeleton is the same)")
+    parser.add_argument("--compat", action="store_true",
+                        help="write normals and texture coordinates as floats, without "
+                             "KHR_mesh_quantization, for old viewers such as Windows' 3D Viewer")
     args = parser.parse_args()
 
     try:
@@ -1383,8 +1446,10 @@ def main() -> int:
         print(err, file=sys.stderr)
         return 2
 
+    if args.compat:
+        args.out.write_bytes(skinned_glb.dequantised(args.out.read_bytes()))
     print(f"{args.out}  {info['triangles']} tris  wearing {', '.join(info['wearing'])}"
-          f"  {info['size_kb']} KB")
+          f"  {info['size_kb']} KB" + ("  (compat)" if args.compat else ""))
     return 0
 
 

@@ -596,7 +596,7 @@ SWEEP_SPAN = (30.0, 75.0)
 
 
 def sweep_back(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, edge: np.ndarray,
-               hairline_y: float, floor: float = 0.05) -> float:
+               hairline_y, floor: float = 0.05, above: float | None = None) -> float:
     """Lift a haircut's front up and back over the head until it ends at
     `hairline_y` mid-forehead, without cutting it. Returns the angle, degrees.
 
@@ -608,6 +608,14 @@ def sweep_back(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, edge: 
     towards the sides (SWEEP_SPAN); the back does not move. Hair that would
     end up nearer the scalp than `floor` is pushed back out. Hair that already
     ends higher than the photo's is left alone.
+
+    `hairline_y` may instead be the photo's hairline as a curve, (xs, ys)
+    across the forehead in head units. Each part of the front is then turned by
+    what brings the edge above it up to the curve, so the cut recedes at the
+    temples where the photo's does; past the curve's ends nothing turns.
+    Only the edge above `above` (the brow line; the curve's heights are read
+    above the photo's brows) sets each part's turn, so hair hanging down the
+    sides in front of the temples does not count as a low hairline.
     """
     from scipy.spatial import cKDTree
 
@@ -616,23 +624,58 @@ def sweep_back(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, edge: 
     cranium = vertices[skin[vertices[skin, 1] > eyes[1]]]
     centre = np.array([0.0, cranium[:, 1].mean(), (cranium[:, 2].max() + cranium[:, 2].min()) / 2.0])
 
-    # The hair's lowest visible points straight ahead (within 15 degrees).
-    rel = edge - centre
-    ahead = np.degrees(np.abs(np.arctan2(rel[:, 0], rel[:, 2]))) < 15.0
-    if ahead.sum() < 10:
-        return 0.0
-    edge, rel = edge[ahead], rel[ahead]
-    radius = float(np.median(np.hypot(rel[:, 1], rel[:, 2])))
-    lift = np.arcsin(np.clip((hairline_y - centre[1]) / radius, -1.0, 1.0))
-    now = np.arcsin(np.clip((np.percentile(edge[:, 1], 3) - centre[1]) / radius, -1.0, 1.0))
-    turn = float(lift - now)
-    if turn <= 0.0:
-        return 0.0
+    def needed(points, target):
+        """The turn that brings the lowest of `points` (relative) up to
+        `target`, and that lowest point's elevation now."""
+        radius = float(np.median(np.hypot(points[:, 1], points[:, 2])))
+        lift = np.arcsin(np.clip((target - centre[1]) / radius, -1.0, 1.0))
+        now = np.arcsin(np.clip(np.percentile(points[:, 1], 3) / radius, -1.0, 1.0))
+        return float(lift - now), float(now)
 
+    rel = edge - centre
+    round_edge = np.degrees(np.abs(np.arctan2(rel[:, 0], rel[:, 2])))
     p = hair.vertices - centre
     angle = np.degrees(np.abs(np.arctan2(p[:, 0], p[:, 2])))
     t = np.clip((SWEEP_SPAN[1] - angle) / (SWEEP_SPAN[1] - SWEEP_SPAN[0]), 0.0, 1.0)
-    a = turn * t * t * (3.0 - 2.0 * t)
+    if np.ndim(hairline_y) == 0:
+        # The hair's lowest visible points straight ahead (within 15 degrees).
+        ahead = round_edge < 15.0
+        if ahead.sum() < 10:
+            return 0.0
+        turn = needed(rel[ahead], hairline_y)[0]
+        if turn <= 0.0:
+            return 0.0
+        a = turn * t * t * (3.0 - 2.0 * t)
+    else:
+        xs, ys = (np.asarray(v, dtype=np.float64) for v in hairline_y)
+        step = float(np.median(np.diff(xs)))
+        turns, nows = np.full(len(xs), np.nan), np.full(len(xs), np.nan)
+        for i, (x, y) in enumerate(zip(xs, ys)):
+            near = (np.abs(edge[:, 0] - x) < step) & (round_edge < SWEEP_SPAN[1])
+            if above is not None:
+                near &= edge[:, 1] > above
+            if near.sum() >= 10:
+                turns[i], nows[i] = needed(rel[near], y)
+        known = ~np.isnan(turns)
+        if not known.any():
+            return 0.0
+        turns = np.maximum(np.interp(xs, xs[known], turns[known]), 0.0)
+        nows = np.interp(xs, xs[known], nows[known])
+        turn = float(turns.max())
+        if turn <= 0.0:
+            return 0.0
+        # Each part turned less the higher up the head it lies, the edge by
+        # all of its turn and the crown not at all: turned whole, columns
+        # needing 40-50 degrees at the temples stood the cut up in a block.
+        # Fading to none a step past the curve's ends, and round the head
+        # over the same span past SWEEP_SPAN that it fades over in front of it.
+        ends = lambda values: np.interp(hair.vertices[:, 0], np.r_[xs[0] - 2 * step, xs, xs[-1] + 2 * step],
+                                        np.r_[0.0, values, 0.0])
+        now = np.interp(hair.vertices[:, 0], xs, nows)
+        rise = np.arctan2(p[:, 1], p[:, 2])
+        a = ends(turns) * np.clip((np.pi / 2 - rise) / (np.pi / 2 - now), 0.0, 1.0)
+        t = np.clip((2 * SWEEP_SPAN[1] - SWEEP_SPAN[0] - angle) / (SWEEP_SPAN[1] - SWEEP_SPAN[0]), 0.0, 1.0)
+        a = a * t * t * (3.0 - 2.0 * t)
     y, z = p[:, 1].copy(), p[:, 2].copy()
     p[:, 1] = y * np.cos(a) + z * np.sin(a)
     p[:, 2] = -y * np.sin(a) + z * np.cos(a)
@@ -780,6 +823,145 @@ def widen(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, brow_y: flo
     sideways = np.abs(scalp[:, 0])
     hair.vertices = v + scalp * (amount * sideways)[:, None]
     return push
+
+
+# The hair's outline fitted to the photo's (fit_hair): rays from the cranium's
+# centre every HAIR_FIT_STEP degrees, up to HAIR_FIT_SPAN either side of
+# straight up; the gaps smoothed round the head over HAIR_FIT_SMOOTH degrees;
+# how many rounds; and how close to the skull's outline hair may be pulled in,
+# in eye spacings.
+HAIR_FIT_SPAN = 100.0
+HAIR_FIT_STEP = 4.0
+HAIR_FIT_SMOOTH = 12.0
+HAIR_FIT_ROUNDS = 3
+HAIR_FIT_FLOOR = 0.04
+# Pixels per eye spacing the outlines are drawn at.
+HAIR_FIT_SCALE = 120.0
+# How far the cards' opaque points, drawn, reach past the hair the render's
+# segmentation finds, in eye spacings: 0.01-0.06 on the five test faces at
+# their photos' poses, the same all round the head.
+HAIR_DRAWN_MARGIN = 0.035
+
+
+def _similarity(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """The 2x3 rotation, scale and shift taking `src` points onto `dst`."""
+    ms, md = src.mean(axis=0), dst.mean(axis=0)
+    s, d = src - ms, dst - md
+    u, sig, vt = np.linalg.svd(d.T @ s)
+    flip = np.diag([1.0, np.sign(np.linalg.det(u @ vt))])
+    r = u @ flip @ vt
+    k = (sig * np.diag(flip)).sum() / (s ** 2).sum()
+    return np.hstack([k * r, (md - k * r @ ms)[:, None]])
+
+
+def _last_along(mask: np.ndarray, centre: np.ndarray, directions: np.ndarray, length: float) -> np.ndarray:
+    """Per direction, how far from `centre` the last pixel of `mask` lies along
+    it (0 where it has none)."""
+    r = np.arange(0.0, length, 0.5)
+    pts = np.round(centre[None, None] + r[None, :, None] * directions[:, None]).astype(int)
+    ok = (pts >= 0).all(axis=2) & (pts[..., 0] < mask.shape[1]) & (pts[..., 1] < mask.shape[0])
+    inside = np.zeros(ok.shape, bool)
+    inside[ok] = mask[pts[ok][:, 1], pts[ok][:, 0]] > 0
+    last = np.where(inside.any(axis=1), len(r) - 1 - np.argmax(inside[:, ::-1], axis=1), -1)
+    return np.where(last >= 0, r[np.maximum(last, 0)], 0.0)
+
+
+def fit_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray, rotation: np.ndarray,
+             person: np.ndarray, pixels: np.ndarray, photo_hair: np.ndarray, opaque) -> np.ndarray:
+    """A haircut's outline moved until, seen as the photo saw the head, it runs
+    along the photo's segmented hair: the crown's height, the width at the
+    temples and over the ears.
+
+    As morph.fit_outline does for the jaw: the head is turned by the photo's
+    `rotation` (the render's: compose.photo_head_pose) and drawn, with the cut's opaque points (`opaque(hair)`) drawn
+    over it; the photo's hair mask (`photo_hair`) is brought into the same
+    picture by a similarity fit of its landmarks (`pixels`) onto the face's
+    (`person`, placed on the head). Along rays from the cranium's centre over
+    the top and down the sides, each outline's last pixel is found, and the
+    hair between the skull's outline and its own is stretched in the picture's
+    plane to end on the photo's: points on the skull stay, the outer edge goes
+    the whole gap. Never in past the skull's outline plus HAIR_FIT_FLOOR, so
+    no card is pulled into the scalp. Rays where the photo's hair runs off the
+    picture, or where either has no hair, do not count. Returns the gaps of the
+    last round, in eye spacings, per ray.
+    """
+    import cv2
+
+    centre = person[:468].mean(axis=0)
+    spacing = float(np.linalg.norm(person[33] - person[263]))
+    scale = HAIR_FIT_SCALE / spacing
+    size = int(7 * HAIR_FIT_SCALE)
+    view = lambda q: np.stack([((q - centre) @ rotation.T)[:, 0] * scale + size / 2,
+                               -((q - centre) @ rotation.T)[:, 1] * scale + size / 2], axis=1)
+    to_view = _similarity(np.asarray(pixels[:468], dtype=np.float64), view(person[:468]))
+    # The photo's hair, one piece: the largest connected part, holes closed.
+    hair_mask = cv2.morphologyEx(np.asarray(photo_hair, np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(hair_mask)
+    if count < 2:
+        return np.zeros(0)
+    hair_mask = (labels == 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])).astype(np.uint8)
+    photo_view = cv2.warpAffine(hair_mask, to_view, (size, size), flags=cv2.INTER_NEAREST)
+    in_photo = cv2.warpAffine(np.ones_like(hair_mask), to_view, (size, size), flags=cv2.INTER_NEAREST,
+                              borderValue=0)
+    in_photo = cv2.erode(in_photo, np.ones((7, 7), np.uint8))
+
+    eyes_y = float(person[[33, 263], 1].mean())
+    skull = np.unique(head_faces)
+    cranium = view(vertices[skull[vertices[skull, 1] > eyes_y]]).mean(axis=0)
+    angles = np.arange(-HAIR_FIT_SPAN, HAIR_FIT_SPAN + 1e-6, HAIR_FIT_STEP)
+    directions = np.stack([np.sin(np.radians(angles)), -np.cos(np.radians(angles))], axis=1)
+    reach = float(size)
+    head_mask = np.zeros((size, size), np.uint8)
+    for tri in np.round(view(vertices)[head_faces]).astype(np.int32):
+        cv2.fillConvexPoly(head_mask, tri, 1)
+    r_head = _last_along(head_mask, cranium, directions, reach)
+    r_photo = _last_along(photo_view, cranium, directions, reach)
+    beyond = np.round(cranium + (r_photo[:, None] + 4) * directions).astype(int)
+    seen = in_photo[np.clip(beyond[:, 1], 0, size - 1), np.clip(beyond[:, 0], 0, size - 1)] > 0
+    floor = HAIR_FIT_FLOOR * HAIR_FIT_SCALE
+    gaps = np.zeros(len(angles))
+    # The scalp under each point, to keep pulled-in hair off it: in the
+    # picture it stays outside the skull's outline, but a card over the
+    # forehead drawn down in the picture's plane meets the brow in depth.
+    normals = trimesh.Trimesh(vertices, head_faces, process=False).vertex_normals
+    tree = cKDTree(vertices[skull])
+    off_scalp = lambda pts: (lambda near: ((pts - vertices[near]) * normals[near]).sum(axis=1))(
+        skull[tree.query(pts)[1]])
+    before = off_scalp(hair.vertices)
+    for _ in range(HAIR_FIT_ROUNDS):
+        drawn = np.zeros((size, size), np.uint8)
+        q = np.round(view(opaque(hair))).astype(int)
+        q = q[(q >= 0).all(axis=1) & (q < size).all(axis=1)]
+        drawn[q[:, 1], q[:, 0]] = 1
+        drawn = cv2.morphologyEx(cv2.dilate(drawn, np.ones((3, 3), np.uint8)), cv2.MORPH_CLOSE,
+                                 np.ones((5, 5), np.uint8))
+        r_hair = _last_along(drawn | head_mask, cranium, directions, reach)
+        use = seen & (r_photo > 0) & (r_hair > r_head + 1)
+        if use.sum() < 5:
+            break
+        gaps = np.where(use, np.maximum(r_photo + HAIR_DRAWN_MARGIN * HAIR_FIT_SCALE, r_head + floor) - r_hair, 0.0)
+        # Smoothed round the head, over the rays that count.
+        near = np.exp(-((angles[:, None] - angles[None, :]) / HAIR_FIT_SMOOTH) ** 2) * use[None, :]
+        gaps = (near @ gaps) / np.maximum(near.sum(axis=1), 1e-9)
+        gaps = np.where(near.sum(axis=1) > 0.5, gaps, 0.0)
+
+        p = view(hair.vertices) - cranium
+        radius = np.linalg.norm(p, axis=1)
+        theta = np.degrees(np.arctan2(p[:, 0], -p[:, 1]))
+        ends = np.r_[angles[0] - 2 * HAIR_FIT_STEP, angles, angles[-1] + 2 * HAIR_FIT_STEP]
+        at = lambda values: np.interp(theta, ends, np.r_[values[0], values, values[-1]])
+        gap = np.interp(theta, ends, np.r_[0.0, gaps, 0.0])
+        inner, outer = at(r_head), at(r_hair)
+        share = np.clip((radius - inner) / np.maximum(outer - inner, 1.0), 0.0, 1.0)
+        move = (gap * share)[:, None] * p / np.maximum(radius, 1e-9)[:, None]
+        hair.vertices = hair.vertices + np.stack([move[:, 0], -move[:, 1], np.zeros(len(move))],
+                                                 axis=1) / scale @ rotation
+    # Never nearer the scalp than before, nor nearer than the floor.
+    keep = np.minimum(before, HAIR_FIT_FLOOR * spacing)
+    now = off_scalp(hair.vertices)
+    near = skull[tree.query(hair.vertices)[1]]
+    hair.vertices = hair.vertices + normals[near] * np.maximum(keep - now, 0.0)[:, None]
+    return gaps / HAIR_FIT_SCALE
 
 
 def enclosed_by_shoe(shoes: trimesh.Trimesh, points: np.ndarray, margin: float = 0.05) -> np.ndarray:
