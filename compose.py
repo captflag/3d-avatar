@@ -74,10 +74,9 @@ SKIN_SHEEN = ((0.20, 0.07, 0.04), 0.55)
 TEETH_RECESS = 0.05
 # How far the mouth's lining is set back into the mouth (mesh units, ~1.5 mm).
 MOUTH_LINING = 0.015
-# jawOpen given a photo whose open mouth was painted over (fill_mouth), so its
-# laugh shows teeth. ponytail: one value, from photo-10, the one laughing test
-# face; read it from the photo's own lip gap once there are more.
-OPEN_JAW = 0.25
+# The ARKit shapes that part the lips, scaled together so the avatar's mouth
+# opens as far as the photo's (open_as_photo).
+OPENING = ("jawOpen", "mouthLowerDown", "mouthUpperUp")
 # Cloth sheen: colour (linear RGB) and roughness. At 0.35 it washed navy out
 # to slate grey.
 CLOTH_SHEEN = ((0.12, 0.12, 0.12), 0.8)
@@ -498,6 +497,39 @@ def relaxed_pose() -> dict:
 # Degrees the thumb is turned down from where the model holds it: from 28 to
 # about 50 below horizontal, still 24 from the index finger.
 THUMB_DROP = 25.0
+
+
+def open_as_photo(expression: dict, vertices: np.ndarray, shapes: np.ndarray, marks: np.ndarray,
+                  landmarks, photo_size) -> dict:
+    """`expression` with the shapes that part the lips (OPENING) scaled
+    together until the mesh's lips stand as far apart at their middle,
+    front-on and in eye spacings, as the photo's (landmarks 13 and 14).
+
+    MediaPipe's scores through the response curves overshot a broad laugh:
+    on samples/portrait.jpg the render's lips stood 0.256 eye spacings apart
+    against the photo's 0.149, both rows of teeth and the tongue showing
+    under a thick rolled upper lip. The expression the fit took off instead
+    undershoots one (REALISM-GAP.md, route 7a). Measured on the mesh, so no
+    render is needed; `marks` are the landmarks' vertices (morph.lip_corr)."""
+    w, h = photo_size
+    at = lambda i: np.array([landmarks[i].x * w, landmarks[i].y * h])
+    wanted = np.linalg.norm(at(13) - at(14)) / np.linalg.norm(at(33) - at(263))
+    names = list(morph.ARKIT_NAMES)
+
+    def gap(scale):
+        moved = vertices[marks[[13, 14, 33, 263]]].astype(np.float64)
+        for name, weight in expression.items():
+            k = min(1.0, weight * scale) if name.startswith(OPENING) else weight
+            moved = moved + k * shapes[names.index(name)][marks[[13, 14, 33, 263]]]
+        return np.linalg.norm((moved[0] - moved[1])[:2]) / np.linalg.norm((moved[2] - moved[3])[:2])
+
+    lo, hi = 0.0, 3.0
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if gap(mid) < wanted else (lo, mid)
+    scale = (lo + hi) / 2
+    return {name: (min(1.0, weight * scale) if name.startswith(OPENING) else weight)
+            for name, weight in expression.items()}
 
 
 def expression_morphs(mesh, shapes: np.ndarray):
@@ -1389,14 +1421,15 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     body_part = next(p for p in parts if p.name == "body")
     photo_face = morph.photo_expression(expression_of(result))
     if mouth_filled:
-        # The photo's open mouth was painted over as lips (fill_mouth): opened
-        # by the jaw as well, its laugh shows the teeth (whitened, see
-        # garments.whiten_teeth) where the photo does. photo-10, identity at
-        # the pose / level: lips together 0.534 / 0.514, lips parted as the
-        # photo's 0.527 / 0.504, parted with the jaw at OPEN_JAW 0.545 / 0.515.
-        # (With the stock grey teeth, parting them showed a slit of grey under
-        # a pink band, and lips together scored best.)
-        photo_face = {**photo_face, "jawOpen": max(photo_face.get("jawOpen", 0.0), OPEN_JAW)}
+        # The photo's open mouth was painted over as lips (fill_mouth): parted
+        # as far as the photo's, its laugh shows the teeth (whitened, see
+        # garments.whiten_teeth) where the photo does. A fixed jaw opening of
+        # 0.25 did this before, from photo-10 (identity at the pose / level:
+        # lips together 0.534 / 0.514, parted as MediaPipe scored them 0.527 /
+        # 0.504, with that jaw 0.545 / 0.515), and showed too much of a wider
+        # laugh.
+        photo_face = open_as_photo(photo_face, vertices, face_shapes, morph.lip_corr(base, corr),
+                                   landmarks, (pw, ph))
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES,
                        expression=photo_face,

@@ -351,6 +351,22 @@ def check_shape_transfer():
     print(f"ok  shape transfer: unchanged on the average face; a smile on thin lips turns {before} -> {after} "
           f"triangles inside out")
 
+    # A laugh opened as far as the photo's: the lips' gap at the middle, in eye
+    # spacings, matches the photo's, and only the shapes that part the lips change.
+    from types import SimpleNamespace
+    from compose import open_as_photo
+    marks = morph.lip_corr(vertices, corr)
+    laugh = {"jawOpen": 0.25, "mouthLowerDownLeft": 0.4, "mouthUpperUpLeft": 0.8, "mouthSmileLeft": 1.0}
+    point = lambda x, y: SimpleNamespace(x=x, y=y)
+    marks_photo = {33: point(0.40, 0.4), 263: point(0.60, 0.4), 13: point(0.5, 0.60), 14: point(0.5, 0.62)}
+    opened = open_as_photo(laugh, vertices, plain, marks, marks_photo, (100, 100))
+    moved = vertices[marks[[13, 14, 33, 263]]] + sum(w * plain[morph.ARKIT_NAMES.index(k)][marks[[13, 14, 33, 263]]]
+                                                     for k, w in opened.items())
+    gap = np.linalg.norm((moved[0] - moved[1])[:2]) / np.linalg.norm((moved[2] - moved[3])[:2])
+    assert abs(gap - 0.1) < 0.002, f"opened to {gap:.3f} eye spacings, the photo's 0.100"
+    assert opened["mouthSmileLeft"] == 1.0 and opened["jawOpen"] < laugh["jawOpen"], opened
+    print(f"ok  mouth opened as the photo's: lips {gap:.3f} eye spacings apart, the smile kept")
+
 
 def check_mouth_bake():
     """A laughing photo's mouth, wider than the avatar's closed one, is moved
