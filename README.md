@@ -60,6 +60,17 @@ Apache-2.0 but were trained on research face datasets, so it must never ship
 or be imported by the product. Its two model files go in `assets/`; the URLs
 are in the script.
 
+**Scoring a change in one go.** `score_run.py TAG --against BASE` builds every
+test face, renders it at the photo's head pose and level with no browser window
+(`render.py`, the studio's own page in headless Chrome or Edge), and prints
+identity and the hair's strand angle against the photo beside the other tag's
+(about 90 s for five faces). Builds and renders are repeatable, so a rerun gives
+the same numbers and any difference is the change. The test faces are listed in
+`uploads/test-set.json` (git-ignored, beside the photos): each with a gender,
+`others` (other photos of the same person, scored against, never built from)
+and `sides` (turned photos built from, as guided capture sends them).
+`render.py a.glb b.glb` renders GLBs on their own.
+
 **Is the photo good enough?** With `ANTHROPIC_API_KEY` set in the studio's
 environment, a chosen photo is first sent to the Claude API (`photo_check.py`,
 claude-sonnet-5-5) and the studio lists what would cost likeness ("Take off the

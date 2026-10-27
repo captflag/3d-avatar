@@ -804,8 +804,8 @@ async function renderThumbnail(url) {
 
 /** A 2D avatar: the 3D one rendered to a transparent PNG. `photoPose` turns
  * the head as it was in the photo instead of level. */
-async function renderPng(url, fullBody, photoPose = false) {
-  const [w, h] = fullBody ? [900, 1200] : [900, 900];
+async function renderPng(url, fullBody, photoPose = false, size = 900) {
+  const [w, h] = fullBody ? [size, Math.round(size * 4 / 3)] : [size, size];
   return renderAvatar(url, w, h, !fullBody,
     (canvas) => new Promise((resolve) => canvas.toBlob(resolve, 'image/png')), photoPose);
 }
