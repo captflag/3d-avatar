@@ -138,7 +138,7 @@ def generate():
             info = compose(photo_path, OUT / f"{entry_id}.glb", gender, side_photos=side_photos or None,
                            hair_hint=hair_hint, hair_colour_hint=hair_colour)
         else:
-            info = generate_avatar(photo_path, OUT / f"{entry_id}.glb")
+            info = generate_avatar(photo_path, OUT / f"{entry_id}.glb", side_photos)
     except NoFaceFound:
         photo_path.unlink(missing_ok=True)
         return jsonify(error="No face found in that photo. Try a clear, front-facing one."), 422

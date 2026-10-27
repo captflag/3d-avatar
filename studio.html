@@ -624,7 +624,6 @@ function finishCamera() {
   status.textContent = `Front photo${sides.length ? ` and ${sides.length} turned` : ''} taken` +
     (missed.length ? `; ${missed.join(', ')} taken before every check passed: the avatar may look less like you.`
       : ', every check passed.') +
-    (sides.length && !$('fullbody').checked ? ' The turned photos are used for full-body avatars only.' : '') +
     ' Generate when ready.';
 }
 
