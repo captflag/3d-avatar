@@ -63,12 +63,16 @@ are in the script.
 **Scoring a change in one go.** `score_run.py TAG --against BASE` builds every
 test face, renders it at the photo's head pose and level with no browser window
 (`render.py`, the studio's own page in headless Chrome or Edge), and prints
-identity and the hair's strand angle against the photo beside the other tag's
-(about 90 s for five faces). Builds and renders are repeatable, so a rerun gives
-the same numbers and any difference is the change. The test faces are listed in
-`uploads/test-set.json` (git-ignored, beside the photos): each with a gender,
-`others` (other photos of the same person, scored against, never built from)
-and `sides` (turned photos built from, as guided capture sends them).
+identity, likeness against the person's other photos, landmark error on the
+front and a held-out photo, and the hair's strand angle beside the other tag's.
+Builds and renders are repeatable, so a rerun gives the same numbers and any
+difference is the change. `--noise` measures how far each score moves when the
+photo barely changes, and `--gate METRIC` turns that into keep or drop (exit 1
+to drop). The test faces, their photos and their consent register live in
+`data/testset/` (git-ignored); [TESTSET.md](TESTSET.md) has the photo protocol,
+the set's format and the consent form. `python premerge.py` checks nothing
+private is tracked and runs every check before a merge; CI runs its
+asset-free part (`--ci`).
 `render.py a.glb b.glb` renders GLBs on their own.
 
 **Is the photo good enough?** With `ANTHROPIC_API_KEY` set in the studio's
@@ -88,8 +92,9 @@ or female outfit beside it. Untick it for the face mesh on its own.
 Add `&focus=head` to a review URL to frame the head instead of the whole figure,
 which is the only way to judge likeness on a full-body avatar.
 
-Teammates on the same network use this PC's address instead of localhost — the
-server prints it on startup, e.g. `http://192.168.3.42:8777`. Windows will likely
+The studio listens on this PC only. To let teammates on the same network in, start
+it with `python app.py --lan` and they use this PC's address instead of localhost,
+e.g. `http://192.168.3.42:8777`. Windows will likely
 ask once whether to allow Python through the firewall; allow it for the private
 network only. There is no login, so keep this on the office network and off the
 public internet.
@@ -435,5 +440,6 @@ free for research only and need a paid licence to ship. Keep that constraint whe
 swapping the engine: see `../avatarsdk-re/CLONE-PLAN.md`.
 
 Sample photos under `samples/` are Google's public MediaPipe test assets, used
-here as fixtures only. Photos the team uploads stay on this PC under `uploads/`;
-delete them when done, since they are faces.
+here as fixtures only. Photos the team uploads stay on this PC under `uploads/`
+and are kept until someone deletes them (nothing expires them): delete them when
+done, since they are faces.

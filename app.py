@@ -1,8 +1,9 @@
 """Avatar studio — the local tool the team uses to try the engine on photos.
 
-Drop a photo on the page, get a 3D avatar next to it. Runs on one PC and is
-reachable from the office network. Generation happens inline because it takes a
-couple of seconds; there is no queue and no database, by design.
+Drop a photo on the page, get a 3D avatar next to it. Runs on one PC and listens
+on this PC only; `python app.py --lan` opens it to the office network. Generation
+happens inline because it takes a couple of seconds; there is no queue and no
+database, by design.
 
 ponytail: no auth, no accounts, no job queue. This is an internal testing tool on
 a trusted network, not the product. The product path is the Fastify API.
@@ -14,6 +15,7 @@ import datetime as dt
 import json
 import pathlib
 import re
+import sys
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 from PIL import Image
@@ -240,5 +242,7 @@ if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     UPLOADS.mkdir(parents=True, exist_ok=True)
     get_landmarker()  # pay the model load now, not on the first upload
-    print("Avatar studio on http://localhost:8777  (and this PC's LAN address)")
-    app.run(host="0.0.0.0", port=8777, threaded=True)
+    # Uploads are faces: only this PC sees them unless --lan is asked for.
+    lan = "--lan" in sys.argv[1:]
+    print("Avatar studio on http://localhost:8777" + ("  (and this PC's LAN address)" if lan else ""))
+    app.run(host="0.0.0.0" if lan else "127.0.0.1", port=8777, threaded=True)
