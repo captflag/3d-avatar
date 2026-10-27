@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 350" role="img"
+     aria-labelledby="t d" font-family="ui-sans-serif, system-ui, 'Segoe UI', sans-serif">
+  <title id="t">What photo works best</title>
+  <desc id="d">A drawn example of a good photo beside six kinds of photo to avoid. Drawn, not a real person.</desc>
+  <defs>
+    <!-- One person, drawn in a 140 x 175 photo frame. -->
+    <g id="body">
+      <path d="M12 175 C18 141 44 131 70 131 C96 131 122 141 128 175 Z" fill="#3d5a80"/>
+      <path d="M58 131 L70 146 L82 131 Z" fill="#c79478"/>
+      <rect x="60" y="104" width="20" height="30" fill="#c79478"/>
+    </g>
+    <g id="head">
+      <ellipse cx="46" cy="84" rx="4" ry="7" fill="#d29f82"/>
+      <ellipse cx="94" cy="84" rx="4" ry="7" fill="#d29f82"/>
+      <ellipse cx="70" cy="82" rx="24" ry="30" fill="#dcae90"/>
+      <path d="M46 80 C44 52 58 45 70 45 C84 45 97 52 94 80 C92 65 84 57 70 57 C58 57 49 65 46 80 Z" fill="#4a3426"/>
+    </g>
+    <g id="eyes">
+      <path d="M57 74 L66 73 M74 73 L83 74" stroke="#4a3426" stroke-width="2.2" stroke-linecap="round"/>
+      <ellipse cx="62" cy="80" rx="3.2" ry="2" fill="#2b2b2b"/>
+      <ellipse cx="78" cy="80" rx="3.2" ry="2" fill="#2b2b2b"/>
+    </g>
+    <path id="nose" d="M70 83 L67 93 L71 94" fill="none" stroke="#b98468" stroke-width="1.6" stroke-linecap="round"/>
+    <path id="mouth" d="M63 101 Q70 104 77 101" fill="none" stroke="#a0574b" stroke-width="2.2" stroke-linecap="round"/>
+    <g id="person"><use href="#body"/><use href="#head"/><use href="#eyes"/><use href="#nose"/><use href="#mouth"/></g>
+    <rect id="frame" width="140" height="175" rx="8"/>
+    <clipPath id="clip"><use href="#frame"/></clipPath>
+    <filter id="blur"><feGaussianBlur stdDeviation="2.6"/></filter>
+    <!-- Back-lit: the person goes to a grey silhouette, colour gone, so the tile
+         reads as light from behind and not as a skin tone. -->
+    <filter id="dark"><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncR type="linear" slope="0.3" intercept="0.04"/><feFuncG type="linear" slope="0.3" intercept="0.04"/><feFuncB type="linear" slope="0.3" intercept="0.05"/></feComponentTransfer></filter>
+    <radialGradient id="window" cx="50%" cy="40%" r="70%"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#dfe6ee"/></radialGradient>
+  </defs>
+
+  <!-- Like this -->
+  <text x="24" y="26" font-size="15" font-weight="600" fill="#e8eaed"><tspan fill="#7cc4ff">✓</tspan> Like this</text>
+  <g transform="translate(24 40) scale(1.5714)">
+    <g clip-path="url(#clip)">
+      <use href="#frame" fill="#cdd5de"/>
+      <use href="#person"/>
+    </g>
+    <use href="#frame" fill="none" stroke="#7cc4ff" stroke-width="1.6"/>
+  </g>
+  <g font-size="14" fill="#e8eaed">
+    <g transform="translate(266 78)">
+      <text><tspan fill="#7cc4ff">✓ </tspan>Face fills about a third of the frame</text>
+      <text y="16" font-size="12" fill="#9aa3af">a face 250+ pixels across in the photo</text>
+      <text y="46"><tspan fill="#7cc4ff">✓ </tspan>Looking straight at the camera</text>
+      <text y="76"><tspan fill="#7cc4ff">✓ </tspan>Soft, even light on both cheeks</text>
+      <text y="106"><tspan fill="#7cc4ff">✓ </tspan>Relaxed face, mouth closed</text>
+      <text y="136"><tspan fill="#7cc4ff">✓ </tspan>No glasses or hat, hair off the face</text>
+      <text y="166"><tspan fill="#7cc4ff">✓ </tspan>Sharp, not a crop of a group photo</text>
+      <text y="206" font-size="12" fill="#9aa3af">Guided capture adds two turned photos,</text>
+      <text y="222" font-size="12" fill="#9aa3af">which give the head its real depth.</text>
+    </g>
+  </g>
+
+  <!-- Avoid -->
+  <text x="642" y="26" font-size="15" font-weight="600" fill="#e8eaed"><tspan fill="#ff8a8a">✕</tspan> Avoid</text>
+
+  <!-- Too far away -->
+  <g transform="translate(642 40) scale(0.7)">
+    <g clip-path="url(#clip)">
+      <use href="#frame" fill="#cdd5de"/>
+      <rect x="0" y="120" width="140" height="55" fill="#b9c2cc"/>
+      <g transform="translate(56 112) scale(0.2)"><use href="#person"/></g>
+    </g>
+  </g>
+  <text x="691" y="179" font-size="12" fill="#e8eaed" text-anchor="middle">Too far away</text>
+
+  <!-- Sunglasses -->
+  <g transform="translate(760 40) scale(0.7)">
+    <g clip-path="url(#clip)">
+      <use href="#frame" fill="#cdd5de"/>
+      <use href="#person"/>
+      <rect x="54" y="75" width="14" height="9" rx="3" fill="#15171b"/>
+      <rect x="72" y="75" width="14" height="9" rx="3" fill="#15171b"/>
+      <path d="M68 78 L72 78 M54 78 L46 77 M86 78 L94 77" stroke="#15171b" stroke-width="1.6"/>
+    </g>
+  </g>
+  <text x="809" y="179" font-size="12" fill="#e8eaed" text-anchor="middle">Sunglasses</text>
+
+  <!-- Head turned -->
+  <g transform="translate(878 40) scale(0.7)">
+    <g clip-path="url(#clip)">
+      <use href="#frame" fill="#cdd5de"/>
+      <use href="#body"/>
+      <ellipse cx="50" cy="84" rx="5" ry="8" fill="#d29f82"/>
+      <ellipse cx="72" cy="82" rx="22" ry="30" fill="#dcae90"/>
+      <path d="M50 80 C48 52 60 45 72 45 C86 45 95 54 93 76 C88 63 80 57 70 57 C60 58 53 66 50 80 Z" fill="#4a3426"/>
+      <path d="M71 74 L78 73 M84 73 L90 75" stroke="#4a3426" stroke-width="2.2" stroke-linecap="round"/>
+      <ellipse cx="75" cy="80" rx="2.6" ry="2" fill="#2b2b2b"/>
+      <ellipse cx="87" cy="80" rx="2" ry="1.8" fill="#2b2b2b"/>
+      <path d="M86 83 L94 93 L88 95" fill="none" stroke="#b98468" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M77 101 Q83 104 88 101" fill="none" stroke="#a0574b" stroke-width="2.2" stroke-linecap="round"/>
+    </g>
+  </g>
+  <text x="927" y="179" font-size="12" fill="#e8eaed" text-anchor="middle">Head turned</text>
+
+  <!-- Big laugh -->
+  <g transform="translate(642 196) scale(0.7)">
+    <g clip-path="url(#clip)">
+      <use href="#frame" fill="#cdd5de"/>
+      <use href="#body"/><use href="#head"/>
+      <path d="M57 76 L66 74 M74 74 L83 76" stroke="#4a3426" stroke-width="2.2" stroke-linecap="round"/>
+      <path d="M58 81 Q62 78 66 81 M74 81 Q78 78 82 81" fill="none" stroke="#2b2b2b" stroke-width="2" stroke-linecap="round"/>
+      <use href="#nose"/>
+      <path d="M59 98 Q70 114 81 98 Z" fill="#5a2121"/>
+      <path d="M61 99 L79 99 L77 103 L63 103 Z" fill="#f4f1ea"/>
+    </g>
+  </g>
+  <text x="691" y="335" font-size="12" fill="#e8eaed" text-anchor="middle">Big laugh</text>
+
+  <!-- Back-lit -->
+  <g transform="translate(760 196) scale(0.7)">
+    <g clip-path="url(#clip)">
+      <use href="#frame" fill="url(#window)"/>
+      <rect x="22" y="14" width="96" height="104" rx="3" fill="#ffffff"/>
+      <path d="M70 14 V118 M22 66 H118" stroke="#dfe6ee" stroke-width="3"/>
+      <g filter="url(#dark)"><use href="#person"/></g>
+    </g>
+  </g>
+  <text x="809" y="335" font-size="12" fill="#e8eaed" text-anchor="middle">Back-lit or dark</text>
+
+  <!-- Blurry -->
+  <g transform="translate(878 196) scale(0.7)">
+    <g clip-path="url(#clip)">
+      <use href="#frame" fill="#cdd5de"/>
+      <g filter="url(#blur)"><use href="#person"/></g>
+    </g>
+  </g>
+  <text x="927" y="335" font-size="12" fill="#e8eaed" text-anchor="middle">Blurry</text>
+</svg>

@@ -16,3 +16,6 @@ __pycache__/
 *.log
 .DS_Store
 Thumbs.db
+
+# Knowledge graph built locally by graphify
+graphify-out/
