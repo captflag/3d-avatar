@@ -952,6 +952,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
     # The lips darker and less yellow by what the render adds to them.
     skin_rgb = appearance.lip_tone(skin_rgb, landmarks)
+    # The beard darker by what the studio's light lifts dark paint.
+    skin_rgb = appearance.darken_beard(skin_rgb, facial_hair, landmarks)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)
