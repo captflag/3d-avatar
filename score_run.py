@@ -41,6 +41,9 @@ the mean must improve, no face may get worse by more than 2 of its own
 spreads, and identity at the pose may not fall by more than its spread. From
 ten people up, a sign test and a Wilcoxon test (p < 0.05) must agree as well;
 below ten the verdict says it is provisional. Exits 1 when the gate fails.
+--gate level is for a change not meant to move any score (a cleanup, a fix
+elsewhere): kept when no score on any face gets worse by more than 2 of its
+spreads, nor on average by more than 2 / sqrt(faces) of them.
 
 Every run also prints each area against what an 8 means (RUBRIC: fixed bars,
 and the share of faces that must clear them), and with --review a blind
@@ -537,11 +540,35 @@ def gate(metric: str, scores: dict, base: dict, noise: dict) -> bool:
     return kept
 
 
+def level(scores: dict, base: dict, noise: dict) -> bool:
+    """Keep (True) a change meant to move nothing: see --gate level."""
+    names = [n for n in scores if n in base and noise.get(n)]
+    if not names:
+        print("gate level: no face scored in both runs with a noise spread; run with --noise first")
+        return False
+    worse, lines = [], [f"gate level, {len(names)} faces (no score may get worse beyond its spread):"]
+    for metric in sorted({m for n in names for m in noise[n]}):
+        sign = -1 if lower_better(metric) else 1
+        rows = [n for n in names if metric in noise[n]
+                and scores[n].get(metric) is not None and base[n].get(metric) is not None]
+        if not rows:
+            continue
+        z = np.array([sign * (scores[n][metric] - base[n][metric]) / max(noise[n][metric], 1e-4) for n in rows])
+        ok = z.min() >= -2 and z.mean() >= -2 / np.sqrt(len(rows))
+        worse += [] if ok else [metric]
+        lines.append(f"  {'pass' if ok else 'FAIL'}  {metric:16s} mean {z.mean():+.2f} spreads, worst {z.min():+.2f}")
+    kept = not worse
+    lines.append(f"  -> {'keep' if kept else 'drop'}" +
+                 (f" (provisional: under {PROVISIONAL_BELOW} people)" if len(names) < PROVISIONAL_BELOW else ""))
+    print("\n".join(lines))
+    return kept
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("tag")
     parser.add_argument("--against", help="a tag scored before, to print beside this one")
-    parser.add_argument("--gate", metavar="METRIC", help="keep or drop against --against, by this score")
+    parser.add_argument("--gate", metavar="METRIC", help="keep or drop against --against, by this score, or 'level' for a change meant to move none")
     parser.add_argument("--noise", action="store_true", help="also measure each score's spread per face")
     parser.add_argument("--set", type=pathlib.Path, default=TESTSET / "test-set.json")
     parser.add_argument("--split", default="dev", choices=["dev", "lockbox", "all"])
@@ -584,7 +611,8 @@ def main() -> int:
     if args.gate:
         noise_path = OUT / "scores" / "noise.json"
         noise = json.loads(noise_path.read_text(encoding="utf-8")) if noise_path.exists() else {}
-        return 0 if base_scores and gate(args.gate, scores, base_scores, noise) else 1
+        judge = level if args.gate == "level" else lambda *a: gate(args.gate, *a)
+        return 0 if base_scores and judge(scores, base_scores, noise) else 1
     return 0
 
 
