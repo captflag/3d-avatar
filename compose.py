@@ -567,12 +567,28 @@ def expression_morphs(mesh, shapes: np.ndarray):
 # MediaPipe reads the face at a fixed resolution, so enlarging a small photo
 # adds nothing (measured: landmarks wander as much at 4x as at 1x).
 GOOD_FACE_PX = 250
+# More than this many degrees turned (left, right, up or down), the face is
+# painted from a side view and comes out smeared: a photo turned 50 degrees put
+# its glasses and moustache in the wrong places (identity 0.511 / 0.404 at the
+# pose / level), where photos within 2 degrees built cleanly. The studio
+# checks the same before sending (studio.html TURNED_DEG).
+TURNED_DEG = 20.0
 
 
-def photo_advice(landmarks, photo_size, expression: dict) -> list[str]:
-    """What would make this photo give a closer avatar, in plain words."""
+def photo_advice(landmarks, photo_size, expression: dict, result=None) -> list[str]:
+    """What would make this photo give a closer avatar, in plain words.
+    `result`: MediaPipe's, for the head's turn."""
     w, h = photo_size
     advice = []
+    if result is not None and result.facial_transformation_matrixes:
+        m = np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)
+        yaw = float(np.degrees(np.arcsin(np.clip(-m[2, 0], -1.0, 1.0))))
+        pitch = float(np.degrees(np.arctan2(m[2, 1], m[2, 2])))
+        turned = max(abs(yaw), abs(pitch))
+        if turned > TURNED_DEG:
+            advice.append(f"The head is turned {turned:.0f} degrees from the camera, so the face is painted from "
+                          "a side view and comes out smeared; a photo looking straight at the camera gives a "
+                          "much closer likeness.")
     face_px = abs(landmarks[454].x - landmarks[234].x) * w
     if face_px < GOOD_FACE_PX:
         advice.append(f"The face is only {face_px:.0f} pixels across; a closer or sharper photo "
@@ -1498,7 +1514,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                        head_pose=head_pose)
 
     info = {
-        "advice": photo_advice(landmarks, (pw, ph), expression_of(result)),
+        "advice": photo_advice(landmarks, (pw, ph), expression_of(result), result),
         "source_photo": photo_path.name,
         "photo_size": list(photo.size),
         "kind": "full-body",

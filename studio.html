@@ -211,33 +211,52 @@ function setFile(f) {
   checkSize(f);
 }
 
-// ---- Face size ---------------------------------------------------------------
-// A face under GOOD_FACE_PX across (compose.GOOD_FACE_PX, cheek to cheek) gives
-// a blurred avatar whatever is done after: photo-10's 52-pixel face. The build
-// only advises; here Generate waits until the person chooses another photo or
-// builds anyway. Measured in the browser before anything is sent; if the
-// detector cannot load (offline), nothing is held.
+// ---- Chosen photo -----------------------------------------------------------
+// What costs likeness in a chosen photo whatever is done after, measured in the
+// browser before anything is sent. A face under GOOD_FACE_PX across
+// (compose.GOOD_FACE_PX, cheek to cheek) comes out blurred: photo-10's
+// 52-pixel face. A head turned more than TURNED_DEG (compose.TURNED_DEG) is
+// painted from a side view and comes out smeared: a photo turned 50 degrees
+// gave a face with its glasses and moustache in the wrong places, where
+// photos within 2 degrees built cleanly. Generate waits until the person
+// chooses another photo or builds anyway. If the detector cannot load
+// (offline), nothing is held.
 const GOOD_FACE_PX = 250;
+const TURNED_DEG = 20;
 let sizeToken = 0;
 async function checkSize(f) {
   const token = ++sizeToken, box = $('sizecheck');
   box.replaceChildren();
-  let width;
+  const problems = [];
   try {
     const detector = await getLandmarker('IMAGE');
     const img = await createImageBitmap(f);
     const canvas = document.createElement('canvas');
     canvas.width = img.width; canvas.height = img.height;
     canvas.getContext('2d').drawImage(img, 0, 0);
-    const face = detector.detect(canvas).faceLandmarks?.[0];
+    const found = detector.detect(canvas);
+    const face = found.faceLandmarks?.[0];
     if (!face) return;                  // the build says so itself
-    width = Math.abs(face[454].x - face[234].x) * canvas.width;
+    const width = Math.abs(face[454].x - face[234].x) * canvas.width;
+    if (width < GOOD_FACE_PX) {
+      problems.push(`This face is only ${Math.round(width)} pixels across. The avatar will come out blurred: ` +
+        `a closer or sharper photo, with the face ${GOOD_FACE_PX}+ pixels wide, looks much more like the person.`);
+    }
+    // Head pose from the face's transform (column-major 4x4), as assess() reads it.
+    const m = found.facialTransformationMatrixes?.[0]?.data;
+    if (m) {
+      const deg = 180 / Math.PI;
+      const yaw = Math.asin(-m[2]) * deg, pitch = Math.atan2(m[6], m[10]) * deg;
+      if (Math.abs(yaw) > TURNED_DEG || Math.abs(pitch) > TURNED_DEG) {
+        problems.push(`The head is turned ${Math.round(Math.max(Math.abs(yaw), Math.abs(pitch)))}° from the camera. ` +
+          'The face is painted from what the camera saw, so it will come out smeared: a photo looking straight ' +
+          'at the camera, or Guided capture, gives a far closer avatar.');
+      }
+    }
   } catch { return; }
-  if (token !== sizeToken || width >= GOOD_FACE_PX) return;
+  if (token !== sizeToken || !problems.length) return;
   go.disabled = true;
-  const say = document.createElement('p');
-  say.textContent = `This face is only ${Math.round(width)} pixels across. The avatar will come out ` +
-    `blurred: a closer or sharper photo, with the face ${GOOD_FACE_PX}+ pixels wide, looks much more like the person.`;
+  const says = problems.map((text) => Object.assign(document.createElement('p'), { textContent: text }));
   const another = document.createElement('button');
   another.type = 'button'; another.textContent = 'Choose another photo';
   another.addEventListener('click', () => file.click());
@@ -247,7 +266,7 @@ async function checkSize(f) {
   const row = document.createElement('div');
   row.className = 'row';
   row.append(another, anyway);
-  box.append(say, row);
+  box.append(...says, row);
 }
 
 // ---- Photo check -------------------------------------------------------------

@@ -1580,6 +1580,13 @@ def check_details():
     advice = _c.photo_advice(marks, (600, 800), {"mouthSmileLeft": 0.8})
     assert len(advice) == 2 and "pixels" in advice[0] and "smiling" in advice[1], advice
     assert _c.photo_advice(marks, (6000, 8000), {}) == [], "a good photo was given advice"
+    # And a head turned 45 degrees, read from MediaPipe's transform; not one facing the camera.
+    turn = lambda deg: P(facial_transformation_matrixes=[np.array(
+        [[np.cos(np.radians(deg)), 0, np.sin(np.radians(deg)), 0], [0, 1, 0, 0],
+         [-np.sin(np.radians(deg)), 0, np.cos(np.radians(deg)), 0], [0, 0, 0, 1]])])
+    turned = _c.photo_advice(marks, (6000, 8000), {}, turn(45))
+    assert len(turned) == 1 and "turned 45" in turned[0], turned
+    assert _c.photo_advice(marks, (6000, 8000), {}, turn(5)) == [], "a face 5 degrees off was told it is turned"
 
     # Ears: the mask from the ear targets touches the sides of the head only.
     ear = appearance.ear_weight(len(base))
