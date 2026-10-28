@@ -1386,7 +1386,11 @@ def check_review_fixes():
         view = gltf.bufferViews[gltf.images[gltf.textures[tex].source].bufferView]
         alpha = np.asarray(Image.open(io.BytesIO(blob[view.byteOffset:view.byteOffset + view.byteLength])).convert("RGBA"))[..., 3]
         collarbone = float(base[np.unique(groups["joint-l-clavicle"])][:, 1].mean())
-        neck = (pos[:, 1] > collarbone + 0.15) & (np.abs(pos[:, 0]) < 0.6)
+        # Not the mouth's inside: it is body too, and the lips' inner side
+        # there is meant to go undrawn (compose.LIP_HIDDEN). Round the teeth.
+        teeth = read(gltf.meshes[0].primitives[names.index("teeth")].attributes.POSITION, 3).mean(axis=0)
+        mouth = np.linalg.norm(pos - teeth, axis=1) < 0.4
+        neck = (pos[:, 1] > collarbone + 0.15) & (np.abs(pos[:, 0]) < 0.6) & ~mouth
         px = (uv[neck] * (np.array(alpha.shape[::-1]) - 1)).astype(int)
         assert neck.any() and (alpha[px[:, 1], px[:, 0]] > 127).mean() > 0.98, "neck skin was cut away"
 

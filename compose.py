@@ -80,6 +80,9 @@ TEETH_RECESS = 0.05
 # gum showed under the upper lip as pink arches.
 TEETH_CROWN = 0.04
 TEETH_RAISE = 0.03
+# How far into the mouth the lips' inner side goes undrawn
+# (appearance.mouth_inside's measure: 0.5 at the rims, 1 at MOUTH_DEPTH).
+LIP_HIDDEN = 0.75
 # How far the mouth's lining is set back into the mouth (mesh units, ~1.5 mm).
 MOUTH_LINING = 0.015
 # The ARKit shapes that part the lips, scaled together so the avatar's mouth
@@ -1200,6 +1203,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     mouth = appearance.mouth_inside(vertices, rest_faces, morph.UPPER_RIM + morph.LOWER_RIM)
     lining = trimesh.Trimesh(vertices, rest_faces, process=False).vertex_normals
     vertices = vertices + MOUTH_LINING * np.clip(2.0 * mouth - 1.0, 0.0, 1.0)[:, None] * lining
+    # The lips' inner side, where they press together at rest, is not drawn.
+    # Joined to the other lip's, it cannot be moved out of a laugh's way, and
+    # it hung below the upper lip as a jagged strip in shadow; at rest the
+    # lips hide it.
+    skin_alpha[(mouth > 0) & (mouth < LIP_HIDDEN)] = 0.0
 
     # A skin texture built to the person's own cheek statistics, so skin is
     # mottled rather than one flat colour.
