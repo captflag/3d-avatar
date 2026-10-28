@@ -100,15 +100,27 @@ REGIONS = {"outline": ["FACE_OVAL"], "nose": ["NOSE"], "eyes": ["LEFT_EYE", "RIG
 # the mouth's outline (MediaPipe ids).
 CHEEKS = [[50, 205, 187, 123, 116, 117, 118, 101], [280, 425, 411, 352, 345, 346, 347, 330]]
 MOUTH = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146]
+# The lips' inner edge, the eyes' lid edges, and each iris's centre then ring.
+INNER_LIPS = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95]
+LIDS = [[33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7],
+        [263, 466, 388, 387, 386, 385, 384, 398, 362, 382, 381, 380, 374, 373, 390, 249]]
+IRISES = [(468, [469, 470, 471, 472]), (473, [474, 475, 476, 477])]
+# Skin detail: the cheeks' lightness band-passed between these shares of the
+# eye spacing (wrinkle and pore-cluster scale, coarser than a render pixel).
+DETAIL_BAND = (1 / 60, 1 / 15)
 # Scores where lower is better; the rest are better higher.
-LOWER = ("lm_", "skin_dE", "mouth_dE", "hair_dE")
+LOWER = ("lm_", "skin_dE", "mouth_dE", "hair_dE", "iris_dE", "sclera_dE", "teeth_dE", "skin_detail")
 lower_better = lambda metric: metric == "hair" or metric.startswith(LOWER)   # hair: the strand angle; not hair_iou
 # What an 8 is, per area: each score's bar, and the share of faces that must
 # clear every bar of the area. Fixed before the baseline (2026-10-28) so a
 # result cannot move them; change one only with the reason written here.
 #   likeness: as close as another photo of the person (real same-person pairs
 #     scored 0.48-0.67 on this repo's photos), and closer to them than to anyone else.
-#   skin: the cheeks' colour within a just-noticeable difference of the photo's.
+#   skin: the cheeks' colour within a just-noticeable difference of the photo's,
+#     and their fine texture between 0.7 and 1.4 times the photo's (|log2| 0.5).
+#     Eyes and teeth (added 2026-10-28, before they were first measured): the
+#     iris, the eye white and the teeth within dE 10 of the photo's, the same
+#     colour at a glance (looser than the cheeks: small regions, lit by highlights).
 #   mouth: the lips where the photo has them, and the mouth's colour, aligned.
 #   hair: the cut's outline, its colour and the way it runs.
 #   face shape: landmarks on the photo's within these shares of the eye spacing.
@@ -116,7 +128,8 @@ lower_better = lambda metric: metric == "hair" or metric.startswith(LOWER)   # h
 # here yet, and show as such.
 RUBRIC = {
     "likeness": [("identity_p", 0.50), ("others_p", 0.45), ("rank1", 1.0)],
-    "skin and colour": [("skin_dE", 5.0)],
+    "skin, eyes, teeth": [("skin_dE", 5.0), ("skin_detail", 0.5), ("iris_dE", 10.0), ("sclera_dE", 10.0),
+                          ("teeth_dE", 10.0)],
     "mouth": [("lm_front_mouth", 3.0), ("mouth_dE", 15.0)],
     "hair": [("hair_iou", 0.75), ("hair_dE", 8.0), ("hair", 20.0)],
     "face shape": [("lm_held", 3.0), ("lm_front_outline", 3.0), ("lm_front_nose", 1.5)],
@@ -410,8 +423,11 @@ def appearance_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     """Colour and hair against the photo, the render aligned onto it on the
     landmarks expressions hardly move. CIE 1976 colour differences (dE): the
     cheeks' median colours (skin_dE), per pixel over the mouth (mouth_dE), the
-    hair's median colours (hair_dE); and how far the hair above the brows
-    overlaps the photo's (hair_iou, intersection over union)."""
+    hair's median colours (hair_dE), the irises', the eye whites' and, where
+    the photo's mouth is open, the teeth's median colours (iris_dE, sclera_dE,
+    teeth_dE); how far the hair above the brows overlaps the photo's (hair_iou,
+    intersection over union); and the cheeks' fine texture against the
+    photo's, |log2| of the ratio of their band-passed lightness (skin_detail)."""
     import cv2
     import appearance
     pm, rm = landmarks(photo), landmarks(render)
@@ -423,14 +439,45 @@ def appearance_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     lab = lambda im: cv2.cvtColor(im, cv2.COLOR_RGB2LAB).astype(np.float64) * [100 / 255, 1, 1] - [0, 128, 128]
     lp, lr = lab(photo), lab(warped)
 
-    def hull(idx):
+    placed = rm @ fit[:, :2].T + fit[:, 2]          # the render's landmarks, on the photo
+
+    def hull(idx, marks=pm):
         mask = np.zeros((h, w), np.uint8)
-        cv2.fillPoly(mask, [cv2.convexHull(pm[idx].round().astype(np.int32))], 1)
+        cv2.fillPoly(mask, [cv2.convexHull(marks[idx].round().astype(np.int32))], 1)
         return mask > 0
 
     cheeks = hull(CHEEKS[0]) | hull(CHEEKS[1])
     out = {"skin_dE": float(np.linalg.norm(np.median(lp[cheeks], axis=0) - np.median(lr[cheeks], axis=0))),
            "mouth_dE": float(np.linalg.norm(lp - lr, axis=2)[hull(MOUTH)].mean())}
+    median_dE = lambda a, b: (float(np.linalg.norm(np.median(lp[a], axis=0) - np.median(lr[b], axis=0)))
+                              if a.sum() > 30 and b.sum() > 30 else None)
+
+    # Each image's own eyes (the avatar may look elsewhere): the iris disc and
+    # the white clear of it, both inside the lids.
+    yy, xx = np.mgrid[:h, :w]
+
+    def eyes(marks):
+        iris, white = np.zeros((h, w), bool), np.zeros((h, w), bool)
+        for lids, (centre, ring) in zip(LIDS, IRISES):
+            r = np.linalg.norm(marks[ring] - marks[centre], axis=1).mean()
+            d2 = (xx - marks[centre, 0]) ** 2 + (yy - marks[centre, 1]) ** 2
+            inside = hull(lids, marks)
+            iris |= inside & (d2 < (0.85 * r) ** 2)          # clear of the limbal ring's blur
+            white |= inside & (d2 > (1.2 * r) ** 2)
+        return iris, white
+
+    (iris_p, white_p), (iris_r, white_r) = eyes(pm), eyes(placed)
+    out["iris_dE"], out["sclera_dE"] = median_dE(iris_p, iris_r), median_dE(white_p, white_r)
+    # Teeth: the brighter half inside the inner lips, where the photo's mouth is open.
+    eye = float(np.linalg.norm(pm[33] - pm[263]))
+    inner_p, inner_r = hull(INNER_LIPS), hull(INNER_LIPS, placed)
+    if inner_p.sum() > 0.03 * eye ** 2:
+        teeth = lambda l, inner: inner & (l[..., 0] > np.median(l[..., 0][inner])) if inner.any() else inner
+        out["teeth_dE"] = median_dE(teeth(lp, inner_p), teeth(lr, inner_r))
+    # Skin detail: the cheeks' band-passed lightness, render against photo.
+    band = lambda l: (cv2.GaussianBlur(l, (0, 0), DETAIL_BAND[0] * eye)
+                      - cv2.GaussianBlur(l, (0, 0), DETAIL_BAND[1] * eye))[cheeks].std()
+    out["skin_detail"] = float(abs(np.log2(max(band(lr[..., 0]), 1e-6) / max(band(lp[..., 0]), 1e-6))))
     # Hair as hair_error reads it: the photo's segmented, the render's what is
     # neither skin nor backdrop, both above the brows.
     above = np.arange(h)[:, None] < float(pm[[105, 334], 1].mean())
@@ -599,7 +646,8 @@ def score(tag: str, faces: list[dict]) -> dict:
             row["lm_held"] = None if held is None else round(held["all"], 2)
         row["hair"] = hair_error(flat(photo), render_p)
         row["hair"] = None if row["hair"] is None else round(row["hair"], 1)
-        row.update({k: round(v, 3) for k, v in (appearance_error(flat(photo), render_p) or {}).items()})
+        row.update({k: None if v is None else round(v, 3)
+                    for k, v in (appearance_error(flat(photo), render_p) or {}).items()})
         out[name] = row
     return out
 
