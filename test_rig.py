@@ -1439,6 +1439,39 @@ def check_forehead():
     print("ok  forehead: baked to the hairline, only on surface facing the camera")
 
 
+def check_photo_quality():
+    """The build's advice names a blurred, one-sided, dark or eyes-covered
+    photo, each on its own, and none of them on the clean portrait."""
+    import cv2
+    import compose
+    from generate import detect, fit_face
+    photo = HERE / "samples" / "portrait.jpg"
+    if not photo.exists():
+        print("skip photo quality check: samples/portrait.jpg is missing")
+        return
+    _, marks, result, upright = fit_face(photo)
+    rgb = np.asarray(upright.convert("RGB"))
+    h, w = rgb.shape[:2]
+    painted = rgb.copy()
+    for ring in ([33, 133, 159, 145], [263, 362, 386, 374]):
+        pts = np.array([[marks[i].x * w, marks[i].y * h] for i in ring])
+        c, r = pts.mean(axis=0), np.ptp(pts[:, 0]) * 0.75
+        cv2.ellipse(painted, (int(c[0]), int(c[1])), (int(r), int(r * 0.7)), 0, 0, 360, (18, 18, 22), -1)
+    half = rgb.copy()
+    half[:, : w // 2] = (half[:, : w // 2] * 0.4).astype(np.uint8)
+    cases = {"blurred": cv2.GaussianBlur(rgb, (0, 0), 2 * max(h, w) / 600), "falls on one side": half,
+             "is dark": (rgb * 0.22).astype(np.uint8), "eyes look covered": painted}
+    words = list(cases)
+    told = lambda image: [a for a in compose.photo_advice(detect(Image.fromarray(image)).face_landmarks[0],
+                                                          (w, h), {}, None, image)
+                          if any(word in a for word in words)]
+    assert told(rgb) == [], f"the clean portrait was told {told(rgb)}"
+    for word, image in cases.items():
+        said = told(image)
+        assert len(said) == 1 and word in said[0], f"{word}: told {said}"
+    print("ok  photo quality: blurred, one-sided light, dark and covered eyes each named; the clean portrait none")
+
+
 def check_lip_underside():
     """The lips' underside, which faces away from the camera in a resting
     mouth, is painted from the photo; other surfaces facing away are not."""
@@ -1712,6 +1745,7 @@ if __name__ == "__main__":
         check_review_fixes()
         check_forehead()
         check_lip_underside()
+        check_photo_quality()
         check_brows()
         check_details()
         check_stubble()
