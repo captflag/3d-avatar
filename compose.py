@@ -1006,7 +1006,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             gender: str = "male", wear: list[str] | None = None,
             face_patch: bool = False, pose: str = "relaxed",
             side_photos: list[pathlib.Path] | None = None,
-            hair_hint: str | None = None, hair_colour_hint: str | None = None) -> dict:
+            hair_hint: str | None = None, hair_colour_hint: str | None = None,
+            hair: str | None = None) -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
@@ -1155,7 +1156,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     outfit = outfit_for(gender, wear)
     if wear is None:
         default_cut = next((i["id"] for i in outfit if i["category"] == "hair" and "mhclo" in i), None)
-        cut = appearance.hair_style(hair_reading, default_cut)
+        # `hair` (--hair) picks the cut by hand, everything else as read.
+        cut = (None if hair == "bald" else hair) if hair else appearance.hair_style(hair_reading, default_cut)
         # Where the segmentation read no hair to measure, the photo check's
         # haircut (photo_check.hair_hint: a catalogue id, or "bald") decides.
         if hair_hint and (hair_reading is None or hair_reading["top"] is None):
@@ -1691,6 +1693,7 @@ def main() -> int:
     parser.add_argument("--side", type=pathlib.Path, action="append", default=[],
                         help="a photo of the head turned to one side (30-45 degrees); give it once per side")
     parser.add_argument("--wear", help="comma-separated catalogue ids, overriding the default outfit")
+    parser.add_argument("--hair", help="a catalogue haircut id (or bald) in place of the one the photo reads")
     parser.add_argument("--face-patch", dest="face_patch", action="store_true",
                         help="also lay the fitted landmark patch over the head. Off by default: "
                              "since the skull is shaped to the face, the patch sits behind it "
@@ -1705,7 +1708,7 @@ def main() -> int:
     try:
         info = compose(args.photo, args.out, args.gender,
                        args.wear.split(",") if args.wear else None, args.face_patch, args.pose,
-                       side_photos=args.side or None)
+                       side_photos=args.side or None, hair=args.hair)
     except NoFaceFound:
         print("no face found in the photo", file=sys.stderr)
         return 1

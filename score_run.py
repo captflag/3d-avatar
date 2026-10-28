@@ -204,12 +204,15 @@ def held_glb(tag: str, face: dict) -> pathlib.Path:
     return path
 
 
+COMPOSE_ARGS: list[str] = []          # --compose: passed to every build
+
+
 def build(tag: str, face: dict) -> str:
     env = {**os.environ, "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "PYTHONPATH": str(HERE)}
     sides = [arg for side in face.get("sides", []) for arg in ("--side", str(HERE / side))]
     run = subprocess.run([sys.executable, str(HERE / "compose.py"), str(HERE / face["photo"]),
                           "-o", str(OUT / f"{tag}-{face['name']}.glb"), "--gender", face.get("gender", "male"),
-                          *sides], cwd=HERE, env=env, capture_output=True, text=True)
+                          *sides, *COMPOSE_ARGS], cwd=HERE, env=env, capture_output=True, text=True)
     if run.returncode:
         raise RuntimeError(f"{face['name']} did not build:\n{run.stderr[-2000:]}")
     return face["name"]
@@ -784,8 +787,10 @@ def main() -> int:
                         help="with --against: also write the blind before/after page, out/review/TAG-vs-BASE.html")
     parser.add_argument("--skip-build", action="store_true", help="render and score GLBs already built")
     parser.add_argument("--skip-render", action="store_true", help="score renders already made")
+    parser.add_argument("--compose", default="", help="extra compose.py options for every build, e.g. \"--hair hair_short02\"")
     parser.add_argument("--workers", type=int, default=max(1, min(5, (os.cpu_count() or 2) // 2)))
     args = parser.parse_args()
+    COMPOSE_ARGS[:] = args.compose.split()
     people = load_faces(args.set, args.split)
     faces = people + [c for f in people for c in noise_copies(f)] if args.noise else people
     began = time.time()
