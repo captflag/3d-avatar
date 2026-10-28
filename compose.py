@@ -72,10 +72,13 @@ PHOTO_NORMAL_ROUNDS = 120
 SKIN_SHEEN = ((0.20, 0.07, 0.04), 0.55)
 # How far teeth and tongue sit back from where the model puts them (mesh units).
 TEETH_RECESS = 0.05
-# How far the upper teeth sit above where the model puts them (mesh units,
-# ~3 mm). The model's gum dips between the crowns 3 mm below the top of the
-# crowns, and in a laugh it showed as pink arches under the upper lip where a
-# photo shows the crowns up to the lip (samples/portrait.jpg).
+# The upper front teeth's crowns lengthened: from the biting edge, the first
+# TEETH_CROWN of the model's teeth (mesh units, ~4 mm: up to where its gum dips
+# between the crowns) is stretched by TEETH_RAISE (~3 mm) and everything above
+# moved up by it. Only those 4 mm of crown showed between gum and edge, where a
+# photo's laugh shows about 9 mm up to the lip (samples/portrait.jpg), and the
+# gum showed under the upper lip as pink arches.
+TEETH_CROWN = 0.04
 TEETH_RAISE = 0.03
 # How far the mouth's lining is set back into the mouth (mesh units, ~1.5 mm).
 MOUTH_LINING = 0.015
@@ -1102,9 +1105,17 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # closed mouth. An opened jaw still shows them.
             mesh.vertices = mesh.vertices - np.array([0.0, 0.0, TEETH_RECESS])
         if item["category"] == "teeth":
-            # The upper teeth (those hung from the upper teeth helper) raised.
+            # The upper teeth: those hung from the upper teeth helper, so an
+            # overbite does not split a tooth.
             upper = np.isin(mesh.metadata["mhclo_idx"], np.unique(groups["helper-upper-teeth"])).all(axis=1)
-            mesh.vertices = mesh.vertices + np.outer(upper, [0.0, TEETH_RAISE, 0.0])
+            v = np.asarray(mesh.vertices, dtype=np.float64).copy()
+            top = v[upper]
+            # Each tooth's own biting edge: the lowest of the upper teeth within
+            # 2 mm across; one edge for all lifted the incisors' with the canines'.
+            across = np.abs(top[:, None, 0] - top[None, :, 0]) < 0.02
+            edge = np.where(across, top[None, :, 1], np.inf).min(axis=1)
+            v[upper, 1] += TEETH_RAISE * np.clip((top[:, 1] - edge) / TEETH_CROWN, 0.0, 1.0)
+            mesh.vertices = v
         worn.append((item, mesh))
 
     # Trousers down to the ankle make the shoes' socks redundant, and posed they
