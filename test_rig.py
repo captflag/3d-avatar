@@ -554,6 +554,9 @@ def check_hair_volume():
     assert lift > 0, "the cut was not lifted"
     risen = np.percentile(hair.vertices[middle, 1], 98) - top
     assert 0.12 < risen < 0.3, f"the top rose {risen:.2f} for 0.2 asked"
+    # short01's cap, in two halves, is its cap; its 199 tufts are cards.
+    _, is_cap = garments.hair_pieces(build_item(items_by_id()["hair_short01"], None, vertices))
+    assert is_cap.sum() == 2 and len(is_cap) == 201, f"short01 read as {is_cap.sum()} cap pieces of {len(is_cap)}"
     at_edge = front & (original[:, 1] < edge + 0.05)
     assert np.linalg.norm(hair.vertices[at_edge] - original[at_edge], axis=1).max() < 0.02, "the front edge was lifted off"
     back = original[:, 2] < np.percentile(original[:, 2], 15)
