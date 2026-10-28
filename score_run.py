@@ -35,7 +35,9 @@ rerun gives the same numbers: a difference is the change, not the renderer.
 
 How far a score moves with the photo itself is another matter: --noise also
 builds each face from three barely different copies of its photo (JPEG
-re-encoded, 1% resized) and writes each score's spread per face to
+re-encoded, 1% resized), scores its renders moved a few pixels and scaled
+2% (RENDER_JITTER: the framing moves that much when the hair grows), and
+writes each score's spread per face, over all of them, to
 out/scores/noise.json. --gate METRIC then decides keep or drop against BASE:
 the mean must improve, no face may get worse by more than 2 of its own
 spreads, and identity at the pose may not fall by more than its spread. From
@@ -189,6 +191,32 @@ def noise_copies(face: dict) -> list[dict]:
     return copies
 
 
+# Each copy's move (pixels) and scale about the render's middle. Varying the
+# photo alone missed how far the render's own framing moves the scores: taller
+# hair re-centred the camera 6.2 pixels, the face itself unchanged, and the
+# mouth's landmarks went 1.75 -> 4.22% (2.6 of the photo-only spread).
+RENDER_JITTER = [((3.0, -6.0), 1.0), ((-4.0, 2.5), 1.02), ((5.0, 5.0), 0.98)]
+
+
+def jitter_copies(tag: str, face: dict) -> list[dict]:
+    """The face's renders moved and scaled a little (RENDER_JITTER), as faces
+    of their own to score (--noise)."""
+    import cv2
+    from PIL import Image
+    copies = []
+    for k, ((dx, dy), scale) in enumerate(RENDER_JITTER):
+        name = f"{face['name']}~r{k}"
+        for view in "pl":
+            rgba = np.asarray(Image.open(OUT / "renders" / f"{face['name']}-{tag}{view}.png").convert("RGBA"))
+            h, w = rgba.shape[:2]
+            move = cv2.getRotationMatrix2D((w / 2, h / 2), 0.0, scale)
+            move[:, 2] += (dx, dy)
+            Image.fromarray(cv2.warpAffine(rgba, move, (w, h), flags=cv2.INTER_LINEAR,
+                                           borderValue=(0, 0, 0, 0))).save(OUT / "renders" / f"{name}-{tag}{view}.png")
+        copies.append({**face, "name": name})
+    return copies
+
+
 def held_glb(tag: str, face: dict) -> pathlib.Path:
     """The face's GLB set to turn its head as the held-out photo shows it."""
     import pygltflib
@@ -245,8 +273,16 @@ def flat(path) -> np.ndarray:
 
 
 def landmarks(rgb: np.ndarray) -> np.ndarray | None:
+    """MediaPipe's landmarks, found with the hair greyed out. MediaPipe reads
+    the whole head: four builds of the test set's first face differing only
+    in their hair put its mouth landmarks 1.4-4.2% of the eye spacing off the
+    photo's, the face's pixels the same; greyed, 1.4-1.7. Every score aligns
+    on these, so the hair no longer moves the face's scores."""
     import mediapipe as mp
+    import appearance
     from generate import get_landmarker
+    rgb = rgb.copy()
+    rgb[appearance.segment(rgb) == appearance.HAIR] = 128
     found = get_landmarker().detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb)))
     if not found.face_landmarks:
         return None
@@ -806,6 +842,8 @@ def main() -> int:
                 for f in people if f.get("held_out")] +
                [(OUT / f"{args.tag}-{f['name']}@teeth.glb", OUT / "renders" / f"{f['name']}@teeth-{args.tag}p.png", True)
                 for f in people if f.get("teeth")])
+    if args.noise:
+        faces = faces + [c for f in people for c in jitter_copies(args.tag, f)]
     scores = score(args.tag, faces)
     (OUT / "scores").mkdir(parents=True, exist_ok=True)
     if args.noise:
