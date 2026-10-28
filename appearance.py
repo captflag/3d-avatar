@@ -93,8 +93,11 @@ SCLERA_L = (45.0, 93.0)
 # Read on the whites' brighter part, but the renderer shades the eyeball under
 # the lids and lights it below the skin: its whites came out at 0.56 of the
 # texture's lightness where the photo's sit at 0.72 of the brighter part
-# (test face p01, two builds). Their ratio lifts the reading to match.
-SCLERA_GAIN = 0.72 / 0.56
+# (test face p01, two builds). Their ratio lifts the reading to match, and
+# 15% more: matched exactly, identity fell on both faces tried (p01 0.502 ->
+# 0.493, samples/portrait.jpg 0.538 -> 0.531); 15% brighter it held
+# (0.500, 0.536) with the whites still within the bar (sclera_dE 8.0, 19.6).
+SCLERA_GAIN = 0.72 / 0.56 * 1.15
 
 
 def sclera_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = None) -> np.ndarray:
