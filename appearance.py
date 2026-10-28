@@ -1335,6 +1335,12 @@ def paint_nails(rgb: np.ndarray, nail: np.ndarray) -> np.ndarray:
 # MOUTH_DEPTH in from the lips' rims (mesh units, ~5 mm), half as dark at them.
 MOUTH_INSIDE = np.array([45.0, 155.0, 140.0])
 MOUTH_DEPTH = 0.05
+# The lips' wet inner side: from the rims, this share of the way to
+# MOUTH_DEPTH keeps the lips' own colour, and darkens into the lining over
+# the rest. A laugh shows that side under the upper lip: on samples/portrait.jpg
+# part of the dark jagged strip there was this surface painted as lining
+# (found by giving the head and body textures flat colours).
+LIP_WET = 0.5
 
 
 def mouth_inside(vertices: np.ndarray, faces: np.ndarray, rims: list[int]) -> np.ndarray:
@@ -1352,10 +1358,17 @@ def mouth_inside(vertices: np.ndarray, faces: np.ndarray, rims: list[int]) -> np
     return np.where(inside, 0.5 + 0.5 * np.clip(depth / MOUTH_DEPTH, 0.0, 1.0), 0.0)
 
 
-def paint_mouth(rgb: np.ndarray, inside: np.ndarray) -> np.ndarray:
-    """Skin texture with the mouth's inside painted where `inside` (texture-space, 0-1) says."""
+def paint_mouth(rgb: np.ndarray, inside: np.ndarray, lip_lab: np.ndarray | None = None) -> np.ndarray:
+    """Skin texture with the mouth's inside painted where `inside` (texture-space,
+    0-1, mouth_inside's) says. Given the lips' colour (OpenCV LAB) as the head
+    shows it at the rims, the lips' inner side takes it (LIP_WET), then the lining."""
     lab = cv2.cvtColor(np.ascontiguousarray(rgb[..., :3]).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
-    lab += (MOUTH_INSIDE[None, None, :] - lab) * inside[..., None]
+    if lip_lab is None:
+        lab += (MOUTH_INSIDE[None, None, :] - lab) * inside[..., None]
+    else:
+        deep = np.clip((2.0 * inside - 1.0 - LIP_WET) / (1.0 - LIP_WET), 0.0, 1.0)[..., None]
+        target = lip_lab[None, None, :] + (MOUTH_INSIDE[None, None, :] - lip_lab[None, None, :]) * deep
+        lab = np.where((inside > 0)[..., None], target, lab)
     out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
     return np.dstack([out, rgb[..., 3:]]) if rgb.shape[-1] == 4 else out
 

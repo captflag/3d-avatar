@@ -757,6 +757,19 @@ def island_uv(uv_all: np.ndarray, faces_uv: np.ndarray) -> np.ndarray:
     return remapped
 
 
+def rim_colour(texture: Image.Image, faces: np.ndarray, uv: np.ndarray, uv_faces: np.ndarray,
+               rims: list[int]) -> np.ndarray:
+    """The texture's median colour (OpenCV LAB) where it meets the vertices
+    `rims`: the lips' as the head was baked, for their inner side."""
+    rgb = np.asarray(texture.convert("RGB"))
+    size = rgb.shape[0]
+    corners = np.isin(faces, rims)
+    at = uv[uv_faces[corners]]
+    px = np.clip(np.round(at[:, 0] * (size - 1)).astype(int), 0, size - 1)
+    py = np.clip(np.round((1.0 - at[:, 1]) * (size - 1)).astype(int), 0, size - 1)
+    return np.median(cv2.cvtColor(rgb[py, px][None], cv2.COLOR_RGB2LAB)[0].astype(np.float64), axis=0)
+
+
 def head_island(vertices: np.ndarray, groups: dict, faces: np.ndarray,
                 uv_faces: np.ndarray) -> np.ndarray:
     """Which body triangles make up the head's UV island, found from the nose
@@ -1258,10 +1271,12 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     nail_map = facetexture.rasterize(nails, rest_faces[on_nail], uv_all, rest_uv_faces[on_nail],
                                      rest_base.shape[0], fill=0.0)
     rest_base = appearance.paint_nails(rest_base, nail_map)
-    # The inside of the mouth, dark.
+    # The inside of the mouth, dark, but for the lips' wet inner side, which
+    # a smile turns outwards: the colour the head was baked with at the rims.
     in_mouth = mouth[rest_faces].max(axis=1) > 0
     rest_base = appearance.paint_mouth(rest_base, facetexture.rasterize(
-        mouth, rest_faces[in_mouth], uv_all, rest_uv_faces[in_mouth], rest_base.shape[0], fill=0.0))
+        mouth, rest_faces[in_mouth], uv_all, rest_uv_faces[in_mouth], rest_base.shape[0], fill=0.0),
+        rim_colour(head_texture, head_faces, head_uv_all, head_uv_faces, morph.UPPER_RIM + morph.LOWER_RIM))
     body_rough = appearance.SKIN_ROUGHNESS["skin"] + (appearance.NAIL_ROUGHNESS - appearance.SKIN_ROUGHNESS["skin"]) * nail_map
     body_roughness = Image.fromarray(np.dstack([np.full_like(body_rough, 255), body_rough * 255,
                                                 np.zeros_like(body_rough)]).astype(np.uint8))
@@ -1302,6 +1317,29 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The lips' and cheeks' as the average face moves, so a laugh does not
     # turn the fitted lips inside out (morph.transfer_shapes).
     face_shapes = morph.transfer_shapes(base, vertices, groups["body"], corr, groups)
+    photo_face = morph.photo_expression(expression_of(result))
+    if mouth_filled:
+        # The photo's open mouth was painted over as lips (fill_mouth): parted
+        # as far as the photo's, its laugh shows the teeth (whitened, see
+        # garments.whiten_teeth) where the photo does. A fixed jaw opening of
+        # 0.25 did this before, from photo-10 (identity at the pose / level:
+        # lips together 0.534 / 0.514, parted as MediaPipe scored them 0.527 /
+        # 0.504, with that jaw 0.545 / 0.515), and showed too much of a wider
+        # laugh.
+        photo_face = open_as_photo(photo_face, vertices, face_shapes, morph.lip_corr(base, corr),
+                                   landmarks, (pw, ph))
+    # And the mouth then put on the photo's own (morph.photo_mouth), shown
+    # with the photo's expression.
+    on_skin = np.zeros(len(vertices), bool)
+    on_skin[np.unique(groups["body"])] = True
+    teeth = next(m for item, m in worn if item["category"] == "teeth")
+    teeth_moves = expression_morphs(teeth, face_shapes)
+    laughing_teeth = np.asarray(teeth.vertices, dtype=np.float64)
+    if teeth_moves is not None:
+        laughing_teeth = laughing_teeth + sum(w * teeth_moves[morph.ARKIT_NAMES.index(k)] for k, w in photo_face.items())
+    face_shapes = np.concatenate([face_shapes, morph.photo_mouth(
+        vertices, face_shapes, photo_face, morph.lip_corr(base, corr), person, on_skin, laughing_teeth)[None]])
+    photo_face["photoMouth"] = 1.0
     # Normals from the whole skin, not from each part's own triangles: split
     # at the neck, each side averaged only its own, and light broke along the
     # seam in angular patches under the ear.
@@ -1419,19 +1457,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The arms are posed on the male base body; on a fuller figure they are
     # swung out until the hands clear the hips.
     body_part = next(p for p in parts if p.name == "body")
-    photo_face = morph.photo_expression(expression_of(result))
-    if mouth_filled:
-        # The photo's open mouth was painted over as lips (fill_mouth): parted
-        # as far as the photo's, its laugh shows the teeth (whitened, see
-        # garments.whiten_teeth) where the photo does. A fixed jaw opening of
-        # 0.25 did this before, from photo-10 (identity at the pose / level:
-        # lips together 0.534 / 0.514, parted as MediaPipe scored them 0.527 /
-        # 0.504, with that jaw 0.545 / 0.515), and showed too much of a wider
-        # laugh.
-        photo_face = open_as_photo(photo_face, vertices, face_shapes, morph.lip_corr(base, corr),
-                                   landmarks, (pw, ph))
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
-                       morph_names=morph.ARKIT_NAMES,
+                       morph_names=morph.ARKIT_NAMES + ["photoMouth"],
                        expression=photo_face,
                        head_pose=head_pose)
 

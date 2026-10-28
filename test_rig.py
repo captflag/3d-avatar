@@ -367,6 +367,20 @@ def check_shape_transfer():
     assert opened["mouthSmileLeft"] == 1.0 and opened["jawOpen"] < laugh["jawOpen"], opened
     print(f"ok  mouth opened as the photo's: lips {gap:.3f} eye spacings apart, the smile kept")
 
+    # The photo's own mouth: lips a known step across from where the laugh
+    # puts them are carried most of the way there, and nothing off the skin moves.
+    posed = vertices + sum(w * plain[morph.ARKIT_NAMES.index(k)] for k, w in opened.items())
+    step = np.array([0.01, -0.006, 0.0])
+    person = np.zeros((468, 3))
+    person[morph.LIP_LANDMARKS] = posed[marks[morph.LIP_LANDMARKS]] + step
+    skin = np.zeros(len(vertices), bool)
+    skin[np.unique(groups["body"])] = True
+    fix = morph.photo_mouth(vertices, plain, opened, marks, person, skin)
+    carried = fix[marks[morph.LIP_LANDMARKS]].mean(axis=0)
+    assert np.all(carried[:2] / step[:2] > 0.6) and abs(carried[2]) < 1e-6, f"lips carried {carried} of {step}"
+    assert not fix[~skin].any(), "the photo's mouth moved something off the skin"
+    print(f"ok  photo's mouth: lips carried {carried[0] / step[0]:.2f} of the way, nothing off the skin moved")
+
 
 def check_mouth_bake():
     """A laughing photo's mouth, wider than the avatar's closed one, is moved
@@ -1379,8 +1393,10 @@ def check_review_fixes():
         # Severity-3 detail: blendshapes on every part, teeth and tongue worn,
         # skin with its own finish, cloth with sheen, hair with anisotropy.
         import morph
-        assert gltf.meshes[0].extras.get("targetNames") == morph.ARKIT_NAMES, "ARKit blendshapes missing"
-        assert all(len(p.targets) == 52 for p in gltf.meshes[0].primitives), "a part lacks blendshapes"
+        # ARKit's 52, then the photo's own mouth (morph.photo_mouth), shown with its expression.
+        assert gltf.meshes[0].extras.get("targetNames") == morph.ARKIT_NAMES + ["photoMouth"], "ARKit blendshapes missing"
+        assert gltf.meshes[0].extras["photoExpression"].get("photoMouth") == 1.0, "the photo's mouth not shown"
+        assert all(len(p.targets) == 53 for p in gltf.meshes[0].primitives), "a part lacks blendshapes"
         assert {"teeth", "tongue"} <= set(info["wearing"]), "no teeth or tongue in the mouth"
         skin_mat = gltf.materials[names.index("head")]
         assert skin_mat.pbrMetallicRoughness.metallicRoughnessTexture is not None, "skin has one roughness"
