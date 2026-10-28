@@ -530,7 +530,8 @@ def brow_colour(photo_rgb: np.ndarray, landmarks, default=(60, 44, 34)) -> np.nd
 
 
 def bake_eyes(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.ndarray,
-              centres: np.ndarray, iris: np.ndarray, size: int = 1024) -> Image.Image:
+              centres: np.ndarray, iris: np.ndarray, size: int = 1024,
+              sclera=(236.0, 232.0, 226.0)) -> Image.Image:
     """Generated eyeballs: sclera, the person's iris colour, a pupil.
 
     The photo's eye region cannot be painted onto an eyeball: it includes the
@@ -544,8 +545,8 @@ def bake_eyes(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces:
     out, a dark limbal ring at the edge; the white dims and warms towards the
     corners, and the upper lid shades the top of the eye.
     """
-    sclera = np.array([236.0, 232.0, 226.0])
-    corner = np.array([214.0, 178.0, 170.0])             # pinkish, towards the lids' corners
+    corner = np.array([214.0, 178.0, 170.0]) * np.asarray(sclera) / [236.0, 232.0, 226.0]   # pinkish, at the corners
+    sclera = np.asarray(sclera, dtype=np.float64)
     pupil = np.array([14.0, 12.0, 12.0])
     image = np.tile(sclera, (size, size, 1))
     forward = np.array([0.0, 0.0, 1.0])

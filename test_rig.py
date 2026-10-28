@@ -1194,6 +1194,9 @@ def check_appearance():
         assert max(hair["colour"]) < 140, f"dark grey hair read as {hair['colour'].tolist()}"
         _, family = appearance.iris_colour(rgb, marks)
         assert family in ("dark brown", "brown"), f"brown eyes read as {family}"
+        # The whites follow the photo's exposure, within a natural white's range.
+        lit, dim = appearance.sclera_colour(rgb, marks), appearance.sclera_colour((rgb * 0.5).astype(np.uint8), marks)
+        assert dim.mean() < lit.mean() - 20 and dim.min() > 90, f"whites read {lit} lit, {dim} at half exposure"
 
         # A photo on its side is stood up before anything reads it: a sideways
         # head once read as bald.

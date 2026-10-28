@@ -86,6 +86,35 @@ def colour_cast(photo_rgb: np.ndarray, landmarks) -> np.ndarray:
     return np.clip(cast, -MAX_CAST, MAX_CAST)
 
 
+# The sclera texture's own white (sRGB), and the lightness range (LAB L*,
+# 0-100) a photo's reading is believed in: below it, lid and lash.
+SCLERA = np.array([236.0, 232.0, 226.0])
+SCLERA_L = (45.0, 93.0)
+# Read on the whites' brighter part, but the renderer shades the eyeball under
+# the lids and lights it below the skin: its whites came out at 0.56 of the
+# texture's lightness where the photo's sit at 0.72 of the brighter part
+# (test face p01, two builds). Their ratio lifts the reading to match.
+SCLERA_GAIN = 0.72 / 0.56
+
+
+def sclera_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = None) -> np.ndarray:
+    """The whites of the eyes as the photo has them (sRGB): their brighter
+    part, so lid and lash do not count, at the photo's own exposure, with its
+    cast taken out and their hue held to a natural white's. A fixed white
+    stood out of a dim photo like a sticker (test face p01: the whites
+    rendered at L* 53 against the photo's 37). SCLERA when unmeasurable."""
+    if len(landmarks) <= 477:
+        return SCLERA.copy()
+    h, w = photo_rgb.shape[:2]
+    eye, iris = _eye_masks(landmarks, (w, h))
+    pixels = _lab(photo_rgb[eye & ~iris])
+    if len(pixels) < 40:
+        return SCLERA.copy()
+    bright = pixels[pixels[:, 0] >= np.percentile(pixels[:, 0], 60)]
+    lightness = np.clip(SCLERA_GAIN * np.median(bright[:, 0]) * 100 / 255, *SCLERA_L) * 255 / 100
+    return _rgb(np.array([lightness, *(128.0 + NATURAL_WHITE)])).astype(np.float64)
+
+
 def white_balance(rgb: np.ndarray, cast: np.ndarray, strength: float = 0.6) -> np.ndarray:
     """`rgb` with `strength` of the measured cast taken out of every pixel."""
     lab = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)

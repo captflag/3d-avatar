@@ -894,7 +894,7 @@ def head_island(vertices: np.ndarray, groups: dict, faces: np.ndarray,
     return facetexture.uv_island(uv_faces, nose_uv)
 
 
-def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray):
+def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appearance.SCLERA):
     """Generated eyeballs with this iris colour: (mesh, uv, texture).
 
     Painting the photo's eye region onto the eyeball put eyelid and brow on a
@@ -907,7 +907,7 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray):
     eye_centres = np.array([vertices[np.unique(groups["helper-l-eye"])].mean(axis=0),
                             vertices[np.unique(groups["helper-r-eye"])].mean(axis=0)])
     texture = facetexture.bake_eyes(vertices, eye_faces, eye_uv_all, eye_uv_faces,
-                                    eye_centres, iris)
+                                    eye_centres, iris, sclera=sclera)
     # Written darker by the renderer's lift, as the skin is (delight.RENDER_LIFT):
     # the whites rendered at 246 against the photos' 216, and the iris a
     # shade lighter than the colour read from the photo.
@@ -1438,8 +1438,9 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # Eyes: generated, with only the iris colour taken from the photo, judged
     # against the whites of the eyes, as a person sees it, and snapped halfway
     # to a natural eye colour (appearance.iris_colour).
+    # The whites at the photo's own exposure (appearance.sclera_colour).
     iris, eye_colour = appearance.iris_colour(photo_rgb, landmarks)
-    eyes, eye_uv, eye_texture = build_eyes(vertices, groups, iris)
+    eyes, eye_uv, eye_texture = build_eyes(vertices, groups, iris, appearance.sclera_colour(photo_rgb, landmarks))
 
     # --- rig it --- (skeleton and weights made above, with the nails)
 
