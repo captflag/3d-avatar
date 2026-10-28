@@ -1011,6 +1011,10 @@ def fit_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray
 # the cap's map, in texels of a 1024 map.
 COMB_REACH = 0.8
 COMB_PRIOR = 0.3
+# How far, in eye spacings, a photo's strand reading is spread over its hair.
+COMB_SPREAD = 0.5
+# How much of a tuft card's rise off the scalp combing lays down.
+COMB_LIE = 0.6
 COMB_STRAND = 14
 # Cards longer than this (eye spacings) are the cut's flaps at the front and
 # temples, not tufts: turned about one root they swung off the head.
@@ -1071,6 +1075,15 @@ def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarra
     view, to_view, size, scale, spacing = _photo_view(person, rotation, pixels)
     eye_px = float(np.linalg.norm(pixels[33] - pixels[263]))
     strand, clear = _strand_field(photo_rgb, photo_hair, eye_px)
+    # Spread over the hair (COMB_SPREAD): the cut is combed lying on the
+    # scalp, before it is raised to the photo's height, and a full top's
+    # readings sit above the scalp. On the test set's first face (a quiff),
+    # and on samples/portrait.jpg, not one hair point found a reading.
+    vx, vy = (cv2.GaussianBlur((clear * f(2 * strand)).astype(np.float32), (0, 0), COMB_SPREAD * eye_px)
+              for f in (np.cos, np.sin))
+    spread = np.hypot(vx, vy)
+    strand = np.where(clear > 0, strand, 0.5 * np.arctan2(vy, vx))
+    clear = np.where(clear > 0, clear, spread / (spread.max() + 1e-9) * photo_hair)
     ph, pw = clear.shape
 
     skull = np.unique(head_faces)
@@ -1185,6 +1198,16 @@ def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarra
             v[idx] = roots[j] + (p * np.cos(phi) + np.cross(k, p) * np.sin(phi)
                                  + np.outer(p @ k, k) * (1 - np.cos(phi)))
             turns.append(abs(np.degrees(phi)))
+            # And laid down towards the scalp by COMB_LIE of its rise: stood
+            # straight out, the tufts read as spikes over a smooth quiff.
+            p = v[idx] - roots[j]
+            tip = p[np.linalg.norm(p, axis=1).argmax()]
+            u = np.cross(k, tip)
+            if np.linalg.norm(u) > 1e-9 and np.linalg.norm(tip) > 1e-9:
+                u /= np.linalg.norm(u)
+                theta = COMB_LIE * np.arcsin(np.clip(tip @ k / np.linalg.norm(tip), -1.0, 1.0))
+                v[idx] = roots[j] + (p * np.cos(theta) + np.cross(u, p) * np.sin(theta)
+                                     + np.outer(p @ u, u) * (1 - np.cos(theta)))
     hair.vertices = v
 
     texture = hair.metadata.get("texture")
