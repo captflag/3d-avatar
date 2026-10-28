@@ -537,8 +537,18 @@ def fill_mouth(skin_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray | None 
             cv2.fillPoly(band, [outer], 1)
             # Lips only, not the moustache over them: nothing far darker.
             band = (band > 0) & (opening == 0) & (lab[..., 0] > target[0] - 40.0)
-            lab[band, 1:] = 0.5 * lab[band, 1:] + 0.5 * target[1:]
-            lab[band, 0] = 0.7 * lab[band, 0] + 0.3 * target[0]
+            # Only what the laugh added: lips lighter, pinker or yellower than
+            # the target are pulled to it, never darker lips the other way.
+            excess = np.maximum(lab[band] - target, 0.0)
+            lab[band] -= excess * np.array([0.3, 0.5, 0.5])
+            # And the opening filled with the lips as they came out, not the
+            # target: a smile turns the lips' meeting surfaces outwards, and
+            # they showed the fill. On samples/portrait.jpg, darker lips than
+            # the target, the two made the lips' colour 1.35x as strong for
+            # their lightness as the photo's (chroma / L* 0.62 against 0.46;
+            # cheeks 0.40 against 0.39), and pink when rendered.
+            if band.any():
+                target = np.median(lab[band], axis=0)
         else:
             lip_lab = _lab(lips)
             # Lips are the reddest thing round the mouth: on a small photo the
@@ -1325,6 +1335,12 @@ def paint_nails(rgb: np.ndarray, nail: np.ndarray) -> np.ndarray:
 # MOUTH_DEPTH in from the lips' rims (mesh units, ~5 mm), half as dark at them.
 MOUTH_INSIDE = np.array([45.0, 155.0, 140.0])
 MOUTH_DEPTH = 0.05
+# The lips' wet inner side: from the rims, this share of the way to
+# MOUTH_DEPTH keeps the lips' own colour, and darkens into the lining over
+# the rest. A laugh shows that side under the upper lip: on samples/portrait.jpg
+# part of the dark jagged strip there was this surface painted as lining
+# (found by giving the head and body textures flat colours).
+LIP_WET = 0.5
 
 
 def mouth_inside(vertices: np.ndarray, faces: np.ndarray, rims: list[int]) -> np.ndarray:
@@ -1342,10 +1358,17 @@ def mouth_inside(vertices: np.ndarray, faces: np.ndarray, rims: list[int]) -> np
     return np.where(inside, 0.5 + 0.5 * np.clip(depth / MOUTH_DEPTH, 0.0, 1.0), 0.0)
 
 
-def paint_mouth(rgb: np.ndarray, inside: np.ndarray) -> np.ndarray:
-    """Skin texture with the mouth's inside painted where `inside` (texture-space, 0-1) says."""
+def paint_mouth(rgb: np.ndarray, inside: np.ndarray, lip_lab: np.ndarray | None = None) -> np.ndarray:
+    """Skin texture with the mouth's inside painted where `inside` (texture-space,
+    0-1, mouth_inside's) says. Given the lips' colour (OpenCV LAB) as the head
+    shows it at the rims, the lips' inner side takes it (LIP_WET), then the lining."""
     lab = cv2.cvtColor(np.ascontiguousarray(rgb[..., :3]).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
-    lab += (MOUTH_INSIDE[None, None, :] - lab) * inside[..., None]
+    if lip_lab is None:
+        lab += (MOUTH_INSIDE[None, None, :] - lab) * inside[..., None]
+    else:
+        deep = np.clip((2.0 * inside - 1.0 - LIP_WET) / (1.0 - LIP_WET), 0.0, 1.0)[..., None]
+        target = lip_lab[None, None, :] + (MOUTH_INSIDE[None, None, :] - lip_lab[None, None, :]) * deep
+        lab = np.where((inside > 0)[..., None], target, lab)
     out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
     return np.dstack([out, rgb[..., 3:]]) if rgb.shape[-1] == 4 else out
 

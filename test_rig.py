@@ -318,6 +318,70 @@ def check_arkit():
           "photo expression read back")
 
 
+def check_shape_transfer():
+    """The mouth's shapes carried onto a fitted face as the average face moves:
+    unchanged onto the average face itself, and onto lips squashed thin, a
+    smile turns fewer of their triangles inside out than the plain offsets."""
+    import morph
+    from compose import place_face
+
+    vertices, groups = load_base()
+    average = place_face(morph.canonical_face(), vertices, groups).vertices[:468]
+    corr = morph.correspondences(vertices, groups["body"], average)
+    faces = groups["body"]
+    plain = morph.arkit_shapes(vertices, corr, groups)
+    same = morph.transfer_shapes(vertices, vertices, faces, corr, groups)
+    off = np.abs(same - plain).max()
+    assert off < 2 * morph.TRANSFER_FLOOR, f"onto the average face itself the shapes moved by {off:.4f}"
+
+    lips = np.linalg.norm(plain[morph.ARKIT_NAMES.index("mouthPucker")], axis=1)
+    lips = lips / lips.max()
+    middle = float((vertices[:, 1] * lips).sum() / lips.sum())
+    thin = vertices.copy()
+    thin[:, 1] = middle + (thin[:, 1] - middle) * (1.0 - 0.6 * lips)
+
+    def inside_out(shapes):
+        smile = sum(shapes[morph.ARKIT_NAMES.index(f"mouthSmile{s}")] for s in ("Left", "Right"))
+        normals = lambda p: np.cross(p[faces[:, 1]] - p[faces[:, 0]], p[faces[:, 2]] - p[faces[:, 0]])
+        return int(((normals(thin + smile) * normals(thin)).sum(axis=1) < 0).sum())
+
+    before = inside_out(morph.arkit_shapes(thin, corr, groups))
+    after = inside_out(morph.transfer_shapes(vertices, thin, faces, corr, groups))
+    assert after < before, f"transferred, a smile on thin lips turned {after} triangles inside out, {before} as offsets"
+    print(f"ok  shape transfer: unchanged on the average face; a smile on thin lips turns {before} -> {after} "
+          f"triangles inside out")
+
+    # A laugh opened as far as the photo's: the lips' gap at the middle, in eye
+    # spacings, matches the photo's, and only the shapes that part the lips change.
+    from types import SimpleNamespace
+    from compose import open_as_photo
+    marks = morph.lip_corr(vertices, corr)
+    laugh = {"jawOpen": 0.25, "mouthLowerDownLeft": 0.4, "mouthUpperUpLeft": 0.8, "mouthSmileLeft": 1.0}
+    point = lambda x, y: SimpleNamespace(x=x, y=y)
+    marks_photo = {33: point(0.40, 0.4), 263: point(0.60, 0.4), 13: point(0.5, 0.60), 14: point(0.5, 0.62)}
+    opened = open_as_photo(laugh, vertices, plain, marks, marks_photo, (100, 100))
+    moved = vertices[marks[[13, 14, 33, 263]]] + sum(w * plain[morph.ARKIT_NAMES.index(k)][marks[[13, 14, 33, 263]]]
+                                                     for k, w in opened.items())
+    gap = np.linalg.norm((moved[0] - moved[1])[:2]) / np.linalg.norm((moved[2] - moved[3])[:2])
+    assert abs(gap - 0.1) < 0.002, f"opened to {gap:.3f} eye spacings, the photo's 0.100"
+    assert opened["mouthSmileLeft"] == 1.0 and opened["jawOpen"] < laugh["jawOpen"], opened
+    print(f"ok  mouth opened as the photo's: lips {gap:.3f} eye spacings apart, the smile kept")
+
+    # The photo's own mouth: lips a known step across from where the laugh
+    # puts them are carried most of the way there, and nothing off the skin moves.
+    posed = vertices + sum(w * plain[morph.ARKIT_NAMES.index(k)] for k, w in opened.items())
+    step = np.array([0.01, -0.006, 0.0])
+    person = np.zeros((468, 3))
+    person[morph.LIP_LANDMARKS] = posed[marks[morph.LIP_LANDMARKS]] + step
+    skin = np.zeros(len(vertices), bool)
+    skin[np.unique(groups["body"])] = True
+    fix = morph.photo_mouth(vertices, plain, opened, marks, person, skin)
+    carried = fix[marks[morph.LIP_LANDMARKS]].mean(axis=0)
+    assert np.all(carried[:2] / step[:2] > 0.6) and abs(carried[2]) < 1e-6, f"lips carried {carried} of {step}"
+    assert not fix[~skin].any(), "the photo's mouth moved something off the skin"
+    print(f"ok  photo's mouth: lips carried {carried[0] / step[0]:.2f} of the way, nothing off the skin moved")
+
+
 def check_mouth_bake():
     """A laughing photo's mouth, wider than the avatar's closed one, is moved
     onto the avatar's mouth before the bake, and the forehead stays put."""
@@ -1199,6 +1263,18 @@ def check_finishing():
         filled, did = appearance.fill_mouth(rgb, marks)
         bright = lambda img: int((cv2.cvtColor(img, cv2.COLOR_RGB2LAB)[..., 0][mouth > 0] > 200).sum())
         assert did and bright(rgb) > 50 and bright(filled) == 0, "teeth were left in the mouth"
+        # Lips darker and browner than a lip made from the cheek keep their
+        # colour, and the opening is filled with it, for a smile to turn out.
+        lip_ring = np.array([[marks[i].x * w, marks[i].y * h] for i in appearance.OUTER_LIPS], np.int32)
+        painted = np.full_like(rgb, (215, 170, 140))                          # cheek
+        cv2.fillPoly(painted, [lip_ring], (165, 125, 110))                    # brown lips, not moustache-dark
+        painted[mouth > 0] = (245, 245, 240)                                  # teeth
+        cheek_px = np.array([[marks[i].x * w, marks[i].y * h] for i in (50, 280, 205, 425)])
+        filled, _ = appearance.fill_mouth(painted, marks, cheek_px)
+        inner = cv2.erode(mouth, np.ones((5, 5), np.uint8)) > 0
+        lab = lambda c: cv2.cvtColor(np.uint8([[c]]), cv2.COLOR_RGB2LAB)[0, 0].astype(float)
+        fill_a = np.median(cv2.cvtColor(filled, cv2.COLOR_RGB2LAB)[inner][:, 1].astype(float))
+        assert fill_a < lab((165, 125, 110))[1] + 4, f"dark lips' mouth filled pinker: a {fill_a:.0f}, lips {lab((165, 125, 110))[1]:.0f}"
 
         mask = np.zeros((h, w), bool)
         mask[int(marks[10].y * h):int(marks[152].y * h), int(marks[234].x * w):int(marks[454].x * w)] = True
@@ -1310,15 +1386,21 @@ def check_review_fixes():
         view = gltf.bufferViews[gltf.images[gltf.textures[tex].source].bufferView]
         alpha = np.asarray(Image.open(io.BytesIO(blob[view.byteOffset:view.byteOffset + view.byteLength])).convert("RGBA"))[..., 3]
         collarbone = float(base[np.unique(groups["joint-l-clavicle"])][:, 1].mean())
-        neck = (pos[:, 1] > collarbone + 0.15) & (np.abs(pos[:, 0]) < 0.6)
+        # Not the mouth's inside: it is body too, and the lips' inner side
+        # there is meant to go undrawn (compose.LIP_HIDDEN). Round the teeth.
+        teeth = read(gltf.meshes[0].primitives[names.index("teeth")].attributes.POSITION, 3).mean(axis=0)
+        mouth = np.linalg.norm(pos - teeth, axis=1) < 0.4
+        neck = (pos[:, 1] > collarbone + 0.15) & (np.abs(pos[:, 0]) < 0.6) & ~mouth
         px = (uv[neck] * (np.array(alpha.shape[::-1]) - 1)).astype(int)
         assert neck.any() and (alpha[px[:, 1], px[:, 0]] > 127).mean() > 0.98, "neck skin was cut away"
 
         # Severity-3 detail: blendshapes on every part, teeth and tongue worn,
         # skin with its own finish, cloth with sheen, hair with anisotropy.
         import morph
-        assert gltf.meshes[0].extras.get("targetNames") == morph.ARKIT_NAMES, "ARKit blendshapes missing"
-        assert all(len(p.targets) == 52 for p in gltf.meshes[0].primitives), "a part lacks blendshapes"
+        # ARKit's 52, then the photo's own mouth (morph.photo_mouth), shown with its expression.
+        assert gltf.meshes[0].extras.get("targetNames") == morph.ARKIT_NAMES + ["photoMouth"], "ARKit blendshapes missing"
+        assert gltf.meshes[0].extras["photoExpression"].get("photoMouth") == 1.0, "the photo's mouth not shown"
+        assert all(len(p.targets) == 53 for p in gltf.meshes[0].primitives), "a part lacks blendshapes"
         assert {"teeth", "tongue"} <= set(info["wearing"]), "no teeth or tongue in the mouth"
         skin_mat = gltf.materials[names.index("head")]
         assert skin_mat.pbrMetallicRoughness.metallicRoughnessTexture is not None, "skin has one roughness"
@@ -1355,6 +1437,34 @@ def check_forehead():
     assert strength[1] == 0, "a surface turned away from the camera was baked"
     assert strength[2] == 0, "the bake reached far past the landmarks"
     print("ok  forehead: baked to the hairline, only on surface facing the camera")
+
+
+def check_lip_underside():
+    """The lips' underside, which faces away from the camera in a resting
+    mouth, is painted from the photo; other surfaces facing away are not."""
+    from facetexture import FaceSampler, bake
+
+    grid = np.stack(np.meshgrid(np.linspace(0, 1, 11), np.linspace(0, 1, 11)), -1).reshape(-1, 2)
+    sheet = np.c_[grid, np.zeros(len(grid))]
+    rim = np.nonzero((grid == 0).any(axis=1) | (grid == 1).any(axis=1))[0]
+    # The lips: the square 0.3-0.7 on the sheet, as a ring of landmarks.
+    ring = ([3 * 11 + c for c in range(3, 8)] + [r * 11 + 7 for r in range(4, 8)]
+            + [7 * 11 + c for c in range(6, 2, -1)] + [r * 11 + 3 for r in range(6, 3, -1)])
+    sampler = FaceSampler(sheet, grid * 100, rim, lip_outline=ring)
+    assert sampler.on_lips(np.array([[0.5, 0.5, 0.0], [0.15, 0.5, 0.0]])).tolist() == [True, False]
+    # Two small triangles turned away from the camera (clockwise seen from +z):
+    # one on the lips, one on the cheek.
+    vertices = np.array([[0.45, 0.45, 0], [0.5, 0.55, 0], [0.55, 0.45, 0],
+                         [0.10, 0.45, 0], [0.15, 0.55, 0], [0.20, 0.45, 0]], float)
+    faces = np.array([[0, 1, 2], [3, 4, 5]])
+    uv = np.array([[0.1, 0.1], [0.25, 0.4], [0.4, 0.1], [0.6, 0.1], [0.75, 0.4], [0.9, 0.1]])
+    photo = np.zeros((120, 120, 3), np.uint8)
+    photo[...] = (200, 40, 40)
+    texture = np.asarray(bake(vertices, faces, uv, faces, sampler, vertices.mean(axis=0), 1.0,
+                              photo, np.array([40.0, 40.0, 200.0]), size=64, blend="none"))
+    lip, cheek = texture[64 - 1 - int(0.2 * 63), int(0.25 * 63)], texture[64 - 1 - int(0.2 * 63), int(0.75 * 63)]
+    assert lip[0] > 150 and cheek[2] > 150, f"lip underside {lip}, cheek turned away {cheek}"
+    print("ok  lip underside: painted from the photo though it faces away; a cheek facing away is not")
 
 
 def check_details():
@@ -1568,6 +1678,7 @@ if __name__ == "__main__":
         check_side_views()
         check_brow_shading()
         check_arkit()
+        check_shape_transfer()
         check_mouth_bake()
         check_lip_seal()
         check_hairline_sweep()
@@ -1593,6 +1704,7 @@ if __name__ == "__main__":
         check_finishing()
         check_review_fixes()
         check_forehead()
+        check_lip_underside()
         check_brows()
         check_details()
         check_stubble()

@@ -72,12 +72,22 @@ PHOTO_NORMAL_ROUNDS = 120
 SKIN_SHEEN = ((0.20, 0.07, 0.04), 0.55)
 # How far teeth and tongue sit back from where the model puts them (mesh units).
 TEETH_RECESS = 0.05
+# The upper front teeth's crowns lengthened: from the biting edge, the first
+# TEETH_CROWN of the model's teeth (mesh units, ~4 mm: up to where its gum dips
+# between the crowns) is stretched by TEETH_RAISE (~3 mm) and everything above
+# moved up by it. Only those 4 mm of crown showed between gum and edge, where a
+# photo's laugh shows about 9 mm up to the lip (samples/portrait.jpg), and the
+# gum showed under the upper lip as pink arches.
+TEETH_CROWN = 0.04
+TEETH_RAISE = 0.03
+# How far into the mouth the lips' inner side goes undrawn
+# (appearance.mouth_inside's measure: 0.5 at the rims, 1 at MOUTH_DEPTH).
+LIP_HIDDEN = 0.75
 # How far the mouth's lining is set back into the mouth (mesh units, ~1.5 mm).
 MOUTH_LINING = 0.015
-# jawOpen given a photo whose open mouth was painted over (fill_mouth), so its
-# laugh shows teeth. ponytail: one value, from photo-10, the one laughing test
-# face; read it from the photo's own lip gap once there are more.
-OPEN_JAW = 0.25
+# The ARKit shapes that part the lips, scaled together so the avatar's mouth
+# opens as far as the photo's (open_as_photo).
+OPENING = ("jawOpen", "mouthLowerDown", "mouthUpperUp")
 # Cloth sheen: colour (linear RGB) and roughness. At 0.35 it washed navy out
 # to slate grey.
 CLOTH_SHEEN = ((0.12, 0.12, 0.12), 0.8)
@@ -500,6 +510,39 @@ def relaxed_pose() -> dict:
 THUMB_DROP = 25.0
 
 
+def open_as_photo(expression: dict, vertices: np.ndarray, shapes: np.ndarray, marks: np.ndarray,
+                  landmarks, photo_size) -> dict:
+    """`expression` with the shapes that part the lips (OPENING) scaled
+    together until the mesh's lips stand as far apart at their middle,
+    front-on and in eye spacings, as the photo's (landmarks 13 and 14).
+
+    MediaPipe's scores through the response curves overshot a broad laugh:
+    on samples/portrait.jpg the render's lips stood 0.256 eye spacings apart
+    against the photo's 0.149, both rows of teeth and the tongue showing
+    under a thick rolled upper lip. The expression the fit took off instead
+    undershoots one (REALISM-GAP.md, route 7a). Measured on the mesh, so no
+    render is needed; `marks` are the landmarks' vertices (morph.lip_corr)."""
+    w, h = photo_size
+    at = lambda i: np.array([landmarks[i].x * w, landmarks[i].y * h])
+    wanted = np.linalg.norm(at(13) - at(14)) / np.linalg.norm(at(33) - at(263))
+    names = list(morph.ARKIT_NAMES)
+
+    def gap(scale):
+        moved = vertices[marks[[13, 14, 33, 263]]].astype(np.float64)
+        for name, weight in expression.items():
+            k = min(1.0, weight * scale) if name.startswith(OPENING) else weight
+            moved = moved + k * shapes[names.index(name)][marks[[13, 14, 33, 263]]]
+        return np.linalg.norm((moved[0] - moved[1])[:2]) / np.linalg.norm((moved[2] - moved[3])[:2])
+
+    lo, hi = 0.0, 3.0
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if gap(mid) < wanted else (lo, mid)
+    scale = (lo + hi) / 2
+    return {name: (min(1.0, weight * scale) if name.startswith(OPENING) else weight)
+            for name, weight in expression.items()}
+
+
 def expression_morphs(mesh, shapes: np.ndarray):
     """Blendshapes on one part: (shapes, vertices, 3) offsets, or None if none
     of them moves it.
@@ -723,6 +766,19 @@ def island_uv(uv_all: np.ndarray, faces_uv: np.ndarray) -> np.ndarray:
     remapped = uv_all.copy()
     remapped[idx] = (uv_all[idx] - lo) / np.maximum(hi - lo, 1e-9)
     return remapped
+
+
+def rim_colour(texture: Image.Image, faces: np.ndarray, uv: np.ndarray, uv_faces: np.ndarray,
+               rims: list[int]) -> np.ndarray:
+    """The texture's median colour (OpenCV LAB) where it meets the vertices
+    `rims`: the lips' as the head was baked, for their inner side."""
+    rgb = np.asarray(texture.convert("RGB"))
+    size = rgb.shape[0]
+    corners = np.isin(faces, rims)
+    at = uv[uv_faces[corners]]
+    px = np.clip(np.round(at[:, 0] * (size - 1)).astype(int), 0, size - 1)
+    py = np.clip(np.round((1.0 - at[:, 1]) * (size - 1)).astype(int), 0, size - 1)
+    return np.median(cv2.cvtColor(rgb[py, px][None], cv2.COLOR_RGB2LAB)[0].astype(np.float64), axis=0)
 
 
 def head_island(vertices: np.ndarray, groups: dict, faces: np.ndarray,
@@ -1051,6 +1107,18 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # and teeth 1 to 3 mm behind it showed as a white line across a
             # closed mouth. An opened jaw still shows them.
             mesh.vertices = mesh.vertices - np.array([0.0, 0.0, TEETH_RECESS])
+        if item["category"] == "teeth":
+            # The upper teeth: those hung from the upper teeth helper, so an
+            # overbite does not split a tooth.
+            upper = np.isin(mesh.metadata["mhclo_idx"], np.unique(groups["helper-upper-teeth"])).all(axis=1)
+            v = np.asarray(mesh.vertices, dtype=np.float64).copy()
+            top = v[upper]
+            # Each tooth's own biting edge: the lowest of the upper teeth within
+            # 2 mm across; one edge for all lifted the incisors' with the canines'.
+            across = np.abs(top[:, None, 0] - top[None, :, 0]) < 0.02
+            edge = np.where(across, top[None, :, 1], np.inf).min(axis=1)
+            v[upper, 1] += TEETH_RAISE * np.clip((top[:, 1] - edge) / TEETH_CROWN, 0.0, 1.0)
+            mesh.vertices = v
         worn.append((item, mesh))
 
     # Trousers down to the ankle make the shoes' socks redundant, and posed they
@@ -1116,7 +1184,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                       keep=beard_map,
                                       lips=([78] + morph.INNER_UPPER + [308],
                                             [78] + morph.INNER_LOWER + [308]),
-                                      beyond=forehead)
+                                      beyond=forehead, lip_outline=appearance.OUTER_LIPS)
     face_centre = full_face.vertices.mean(axis=0)
     face_radius = float(np.linalg.norm(full_face.vertices - face_centre, axis=1).max())
 
@@ -1135,6 +1203,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     mouth = appearance.mouth_inside(vertices, rest_faces, morph.UPPER_RIM + morph.LOWER_RIM)
     lining = trimesh.Trimesh(vertices, rest_faces, process=False).vertex_normals
     vertices = vertices + MOUTH_LINING * np.clip(2.0 * mouth - 1.0, 0.0, 1.0)[:, None] * lining
+    # The lips' inner side, where they press together at rest, is not drawn.
+    # Joined to the other lip's, it cannot be moved out of a laugh's way, and
+    # it hung below the upper lip as a jagged strip in shadow; at rest the
+    # lips hide it.
+    skin_alpha[(mouth > 0) & (mouth < LIP_HIDDEN)] = 0.0
 
     # A skin texture built to the person's own cheek statistics, so skin is
     # mottled rather than one flat colour.
@@ -1226,10 +1299,12 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     nail_map = facetexture.rasterize(nails, rest_faces[on_nail], uv_all, rest_uv_faces[on_nail],
                                      rest_base.shape[0], fill=0.0)
     rest_base = appearance.paint_nails(rest_base, nail_map)
-    # The inside of the mouth, dark.
+    # The inside of the mouth, dark, but for the lips' wet inner side, which
+    # a smile turns outwards: the colour the head was baked with at the rims.
     in_mouth = mouth[rest_faces].max(axis=1) > 0
     rest_base = appearance.paint_mouth(rest_base, facetexture.rasterize(
-        mouth, rest_faces[in_mouth], uv_all, rest_uv_faces[in_mouth], rest_base.shape[0], fill=0.0))
+        mouth, rest_faces[in_mouth], uv_all, rest_uv_faces[in_mouth], rest_base.shape[0], fill=0.0),
+        rim_colour(head_texture, head_faces, head_uv_all, head_uv_faces, morph.UPPER_RIM + morph.LOWER_RIM))
     body_rough = appearance.SKIN_ROUGHNESS["skin"] + (appearance.NAIL_ROUGHNESS - appearance.SKIN_ROUGHNESS["skin"]) * nail_map
     body_roughness = Image.fromarray(np.dstack([np.full_like(body_rough, 255), body_rough * 255,
                                                 np.zeros_like(body_rough)]).astype(np.uint8))
@@ -1267,7 +1342,39 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # --- rig it --- (skeleton and weights made above, with the nails)
 
     parts = []
-    face_shapes = morph.arkit_shapes(vertices, corr, groups)
+    # The lips' and cheeks' as the average face moves, so a laugh does not
+    # turn the fitted lips inside out (morph.transfer_shapes).
+    face_shapes = morph.transfer_shapes(base, vertices, groups["body"], corr, groups)
+    photo_face = morph.photo_expression(expression_of(result))
+    if mouth_filled:
+        # The photo's open mouth was painted over as lips (fill_mouth): parted
+        # as far as the photo's, its laugh shows the teeth (whitened, see
+        # garments.whiten_teeth) where the photo does. A fixed jaw opening of
+        # 0.25 did this before, from photo-10 (identity at the pose / level:
+        # lips together 0.534 / 0.514, parted as MediaPipe scored them 0.527 /
+        # 0.504, with that jaw 0.545 / 0.515), and showed too much of a wider
+        # laugh.
+        photo_face = open_as_photo(photo_face, vertices, face_shapes, morph.lip_corr(base, corr),
+                                   landmarks, (pw, ph))
+    # And a laughing mouth then put on the photo's own (morph.photo_mouth),
+    # shown with the photo's expression. Not a closed one: the fit has put
+    # its lips at rest already, and pulled again they moved off the photo's
+    # (the test set's first face, relaxed: mouth landmarks 1.9 -> 4.0% of the
+    # eye spacing off, nose 0.7 -> 2.1%). The target stays, empty, so every
+    # file carries the same blendshapes.
+    photo_mouth = np.zeros_like(vertices, dtype=np.float32)
+    if mouth_filled:
+        on_skin = np.zeros(len(vertices), bool)
+        on_skin[np.unique(groups["body"])] = True
+        teeth = next(m for item, m in worn if item["category"] == "teeth")
+        teeth_moves = expression_morphs(teeth, face_shapes)
+        laughing_teeth = np.asarray(teeth.vertices, dtype=np.float64)
+        if teeth_moves is not None:
+            laughing_teeth = laughing_teeth + sum(w * teeth_moves[morph.ARKIT_NAMES.index(k)] for k, w in photo_face.items())
+        photo_mouth = morph.photo_mouth(vertices, face_shapes, photo_face, morph.lip_corr(base, corr), person,
+                                        on_skin, laughing_teeth)
+        photo_face["photoMouth"] = 1.0
+    face_shapes = np.concatenate([face_shapes, photo_mouth[None]])
     # Normals from the whole skin, not from each part's own triangles: split
     # at the neck, each side averaged only its own, and light broke along the
     # seam in angular patches under the ear.
@@ -1385,18 +1492,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The arms are posed on the male base body; on a fuller figure they are
     # swung out until the hands clear the hips.
     body_part = next(p for p in parts if p.name == "body")
-    photo_face = morph.photo_expression(expression_of(result))
-    if mouth_filled:
-        # The photo's open mouth was painted over as lips (fill_mouth): opened
-        # by the jaw as well, its laugh shows the teeth (whitened, see
-        # garments.whiten_teeth) where the photo does. photo-10, identity at
-        # the pose / level: lips together 0.534 / 0.514, lips parted as the
-        # photo's 0.527 / 0.504, parted with the jaw at OPEN_JAW 0.545 / 0.515.
-        # (With the stock grey teeth, parting them showed a slit of grey under
-        # a pink band, and lips together scored best.)
-        photo_face = {**photo_face, "jawOpen": max(photo_face.get("jawOpen", 0.0), OPEN_JAW)}
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
-                       morph_names=morph.ARKIT_NAMES,
+                       morph_names=morph.ARKIT_NAMES + ["photoMouth"],
                        expression=photo_face,
                        head_pose=head_pose)
 

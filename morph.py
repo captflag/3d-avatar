@@ -576,6 +576,67 @@ def correct(vertices: np.ndarray, base: np.ndarray, corr: np.ndarray, person: np
     return moved
 
 
+# How far in front of the teeth the lips' rims rest in a laugh (mesh units, ~1 mm).
+LIP_ON_TEETH = 0.01
+
+
+def photo_mouth(vertices: np.ndarray, shapes: np.ndarray, expression: dict, marks: np.ndarray,
+                person: np.ndarray, skin: np.ndarray, teeth: np.ndarray | None = None) -> np.ndarray:
+    """The offsets that put the mouth, under `expression` (ARKit weights on
+    `shapes`), where the photo's lips are: one more blendshape, shown at
+    full weight with the photo's expression.
+
+    The expression shown is the fitted resting lips with MakeHuman's units
+    played over them, and nothing made that land on the photo's mouth: on
+    samples/portrait.jpg its upper lip came out half as tall again as the
+    photo's and its rim folded over, a dark crust above the teeth. Each lip
+    landmark (`marks`, morph.lip_corr's vertices) is pulled across the
+    picture onto the photo's (`person`, placed on the skull as the fit
+    places it) and the pull spread as `correct` spreads it, over the skin
+    only (`skin`, a vertex mask), so the teeth stay put.
+
+    In depth, the lips are laid on the teeth (`teeth`, their points under
+    the same expression): the teeth sat 8-10 mm behind the laughing lips, and
+    what showed between them, the mouth's inside and the lip's back, was the
+    dark crust. Each inner lip landmark in front of its row of teeth is
+    pulled back to LIP_ON_TEETH in front of it, no further than the row's
+    middle is, over the inner landmarks alone, so the whole lip eases back
+    rather than bending at its edge."""
+    posed = vertices + sum(w * shapes[ARKIT_NAMES.index(k)] for k, w in expression.items() if k in ARKIT_NAMES)
+    at = posed[marks[LIP_LANDMARKS]]
+    left = np.zeros_like(at)
+    left[:, :2] = person[LIP_LANDMARKS, :2] - at[:, :2]
+    reach = CORRECT_REACH * float(np.linalg.norm(posed[marks[33]] - posed[marks[263]]))
+    kernel = lambda a, b: np.exp(-(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2) / reach) ** 2)
+    close = np.nonzero(skin & (np.linalg.norm(posed - at.mean(axis=0), axis=1)
+                               < np.linalg.norm(at - at.mean(axis=0), axis=1).max() + 3 * reach))[0]
+    alpha = np.linalg.solve(kernel(at, at) + CORRECT_DAMPING * np.eye(len(at)), left)
+    offsets = np.zeros_like(vertices, dtype=np.float32)
+    offsets[close] = kernel(posed[close], at) @ alpha
+    if teeth is not None:
+        middle = float(teeth[:, 1].mean())
+        on_teeth, back = [], []
+        for row, upper, centre in ((INNER_UPPER, True, 13), (INNER_LOWER, False, 14)):
+            def gap(i):
+                rim = posed[marks[i]]
+                near = (np.abs(teeth[:, 0] - rim[0]) < reach / 3) & ((teeth[:, 1] > middle) == upper)
+                return float(teeth[near, 2].max()) + LIP_ON_TEETH - rim[2] if near.any() else None
+            # No further back than at the middle: towards the corners the teeth
+            # curve away round the arch and the lips do not follow them (the dark
+            # corners of a smile); pulled onto them there, by 14-33 mm on
+            # samples/portrait.jpg, the corners sank into the mouth.
+            most = gap(centre)
+            for i in row:
+                if (g := gap(i)) is not None and most is not None:
+                    on_teeth.append(marks[i])
+                    back.append(min(0.0, max(g, most)))
+        if on_teeth:
+            rims = posed[on_teeth]
+            depth = np.linalg.solve(kernel(rims, rims) + CORRECT_DAMPING * np.eye(len(rims)), np.array(back))
+            offsets[close, 2] += kernel(posed[close], rims) @ depth
+    return offsets
+
+
 # The jaw's outline from cheek to cheek round the chin (MediaPipe ids), fitted
 # as the silhouette the camera sees (`fit_outline`). The points level with the
 # ears are left out: there the silhouette is the ear.
@@ -881,6 +942,80 @@ def arkit_shapes(vertices: np.ndarray, corr: np.ndarray, groups: dict) -> np.nda
 
     assert len(ARKIT_NAMES) == 52 and set(shapes) == set(ARKIT_NAMES)
     return np.stack([shapes[name] for name in ARKIT_NAMES]).astype(np.float32)
+
+
+# The shapes carried over as the average face moves rather than by the same
+# offsets (transfer_shapes): the lips' and cheeks', which the fit reshapes.
+TRANSFERRED = ("mouth", "cheek")
+# Smallest movement a transferred shape keeps (mesh units, 0.02 mm).
+TRANSFER_FLOOR = 2e-4
+# Rings of skin round a shape's own that its transfer may move too.
+TRANSFER_RINGS = 3
+
+
+def transfer_shapes(average: np.ndarray, fitted: np.ndarray, faces: np.ndarray,
+                    corr: np.ndarray, groups: dict) -> np.ndarray:
+    """arkit_shapes for the fitted mesh, the mouth's and cheeks' transferred.
+
+    The expression units are offsets on the average face. Added as they are
+    to a fitted face's thinner, sealed lips they were too long for the
+    triangles they move, and a laugh turned the upper lip's rim inside out,
+    its back showing as a dark jagged band: on samples/portrait.jpg the smile
+    alone turned 68 of the head's 1756 mouth triangles inside out (34 on the
+    average face), 39 transferred; the photo's whole expression 135, 101
+    transferred, for 3% more file. Transferred, each edge of the
+    fitted mesh changes as the average face's does, measured against its own
+    triangle (the in-plane deformation, a 3x3 map per triangle): a least-
+    squares solve, per shape, over the skin it moves, the rest held where the
+    shape puts them. Linear in the offsets, so a shape's halves still add up.
+    The jaw's shapes are not transferred: a jaw turns as a whole."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.linalg import splu
+
+    shapes = arkit_shapes(fitted, corr, groups)
+    source = arkit_shapes(average, corr, groups)
+    n = len(fitted)
+    on_skin = np.zeros(n, bool)
+    on_skin[np.unique(faces)] = True
+    e1, e2 = average[faces[:, 1]] - average[faces[:, 0]], average[faces[:, 2]] - average[faces[:, 0]]
+    normal = np.cross(e1, e2)
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
+    inverse = np.linalg.inv(np.stack([e1, e2, normal], axis=2))
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    tri = np.tile(np.arange(len(faces)), 3)
+    for k, name in enumerate(ARKIT_NAMES):
+        if not name.startswith(TRANSFERRED):
+            continue
+        offset = source[k].astype(np.float64)
+        # Solved for: the skin this shape moves on the average face, and
+        # TRANSFER_RINGS round it; everything else stays where the shape puts it.
+        free = on_skin & (np.abs(offset).max(axis=1) > 1e-6)
+        for _ in range(TRANSFER_RINGS):
+            free[edges[free[edges].any(axis=1)].ravel()] = True
+        free &= on_skin
+        used = free[edges].any(axis=1)
+        a, b, t = edges[used, 0], edges[used, 1], tri[used]
+        region = np.nonzero(free)[0]
+        column = np.full(n, -1)
+        column[region] = np.arange(len(region))
+        rows = np.arange(len(a))
+        # (offset_b - offset_a) ~ map (fitted_b - fitted_a), per edge.
+        system = coo_matrix((np.r_[np.ones(free[b].sum()), -np.ones(free[a].sum())],
+                             (np.r_[rows[free[b]], rows[free[a]]], np.r_[column[b[free[b]]], column[a[free[a]]]])),
+                            shape=(len(a), len(region))).tocsr()
+        d1, d2 = offset[faces[:, 1]] - offset[faces[:, 0]], offset[faces[:, 2]] - offset[faces[:, 0]]
+        change = np.stack([d1, d2, np.zeros_like(d1)], axis=2) @ inverse
+        want = np.einsum("tij,tj->ti", change[t], fitted[b] - fitted[a])
+        held = shapes[k].astype(np.float64)
+        want -= np.where(free[b][:, None], 0.0, held[b])
+        want += np.where(free[a][:, None], 0.0, held[a])
+        moved = held.copy()
+        moved[region] = splu((system.T @ system).tocsc()).solve(np.asarray(system.T @ want))
+        # The solve leaves every vertex it touches a trace of movement, each
+        # one stored in the file: none below TRANSFER_FLOOR.
+        moved[np.linalg.norm(moved, axis=1) < TRANSFER_FLOOR] = 0.0
+        shapes[k] = moved
+    return shapes
 
 
 # MediaPipe's score for each blendshape on our own avatars at weights 0, 1/4,
