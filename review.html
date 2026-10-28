@@ -22,6 +22,18 @@
   #expression b { color:var(--accent); font-weight:600; }
   #expression div { color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #hint { position:absolute; right:12px; bottom:12px; z-index:2; color:var(--muted); font-size:11px; }
+  #hair { position:absolute; top:44px; right:12px; z-index:2; width:min(240px,46%); background:rgba(17,19,23,.86);
+    border:1px solid var(--line); border-radius:8px; padding:8px; font-size:12px; }
+  #hair[hidden] { display:none; }
+  #hair b { color:var(--accent); font-weight:600; display:block; margin-bottom:6px; }
+  #cuts { display:flex; flex-direction:column; gap:2px; max-height:38vh; overflow-y:auto; margin-bottom:8px; }
+  #cuts button { all:unset; cursor:pointer; padding:4px 8px; border-radius:6px; color:var(--text); }
+  #cuts button:hover, #cuts button:focus-visible { background:var(--line); }
+  #cuts button[aria-pressed="true"] { background:var(--accent); color:#0b0d10; }
+  #swatches { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  #swatches button { width:22px; height:22px; border-radius:50%; border:2px solid var(--line); cursor:pointer; padding:0; }
+  #swatches button[aria-pressed="true"] { border-color:var(--accent); }
+  #swatches input { width:28px; height:24px; padding:0; border:0; background:none; cursor:pointer; }
   @media (max-width:760px){ main { grid-template-columns:1fr; height:auto; } section { height:60vh; } }
 </style>
 </head>
@@ -37,6 +49,11 @@
     <canvas id="viewport"></canvas>
     <div id="expression"></div>
     <div id="hint">drag to orbit · scroll to zoom</div>
+    <div id="hair" hidden>
+      <b>Hair</b>
+      <div id="cuts" role="group" aria-label="Haircut"></div>
+      <div id="swatches" role="group" aria-label="Hair colour"></div>
+    </div>
   </section>
 </main>
 
@@ -50,7 +67,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { setupRealism, applyMaterials, groundAndShadow, withOcclusion } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, groundAndShadow, withOcclusion, chooseHair } from '/lib/scene-setup.js';
 
 const params = new URLSearchParams(location.search);
 // With no model named, show the newest avatar rather than a hardcoded file:
@@ -116,6 +133,7 @@ new GLTFLoader().load(modelUrl, (gltf) => {
   // Handle for poking at the rig from the console: find a bone by name and
   // rotate it to check the skin follows. window.__avatar.getObjectByName('head')
   window.__avatar = model;
+  modelReady(model);
 
   document.getElementById('meta').textContent =
     `${modelUrl.split('/').pop()} · ${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)} units`;
@@ -124,10 +142,63 @@ new GLTFLoader().load(modelUrl, (gltf) => {
   console.error(err);
 });
 
+// The hair picker: the cuts the file carries (compose's info.hair), the photo's
+// own first, and colours, the photo's first. The choice is kept in
+// window.__hair for the studio's download (/download?hair=…&colour=…).
+let avatar = null, hairInfo = null;
+const HAIR_COLOURS = [['black', [22, 20, 19]], ['dark brown', [52, 36, 27]], ['brown', [96, 64, 42]],
+  ['auburn', [118, 56, 34]], ['blonde', [186, 148, 96]], ['light blonde', [200, 178, 138]], ['grey', [150, 148, 146]]];
+window.__hair = null;
+
+function modelReady(model) {
+  avatar = model;
+  buildPicker();
+}
+
+function wear(cut, colour) {
+  window.__hair = { cut, colour };
+  if (avatar) chooseHair(avatar, cut, colour);
+  document.querySelectorAll('#cuts button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.cut === cut)));
+  document.querySelectorAll('#swatches button').forEach((b) =>
+    b.setAttribute('aria-pressed', String(b.dataset.rgb === colour.join(','))));
+}
+
+function buildPicker() {
+  if (!avatar || !hairInfo || document.getElementById('cuts').childElementCount) return;
+  const cuts = document.getElementById('cuts'), swatches = document.getElementById('swatches');
+  const add = (parent, label, attrs, onClick) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    Object.assign(b, attrs);
+    if (label) b.textContent = label;
+    b.addEventListener('click', onClick);
+    parent.append(b);
+    return b;
+  };
+  const pick = () => window.__hair;
+  for (const { id, label } of [...hairInfo.options, { id: 'bald', label: 'No hair' }]) {
+    const b = add(cuts, id === hairInfo.shown ? `${label} (from your photo)` : label, {}, () => wear(id, pick().colour));
+    b.dataset.cut = id;
+  }
+  for (const [name, rgb] of [['from your photo', hairInfo.colour], ...HAIR_COLOURS]) {
+    const b = add(swatches, '', { title: name, ariaLabel: name }, () => wear(pick().cut, rgb));
+    b.style.background = `rgb(${rgb.join(',')})`;
+    b.dataset.rgb = rgb.join(',');
+  }
+  const free = document.createElement('input');
+  free.type = 'color';
+  free.title = free.ariaLabel = 'any colour';
+  free.addEventListener('input', () => wear(pick().cut, [1, 3, 5].map((i) => parseInt(free.value.slice(i, i + 2), 16))));
+  swatches.append(free);
+  document.getElementById('hair').hidden = false;
+  wear(hairInfo.shown || 'bald', hairInfo.colour);
+}
+
 fetch(modelUrl.replace(/\.glb$/, '.json'))
   .then((r) => (r.ok ? r.json() : null))
   .then((info) => {
     if (!info) return;
+    if (info.hair) { hairInfo = info.hair; buildPicker(); }
     const top = Object.entries(info.expression || {}).slice(0, 6);
     document.getElementById('expression').innerHTML =
       `<b>detected expression</b>` +

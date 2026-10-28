@@ -28,6 +28,22 @@ COMPONENT = {
 TYPE_FOR_WIDTH = {1: gl.SCALAR, 2: gl.VEC2, 3: gl.VEC3, 4: gl.VEC4, 16: gl.MAT4}
 
 
+# Hair is written in this grey (sRGB, the texel of its average brightness)
+# and coloured by its material's factor, so a viewer can recolour it: the
+# studio's hair picker. glTF holds a factor to 1, so the grey is as light as
+# the lightest swatch (blonde, 186 148 96, wanted 1.22 of 170); a lighter
+# colour comes out at this. The lightest strands, 1.5 times the average,
+# stop at 255.
+HAIR_GREY = 200.0
+
+
+def hair_factor(colour) -> list[float]:
+    """The material colour (linear RGB) that turns HAIR_GREY into `colour` (sRGB)."""
+    linear = lambda c: np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    factor = linear(np.asarray(colour, dtype=np.float64) / 255.0) / linear(HAIR_GREY / 255.0)
+    return np.minimum(factor, 1.0).round(4).tolist()
+
+
 class Part:
     """One drawable piece: geometry, how it is painted, and how it is skinned."""
 
@@ -58,6 +74,7 @@ class Part:
         self.ior = None                 # KHR_materials_ior, where not glTF's 1.5
         self.anisotropy = None          # (strength, rotation in radians): KHR_materials_anisotropy
         self.clearcoat = None           # (strength, roughness): KHR_materials_clearcoat
+        self.base_colour = None         # linear RGB the texture is multiplied by (hair_factor)
 
 
 class _Buffer:
@@ -276,7 +293,7 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None,
 def export(parts: list[Part], skeleton, out_path: pathlib.Path,
            pose: dict[str, list[float]] | None = None, morph_names: list[str] | None = None,
            expression: dict[str, float] | None = None,
-           head_pose: list[float] | None = None) -> None:
+           head_pose: list[float] | None = None, extras: dict | None = None) -> None:
     """Write the avatar and its skeleton to `out_path` as a GLB.
 
     `pose` rotates named bones in the rest pose. The base mesh is modelled in a
@@ -359,7 +376,7 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
         material = gl.Material(
             name=part.name,
             pbrMetallicRoughness=gl.PbrMetallicRoughness(
-                baseColorFactor=[1.0, 1.0, 1.0, 1.0],
+                baseColorFactor=[*(part.base_colour or [1.0, 1.0, 1.0]), 1.0],
                 metallicFactor=0.0,
                 roughnessFactor=float(part.roughness),
             ),
@@ -429,6 +446,8 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
                                               if k in morph_names}
     if head_pose is not None:
         mesh.extras = {**(mesh.extras or {}), "photoHeadPose": [round(float(c), 5) for c in head_pose]}
+    if extras:
+        mesh.extras = {**(mesh.extras or {}), **extras}
     gltf.meshes.append(mesh)
     gltf.extensionsUsed.append("KHR_mesh_quantization")
     gltf.extensionsRequired.append("KHR_mesh_quantization")
@@ -494,9 +513,104 @@ def dequantised(glb: bytes) -> bytes:
             doc[key] = [e for e in doc[key] if e != "KHR_mesh_quantization"]
             if not doc[key]:
                 del doc[key]
+    return _pack(doc, blob)
+
+
+def _unpack(glb: bytes) -> tuple[dict, bytearray]:
+    import json
+    json_len = struct.unpack_from("<I", glb, 12)[0]
+    bin_start = 20 + json_len + 8
+    return (json.loads(glb[20:20 + json_len]),
+            bytearray(glb[bin_start:bin_start + struct.unpack_from("<I", glb, 20 + json_len)[0]]))
+
+
+def _pack(doc: dict, blob: bytearray) -> bytes:
+    import json
     blob.extend(b"\0" * (-len(blob) % 4))
     doc["buffers"][0]["byteLength"] = len(blob)
     text = json.dumps(doc, separators=(",", ":")).encode()
     text += b" " * (-len(text) % 4)
     body = struct.pack("<II", len(text), 0x4E4F534A) + text + struct.pack("<II", len(blob), 0x004E4942) + bytes(blob)
     return struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body
+
+
+def with_hair(glb: bytes, cut: str | None, colour=None) -> bytes:
+    """The avatar wearing one haircut: the others the file carries for the
+    studio's picker (its mesh's `hairOptions`) taken out, so another engine
+    does not draw them all at once, and the hair recoloured to `colour`
+    (sRGB) if given. `cut` None or "bald" leaves no haircut."""
+    doc, blob = _unpack(glb)
+    mesh = doc["meshes"][0]
+    extras = mesh.get("extras", {})
+    cuts = set(extras.get("hairOptions", [])) | ({extras["hair"]} if extras.get("hair") else set())
+    name = lambda primitive: doc["materials"][primitive["material"]].get("name")
+    mesh["primitives"] = [pr for pr in mesh["primitives"] if name(pr) not in cuts or name(pr) == cut]
+    if colour is not None:
+        for primitive in mesh["primitives"]:
+            if name(primitive) == cut:
+                doc["materials"][primitive["material"]]["pbrMetallicRoughness"]["baseColorFactor"] = \
+                    [*hair_factor(colour), 1.0]
+    mesh["extras"] = {**extras, "hair": cut if cut in cuts else None, "hairOptions": []}
+    return _pack(*_compact(doc, blob))
+
+
+def _compact(doc: dict, blob: bytearray) -> tuple[dict, bytearray]:
+    """`doc` with the materials, textures, images, accessors and buffer data
+    nothing refers to any more dropped, and the rest renumbered: the picker's
+    fourteen other haircuts are about three quarters of the file."""
+    def keep(key, used):
+        order = sorted(used)
+        doc[key] = [doc[key][i] for i in order]
+        return {old: new for new, old in enumerate(order)}
+
+    primitives = [pr for mesh in doc["meshes"] for pr in mesh["primitives"]]
+    materials = keep("materials", {pr["material"] for pr in primitives if "material" in pr})
+    for pr in primitives:
+        if "material" in pr:
+            pr["material"] = materials[pr["material"]]
+
+    def texture_refs(node):                  # every {"index": n} a material points a texture by
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key.lower().endswith("texture") and isinstance(value, dict) and "index" in value:
+                    yield value
+                else:
+                    yield from texture_refs(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from texture_refs(value)
+
+    refs = list(texture_refs(doc["materials"]))
+    textures = keep("textures", {r["index"] for r in refs}) if "textures" in doc else {}
+    for r in refs:
+        r["index"] = textures[r["index"]]
+    images = keep("images", {t["source"] for t in doc.get("textures", [])}) if "images" in doc else {}
+    for t in doc.get("textures", []):
+        t["source"] = images[t["source"]]
+
+    accessor_refs = []                       # (holder, key) pairs naming an accessor
+    for pr in primitives:
+        accessor_refs += [(pr["attributes"], k) for k in pr["attributes"]]
+        accessor_refs += [(t, k) for t in pr.get("targets", []) for k in t]
+        if "indices" in pr:
+            accessor_refs.append((pr, "indices"))
+    accessor_refs += [(skin, "inverseBindMatrices") for skin in doc.get("skins", []) if "inverseBindMatrices" in skin]
+    accessors = keep("accessors", {holder[k] for holder, k in accessor_refs})
+    for holder, k in accessor_refs:
+        holder[k] = accessors[holder[k]]
+
+    view_refs = [(a, "bufferView") for a in doc["accessors"] if "bufferView" in a]
+    view_refs += [(a["sparse"][part], "bufferView") for a in doc["accessors"] if "sparse" in a
+                  for part in ("indices", "values")]
+    view_refs += [(im, "bufferView") for im in doc.get("images", []) if "bufferView" in im]
+    views = keep("bufferViews", {holder[k] for holder, k in view_refs})
+    for holder, k in view_refs:
+        holder[k] = views[holder[k]]
+    packed = bytearray()
+    for view in doc["bufferViews"]:
+        start = view.get("byteOffset", 0)
+        packed.extend(b"\0" * (-len(packed) % 4))
+        chunk = blob[start:start + view["byteLength"]]
+        view["byteOffset"] = len(packed)
+        packed.extend(chunk)
+    return doc, packed
