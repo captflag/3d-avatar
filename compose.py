@@ -575,9 +575,81 @@ GOOD_FACE_PX = 250
 TURNED_DEG = 20.0
 
 
-def photo_advice(landmarks, photo_size, expression: dict, result=None) -> list[str]:
+# The face is scaled to this width before its sharpness is measured, as the
+# studio does (studio.html SHARP_PX, sharpness()).
+SHARP_PX = 320
+# Where photo_quality's readings start to cost likeness, the first two as the
+# studio's guided capture holds them (studio.html MIN_SHARP, MAX_LIGHT_SPLIT,
+# side-session-notes/guided-capture.md). Measured on four photos and copies
+# degraded from them: sharp faces read 0.55-0.67, blurred 0.11-0.33 and the
+# 52-pixel face 0.21; cheeks 0.06-0.21 apart in even light, 0.57-0.69 lit
+# from one side; cheeks at 142-182 of 255, darkened 30-44; eyes 0.74-0.94 of
+# the cheeks, behind painted dark lenses 0.10-0.11.
+# ponytail: the dark-glasses reading is checked on painted lenses only; tune
+# it on real sunglasses photos when the test set has some.
+MIN_SHARP = 0.4
+MAX_LIGHT_SPLIT = 0.25
+MIN_CHEEK = 70.0
+MIN_EYES = 0.35
+
+
+def photo_quality(photo_rgb: np.ndarray, landmarks) -> dict:
+    """What the photo's own light and focus do to the face, as the studio's
+    guided capture measures them (studio.html assess):
+      sharp        Crete-Roffet's re-blur measure: the share of the face's edge
+                   contrast a 9-pixel box blur takes away, the face scaled to
+                   SHARP_PX wide, the blurrier axis; 0 flat, sharp faces 0.5-0.66.
+      light_split  the two cheeks' brightness apart, as a share of the brighter.
+      cheek        the cheeks' mean brightness, 0-255.
+      eyes         the eye openings' brightest tenth against the cheeks: the
+                   whites of open eyes are as bright as the cheeks or brighter;
+                   dark lenses are not."""
+    h, w = photo_rgb.shape[:2]
+    at = lambda i: np.array([landmarks[i].x * w, landmarks[i].y * h])
+    grey = photo_rgb.astype(np.float64) @ [0.299, 0.587, 0.114]
+    x0, x1 = sorted((at(234)[0], at(454)[0]))
+    y0, y1 = at(10)[1], at(152)[1]
+    box = grey[max(int(y0), 0):max(int(y1), 1), max(int(x0), 0):max(int(x1), 1)]
+    scale = SHARP_PX / max(box.shape[1], 1)
+    # Enlarged smoothly, as the studio's canvas does: area resampling enlarges by
+    # repeating pixels, and a 52-pixel face read 0.79, sharp, from its blocks.
+    face = cv2.resize(box, (SHARP_PX, max(12, round(box.shape[0] * scale))),
+                      interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
+
+    def kept(g):
+        # Along each row: edge contrast between neighbours, and what is left of
+        # it after a 9-pixel box blur.
+        r = 4
+        csum = np.cumsum(np.pad(g, ((0, 0), (1, 0))), axis=1)
+        mean = (csum[:, 2 * r + 1:] - csum[:, :-2 * r - 1]) / (2 * r + 1)
+        d = np.abs(np.diff(g, axis=1))[:, r:r + mean.shape[1] - 1]
+        db = np.abs(np.diff(mean, axis=1))
+        return float(np.maximum(d - db, 0.0).sum() / max(d.sum(), 1e-9))
+
+    def mean_round(i, radius):
+        c = at(i).astype(int)
+        return float(grey[max(c[1] - radius, 0):c[1] + radius, max(c[0] - radius, 0):c[0] + radius].mean())
+
+    radius = max(int(0.06 * (x1 - x0)), 2)
+    left, right = mean_round(50, radius), mean_round(280, radius)
+    cheek = (left + right) / 2.0
+    eyes = []
+    for ring in ([33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
+                 [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]):
+        mask = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(mask, [np.array([at(i) for i in ring]).round().astype(np.int32)], 1)
+        if mask.any():
+            eyes.append(float(np.percentile(grey[mask > 0], 90)))
+    return {"sharp": min(kept(face), kept(face.T)),
+            "light_split": abs(left - right) / max(left, right, 1.0),
+            "cheek": cheek,
+            "eyes": (float(np.mean(eyes)) / max(cheek, 1.0)) if eyes else 1.0}
+
+
+def photo_advice(landmarks, photo_size, expression: dict, result=None, photo_rgb=None) -> list[str]:
     """What would make this photo give a closer avatar, in plain words.
-    `result`: MediaPipe's, for the head's turn."""
+    `result`: MediaPipe's, for the head's turn; `photo_rgb`: the photo, for
+    its focus and light (photo_quality)."""
     w, h = photo_size
     advice = []
     if result is not None and result.facial_transformation_matrixes:
@@ -597,6 +669,20 @@ def photo_advice(landmarks, photo_size, expression: dict, result=None) -> list[s
     if smile > 0.5:
         advice.append("The photo is smiling broadly, so the resting mouth is estimated; "
                       "a relaxed, closed-mouth photo shows the lips' real shape.")
+    if photo_rgb is not None:
+        q = photo_quality(photo_rgb, landmarks)
+        if q["sharp"] < MIN_SHARP:
+            advice.append(f"The face is blurred (sharpness {q['sharp']:.2f}, needs {MIN_SHARP}): hold the camera "
+                          "still, use more light, or choose a sharper photo.")
+        if q["light_split"] > MAX_LIGHT_SPLIT:
+            advice.append(f"The light falls on one side of the face (the cheeks {q['light_split']:.0%} apart): "
+                          "face the window or lamp, so both sides are lit alike.")
+        if q["cheek"] < MIN_CHEEK:
+            advice.append(f"The photo is dark (the face at {q['cheek']:.0f} of 255): more light on the face "
+                          "gives a truer skin colour.")
+        if q["eyes"] < MIN_EYES:
+            advice.append("The eyes look covered, by dark glasses perhaps: take them off for the photo, "
+                          "or the avatar's eyes are guessed.")
     return advice
 
 
@@ -1507,7 +1593,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                        head_pose=head_pose)
 
     info = {
-        "advice": photo_advice(landmarks, (pw, ph), expression_of(result), result),
+        "advice": photo_advice(landmarks, (pw, ph), expression_of(result), result, photo_rgb),
         "source_photo": photo_path.name,
         "photo_size": list(photo.size),
         "kind": "full-body",
