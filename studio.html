@@ -758,13 +758,14 @@ $('download').addEventListener('click', async () => {
   try {
     if ($('dimension').value === '2d') {
       button.textContent = 'Rendering…';
-      const png = await renderPng(current.model, current.fullBody, $('photopose').checked);
+      const png = await renderPng(chosenModel(), current.fullBody, $('photopose').checked);
       saveBlob(png, `${current.id}.png`);
     } else {
-      // The GLB is already on the server; let the browser fetch it as a file.
+      // The GLB is on the server; let the browser fetch it as a file, wearing
+      // the hair picked in the viewer.
       const link = document.createElement('a');
       const compat = $('dimension').value === '3d-compat';
-      link.href = compat ? `/compat/${current.model.split('/').pop()}` : current.model;
+      link.href = chosenModel(compat);
       link.download = `${current.id}${compat ? '-compat' : ''}.glb`;
       link.click();
     }
@@ -781,6 +782,20 @@ $('dimension').addEventListener('change', () => {
   if (!current) return;
   $('resultmeta').textContent = downloadNote();
 });
+
+/** The avatar's URL wearing the haircut and colour picked in the viewer
+ * (review.html keeps them in window.__hair): one cut, not every one the file
+ * carries for the picker. */
+function chosenModel(compat = false) {
+  const hair = viewer.contentWindow?.__hair;
+  const query = new URLSearchParams();
+  if (hair) {
+    query.set('hair', hair.cut);
+    query.set('colour', hair.colour.join(','));
+  }
+  if (compat) query.set('compat', '1');
+  return `/download/${current.model.split('/').pop()}?${query}`;
+}
 
 function downloadNote() {
   return {

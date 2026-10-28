@@ -197,6 +197,31 @@ def check_proportions():
     print("ok  proportions: eye spacing, widths, height and chin fit within 1.5%")
 
 
+def check_crown():
+    """The forehead targets keep the crown round: given the hairline, their
+    move fades above it, the landmarks keep theirs (the fit is unchanged)
+    and the skull's top stays where it was. Without it, the test set's first
+    face came out flat-topped."""
+    import morph
+    from compose import place_face
+
+    vertices, groups = load_base()
+    corr = morph.correspondences(vertices, groups["body"], place_face(morph.canonical_face(), vertices, groups).vertices[:468])
+    names = [name for name, _, _ in morph.load_targets()]
+    weights = np.zeros(len(names))
+    weights[names.index("forehead/forehead-nubian-decr")] = 1.0
+    weights[names.index("forehead/forehead-scale-vert-decr")] = 1.0
+    hairline = float(vertices[corr[10], 1])
+    flat, kept = morph.apply(vertices, weights), morph.apply(vertices, weights, hairline=hairline)
+    head = np.unique(groups["body"])
+    head = head[vertices[head, 1] > hairline + morph.SKULL_FADE]
+    lowered = lambda v: float(vertices[head, 1].max() - v[head, 1].max())
+    assert lowered(flat) > 0.05, f"the targets no longer lower the crown ({lowered(flat):.3f}): drop this check"
+    assert abs(lowered(kept)) < 1e-6, f"the crown still moved {lowered(kept):.3f}"
+    assert np.abs(kept[corr] - flat[corr]).max() < 1e-6, "a landmark's vertex moved"
+    print(f"ok  crown: the forehead targets lowered the skull's top {lowered(flat):.2f}, kept above the hairline, landmarks unchanged")
+
+
 def check_side_views():
     """Turned views of a known face fuse back to its depth, though each view's
     own depth is a flattened guess and its turn is read a sixth short, as
@@ -554,6 +579,9 @@ def check_hair_volume():
     assert lift > 0, "the cut was not lifted"
     risen = np.percentile(hair.vertices[middle, 1], 98) - top
     assert 0.12 < risen < 0.3, f"the top rose {risen:.2f} for 0.2 asked"
+    # short01's cap, in two halves, is its cap; its 199 tufts are cards.
+    _, is_cap = garments.hair_pieces(build_item(items_by_id()["hair_short01"], None, vertices))
+    assert is_cap.sum() == 2 and len(is_cap) == 201, f"short01 read as {is_cap.sum()} cap pieces of {len(is_cap)}"
     at_edge = front & (original[:, 1] < edge + 0.05)
     assert np.linalg.norm(hair.vertices[at_edge] - original[at_edge], axis=1).max() < 0.02, "the front edge was lifted off"
     back = original[:, 2] < np.percentile(original[:, 2], 15)
@@ -1727,6 +1755,7 @@ if __name__ == "__main__":
         check_transfer()
         check_alignment()
         check_proportions()
+        check_crown()
         check_side_views()
         check_brow_shading()
         check_arkit()

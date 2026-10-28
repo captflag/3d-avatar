@@ -201,6 +201,28 @@ def serve_compat(name: str):
                               headers={"Content-Disposition": f'attachment; filename="{path.stem}-compat.glb"'})
 
 
+@app.get("/download/<name>")
+def serve_download(name: str):
+    """An avatar for download wearing the haircut the studio's picker chose:
+    ?hair=<catalogue id or bald>&colour=r,g,b (skinned_glb.with_hair), the
+    other cuts the file carries taken out; ?compat=1 also as serve_compat."""
+    path = OUT / name
+    if not name.endswith(".glb") or path.resolve().parent != OUT.resolve() or not path.exists():
+        abort(404)
+    data = path.read_bytes()
+    if "hair" in request.args:
+        colour = None
+        if request.args.get("colour"):
+            colour = [int(c) for c in request.args["colour"].split(",") if c.strip().isdigit()]
+            if len(colour) != 3 or max(colour) > 255:
+                abort(400)
+        data = skinned_glb.with_hair(data, request.args["hair"], colour)
+    if request.args.get("compat"):
+        data = skinned_glb.dequantised(data)
+    return app.response_class(data, mimetype="model/gltf-binary",
+                              headers={"Content-Disposition": f'attachment; filename="{path.name}"'})
+
+
 @app.get("/uploads/<path:name>")
 def serve_upload(name: str):
     return send_from_directory(UPLOADS, name)

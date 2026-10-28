@@ -499,13 +499,28 @@ def close_lips(vertices: np.ndarray) -> np.ndarray:
     return v
 
 
-def apply(base: np.ndarray, weights, targets=None) -> np.ndarray:
+# Targets that move the skull above the hairline as well as the forehead, and
+# how far over the hairline (mesh units, ~3 cm) their move there fades out.
+SKULL_TARGETS = ("forehead/",)
+SKULL_FADE = 0.3
+
+
+def apply(base: np.ndarray, weights, targets=None, hairline: float | None = None) -> np.ndarray:
     """The base mesh with the fitted shape applied — helpers included, so the
     eyes and teeth move with the face that holds them. Identity targets unless
-    told otherwise."""
+    told otherwise.
+
+    With `hairline` (the base mesh's height there), the forehead targets'
+    move fades out above it (SKULL_TARGETS): fitted to the forehead, they
+    also lowered and flattened the crown, which no photo shows. The test
+    set's first face, forehead-nubian-decr 0.8 and forehead-scale-vert-decr
+    0.6: the skull above the eyes went from 1.27 to 0.96 of its half-width,
+    flat across the top."""
     shaped = base.copy()
-    for w, (_, idx, delta) in zip(weights, targets or load_targets()):
+    for w, (name, idx, delta) in zip(weights, targets or load_targets()):
         if w > 1e-4:
+            if hairline is not None and name.startswith(SKULL_TARGETS):
+                delta = delta * np.clip(1.0 - (base[idx, 1] - hairline) / SKULL_FADE, 0.0, 1.0)[:, None]
             shaped[idx] += w * delta
     return shaped
 

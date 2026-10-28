@@ -185,6 +185,10 @@ def face_anchor_points(face: trimesh.Trimesh) -> np.ndarray:
 HAIR_DYE_CHROMA = 0.84
 
 
+# The hair colour the picker's cuts take when the photo shows no hair to read (sRGB).
+HAIR_FALLBACK = (58, 44, 36)
+
+
 def dye_colour(rgb) -> np.ndarray:
     """The colour to dye hair so it renders as `rgb` was read from the photo."""
     import cv2
@@ -1006,7 +1010,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             gender: str = "male", wear: list[str] | None = None,
             face_patch: bool = False, pose: str = "relaxed",
             side_photos: list[pathlib.Path] | None = None,
-            hair_hint: str | None = None, hair_colour_hint: str | None = None) -> dict:
+            hair_hint: str | None = None, hair_colour_hint: str | None = None,
+            hair: str | None = None) -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
@@ -1066,7 +1071,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                                        expression_of(result), front,
                                                        outline_trust, depth=depth_trust)
     shape_weights = morph.lip_volume(shape_weights, shape_names, base, corr, person)
-    vertices = morph.apply(base, shape_weights)
+    # The crown kept round above the hairline (morph.apply).
+    vertices = morph.apply(base, shape_weights, hairline=float(base[corr[10], 1]))
     shape_fit = morph.explained(base, corr, person, average, shape_weights, expression, front)
     # The lips' and eyelids' shape the targets could not reach, free-form.
     # Only those: corrected everywhere, the nose followed MediaPipe's own nose
@@ -1155,7 +1161,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     outfit = outfit_for(gender, wear)
     if wear is None:
         default_cut = next((i["id"] for i in outfit if i["category"] == "hair" and "mhclo" in i), None)
-        cut = appearance.hair_style(hair_reading, default_cut)
+        # `hair` (--hair) picks the cut by hand, everything else as read.
+        cut = (None if hair == "bald" else hair) if hair else appearance.hair_style(hair_reading, default_cut)
         # Where the segmentation read no hair to measure, the photo check's
         # haircut (photo_check.hair_hint: a catalogue id, or "bald") decides.
         if hair_hint and (hair_reading is None or hair_reading["top"] is None):
@@ -1208,7 +1215,13 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             item = {**item, "hairline": hairline_for(placed, vertices, groups,
                                                      float(item.get("hairline_lift", 0.0)))}
             item.pop("y_min", None)
+        tint = None
+        if item["category"] == "hair" and colour is not None:
+            # In grey, its colour the material's (skinned_glb.HAIR_GREY), so the
+            # studio's picker can recolour it.
+            tint, colour = colour, np.full(3, skinned_glb.HAIR_GREY)
         mesh = build_item(item, colour, vertices)
+        mesh.metadata["tint"] = tint
         if item["category"] == "hair" and "mhclo" in item and parts is not None and hair_reading:
             # Combed the way the photo's hair runs, before it is shaped to its outline.
             hair_comb = garments.comb_hair(mesh, vertices, head_only, render_turn, person,
@@ -1597,6 +1610,26 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # Hair's highlight runs across the strands, a band rather than a
             # spot; the strands lie along the texture's v axis.
             parts[-1].anisotropy = HAIR_ANISOTROPY
+        if mesh.metadata.get("tint") is not None:
+            parts[-1].base_colour = skinned_glb.hair_factor(mesh.metadata["tint"])
+
+    # Every other haircut, fitted to this head and hidden, for the studio's
+    # picker (as Snap's): the photo's own cut shows, shaped to the photo; the
+    # rest are the stock cuts on this head, in the photo's hair colour.
+    shown = next((item["id"] for item, _ in worn if item["category"] == "hair" and "mhclo" in item), None)
+    tint = next((m.metadata["tint"] for item, m in worn if item["category"] == "hair"
+                 and m.metadata.get("tint") is not None), None)
+    if tint is None:
+        tint = dye_colour(hair_rgb if hair_rgb is not None else HAIR_FALLBACK)
+    hair_options = [item for item in items_by_id().values()
+                    if item["category"] == "hair" and "mhclo" in item and item["id"] != shown]
+    for item in hair_options:
+        mesh = build_item(item, np.full(3, skinned_glb.HAIR_GREY), vertices)
+        parts.append(rigged_part(item["id"], mesh, item.get("roughness", ROUGHNESS.get("hair", 0.8)), vertices,
+                                 groups, joints, weights, len(skeleton)))
+        parts[-1].morphs = expression_morphs(mesh, face_shapes)
+        parts[-1].anisotropy = HAIR_ANISOTROPY
+        parts[-1].base_colour = skinned_glb.hair_factor(tint)
 
     eye_base = eyes.metadata["base_index"]
     parts.append(skinned_glb.Part(
@@ -1631,10 +1664,14 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
                        morph_names=morph.ARKIT_NAMES + ["photoMouth"],
                        expression=photo_face,
-                       head_pose=head_pose)
+                       head_pose=head_pose,
+                       extras={"hair": shown, "hairOptions": [item["id"] for item in hair_options]})
 
     info = {
         "advice": photo_advice(landmarks, (pw, ph), expression_of(result), result, photo_rgb),
+        "hair": {"shown": shown, "colour": [int(c) for c in tint],
+                 "options": [{"id": i["id"], "label": i["label"]}
+                             for i in ([items_by_id()[shown]] if shown else []) + hair_options]},
         "source_photo": photo_path.name,
         "photo_size": list(photo.size),
         "kind": "full-body",
@@ -1691,6 +1728,7 @@ def main() -> int:
     parser.add_argument("--side", type=pathlib.Path, action="append", default=[],
                         help="a photo of the head turned to one side (30-45 degrees); give it once per side")
     parser.add_argument("--wear", help="comma-separated catalogue ids, overriding the default outfit")
+    parser.add_argument("--hair", help="a catalogue haircut id (or bald) in place of the one the photo reads")
     parser.add_argument("--face-patch", dest="face_patch", action="store_true",
                         help="also lay the fitted landmark patch over the head. Off by default: "
                              "since the skull is shaped to the face, the patch sits behind it "
@@ -1705,7 +1743,7 @@ def main() -> int:
     try:
         info = compose(args.photo, args.out, args.gender,
                        args.wear.split(",") if args.wear else None, args.face_patch, args.pose,
-                       side_photos=args.side or None)
+                       side_photos=args.side or None, hair=args.hair)
     except NoFaceFound:
         print("no face found in the photo", file=sys.stderr)
         return 1

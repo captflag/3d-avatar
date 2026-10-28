@@ -734,6 +734,8 @@ VOLUME_SPAN = ((0.3, 0.8), (60.0, 150.0))
 # in full. Lifted right at the edge, the hair stood off the forehead as a
 # shell and its dark inside showed under the fringe.
 VOLUME_RAMP = 0.6
+# A quiff's lift over the crown, as a share of its lift at the front.
+QUIFF_BACK = 0.4
 
 
 # How many skin vertices each hair vertex's scalp normal is averaged over.
@@ -787,14 +789,35 @@ def volumise(hair: trimesh.Trimesh, vertices: np.ndarray, groups: dict, rise_y: 
     weight = (smooth((height - low) / (high - low)) * smooth((none - angle) / (none - full))
               * smooth((hair.vertices[:, 1] - edge) / VOLUME_RAMP))
 
-    top = np.percentile(hair.vertices[middle, 1], 98)
-    need = rise_y - top
-    if need <= 0.0:
+    # Highest at the front, easing to QUIFF_BACK of it over the crown: lifted
+    # alike all the way back, the top stood as a flat-top seen from the side.
+    # How far forward, against the head's round at each point across, so the
+    # front is lifted alike from temple to temple (against the middle alone it
+    # rose to a peak).
+    reach = max(float(hair.vertices[front, 2].max() - centre[2]), 1e-6)
+    across = np.clip(np.abs(hair.vertices[:, 0] - centre[0]) / reach, 0.0, 0.9)
+    ahead = (hair.vertices[:, 2] - centre[2]) / (reach * np.sqrt(1.0 - across ** 2))
+    weight = weight * (QUIFF_BACK + (1.0 - QUIFF_BACK) * smooth(ahead))
+
+    top = lambda lift: np.percentile(hair.vertices[middle, 1] + lift * weight[middle] * scalp[middle, 1], 98)
+    if top(0.0) >= rise_y:
         return 0.0
-    # The top rises by the lift times how far its normal points up.
-    up = float(np.median((weight * scalp[:, 1])[middle & (hair.vertices[:, 1] >= top - 0.05)]))
-    lift = need / max(up, 0.3)
-    hair.vertices = hair.vertices + scalp * (lift * weight)[:, None]
+    # The lift that brings the top, as the front sees it, to `rise_y`.
+    lo, hi = 0.0, 1.0
+    while top(hi) < rise_y and hi < 64.0:
+        hi *= 2.0
+    for _ in range(40):
+        lo, hi = ((lo + hi) / 2, hi) if top((lo + hi) / 2) < rise_y else (lo, (lo + hi) / 2)
+    lift = (lo + hi) / 2
+    move = scalp * (lift * weight)[:, None]
+    # Each tuft card moved whole, by its root's lift: lifted point by point, a
+    # card's tip rose more than its root and stood up as a spike.
+    label, is_cap = hair_pieces(hair)
+    for c in np.nonzero(~is_cap)[0]:
+        idx = np.nonzero(label == c)[0]
+        root = idx[np.linalg.norm(hair.vertices[idx] - centre, axis=1).argmin()]
+        move[idx] = move[root]
+    hair.vertices = hair.vertices + move
     return float(lift)
 
 
@@ -1011,6 +1034,10 @@ def fit_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray
 # the cap's map, in texels of a 1024 map.
 COMB_REACH = 0.8
 COMB_PRIOR = 0.3
+# How far, in eye spacings, a photo's strand reading is spread over its hair.
+COMB_SPREAD = 0.5
+# How much of a tuft card's rise off the scalp combing lays down.
+COMB_LIE = 0.6
 COMB_STRAND = 14
 # Cards longer than this (eye spacings) are the cut's flaps at the front and
 # temples, not tufts: turned about one root they swung off the head.
@@ -1031,6 +1058,26 @@ def _strand_field(photo_rgb: np.ndarray, hair: np.ndarray, eye_px: float):
     # reads as one long strand along it.
     inner = cv2.erode(hair.astype(np.uint8), np.ones((int(0.25 * eye_px) * 2 + 1,) * 2, np.uint8))
     return strand, clear * inner
+
+
+# A haircut's cap: the pieces holding more than this share of its vertices.
+# short01's two halves hold 21% each, short02's 50%; the community cuts'
+# largest strands and clumps under 5%.
+CAP_SHARE = 0.1
+
+
+def hair_pieces(hair: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray]:
+    """Each vertex's piece, and which pieces are the cap (CAP_SHARE); the
+    rest are cards. Taken as one piece many times any card, short01's cap,
+    now in two halves, was no cap at all, and its strands were never painted
+    along the comb."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    edges = hair.edges
+    _, label = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])),
+                                               shape=(len(hair.vertices),) * 2), directed=False)
+    sizes = np.bincount(label)
+    return label, sizes > CAP_SHARE * len(hair.vertices)
 
 
 def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray, rotation: np.ndarray,
@@ -1063,14 +1110,21 @@ def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarra
     """
     import cv2
     from PIL import Image
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
     from scipy.spatial import cKDTree
     from facetexture import rasterize
 
     view, to_view, size, scale, spacing = _photo_view(person, rotation, pixels)
     eye_px = float(np.linalg.norm(pixels[33] - pixels[263]))
     strand, clear = _strand_field(photo_rgb, photo_hair, eye_px)
+    # Spread over the hair (COMB_SPREAD): the cut is combed lying on the
+    # scalp, before it is raised to the photo's height, and a full top's
+    # readings sit above the scalp. On the test set's first face (a quiff),
+    # and on samples/portrait.jpg, not one hair point found a reading.
+    vx, vy = (cv2.GaussianBlur((clear * f(2 * strand)).astype(np.float32), (0, 0), COMB_SPREAD * eye_px)
+              for f in (np.cos, np.sin))
+    spread = np.hypot(vx, vy)
+    strand = np.where(clear > 0, strand, 0.5 * np.arctan2(vy, vx))
+    clear = np.where(clear > 0, clear, spread / (spread.max() + 1e-9) * photo_hair)
     ph, pw = clear.shape
 
     skull = np.unique(head_faces)
@@ -1152,18 +1206,12 @@ def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarra
         return tangent(out, nn)
 
     # The pieces: cards and, if there is one, the cap.
-    edges = hair.edges
-    count, label = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])),
-                                                   shape=(len(points),) * 2), directed=False)
-    sizes = np.bincount(label)
-    # The cap: one piece many times any card (short01's is 1138 vertices, its
-    # largest card 28); cuts made of cards alone have none.
-    ordered = np.sort(sizes)[::-1]
-    cap = int(np.argmax(sizes)) if len(ordered) > 1 and ordered[0] > 10 * ordered[1] else -1
+    label, is_cap = hair_pieces(hair)
+    count = len(is_cap)
 
     v = np.asarray(hair.vertices).copy()
     turns = []
-    cards = [c for c in range(count) if c != cap]
+    cards = [c for c in range(count) if not is_cap[c]]
     roots, axes, members = [], [], []
     for c in cards:
         idx = np.nonzero(label == c)[0]
@@ -1185,12 +1233,22 @@ def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarra
             v[idx] = roots[j] + (p * np.cos(phi) + np.cross(k, p) * np.sin(phi)
                                  + np.outer(p @ k, k) * (1 - np.cos(phi)))
             turns.append(abs(np.degrees(phi)))
+            # And laid down towards the scalp by COMB_LIE of its rise: stood
+            # straight out, the tufts read as spikes over a smooth quiff.
+            p = v[idx] - roots[j]
+            tip = p[np.linalg.norm(p, axis=1).argmax()]
+            u = np.cross(k, tip)
+            if np.linalg.norm(u) > 1e-9 and np.linalg.norm(tip) > 1e-9:
+                u /= np.linalg.norm(u)
+                theta = COMB_LIE * np.arcsin(np.clip(tip @ k / np.linalg.norm(tip), -1.0, 1.0))
+                v[idx] = roots[j] + (p * np.cos(theta) + np.cross(u, p) * np.sin(theta)
+                                     + np.outer(p @ u, u) * (1 - np.cos(theta)))
     hair.vertices = v
 
     texture = hair.metadata.get("texture")
     uv = hair.metadata.get("uv")
-    if cap >= 0 and texture is not None and uv is not None:
-        cap_faces = hair.faces[label[hair.faces[:, 0]] == cap]
+    if is_cap.any() and texture is not None and uv is not None:
+        cap_faces = hair.faces[is_cap[label[hair.faces[:, 0]]]]
         hair.metadata["texture"], normal = _paint_cap(texture, hair.metadata.get("normal_texture"), v, cap_faces, uv,
                                                        direction, rasterize)
         if normal is not None:
