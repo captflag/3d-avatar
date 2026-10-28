@@ -90,19 +90,27 @@ def check_rubric():
 
 def check_review_page():
     import base64
+    from PIL import Image
     with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        (root / "renders").mkdir()
+        names = [f"p{i:02d}" for i in range(8)]
+        for name in names:
+            for tag, shade in (("new", 200), ("old", 60)):
+                Image.new("RGBA", (40, 40), (shade, shade, shade, 255)).save(root / "renders" / f"{name}-{tag}p.png")
+        Image.new("RGB", (40, 40), (128, 90, 70)).save(root / "photo.png")
         old_out, old_upright = score_run.OUT, score_run.upright
-        score_run.OUT = pathlib.Path(tmp)
-        score_run.upright = lambda path: pathlib.Path(tmp) / "upright" / "x.png"
+        score_run.OUT, score_run.upright = root, lambda path: root / "photo.png"
         try:
-            page = score_run.review_page("new", "old", [{"name": f"p{i:02d}", "photo": "x.jpg"} for i in range(8)])
+            page = score_run.review_page("new", "old", [{"name": n, "photo": "x.jpg"} for n in names])
         finally:
             score_run.OUT, score_run.upright = old_out, old_upright
         text = page.read_text(encoding="utf-8")
     keys = [base64.b64decode(k).decode() for k in __import__("re").findall(r'data-key="([^"]+)"', text)]
     assert len(keys) == 8 and set(keys) == {"left", "right"}, keys     # shuffled, not always one side
-    assert "p00-newp.png" in text and "p00-oldp.png" in text and ">new<" not in text, "the page names the new build"
-    print("ok  review page: both builds per face, sides shuffled, the new one hidden")
+    assert text.count("data:image/jpeg;base64,") == 8 * 3, "a face lacks its photo or a build, in the page"
+    assert "-newp" not in text and "-oldp" not in text, "the page names the builds"
+    print("ok  review page: both builds per face in the page, sides shuffled, the new one hidden")
 
 
 if __name__ == "__main__":

@@ -329,8 +329,22 @@ def review_page(tag: str, base: str, faces: list[dict]) -> pathlib.Path:
     """A blind before/after page: per face the photo and the two builds at the
     photo's pose, in an order shuffled per face (seeded, so the page is the
     same on a rerun); the viewer picks the closer one, and only then sees
-    which was the new build, with the tally."""
+    which was the new build, with the tally. The images are in the page, so
+    it opens anywhere as one file."""
     import base64
+    import io
+    from PIL import Image
+
+    def inline(path: pathlib.Path) -> str:
+        im = Image.open(path).convert("RGBA")
+        flat_im = Image.new("RGBA", im.size, (38, 41, 47, 255))
+        flat_im.alpha_composite(im)
+        flat_im = flat_im.convert("RGB")
+        flat_im.thumbnail((700, 700))
+        buf = io.BytesIO()
+        flat_im.save(buf, "JPEG", quality=88)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
     import hashlib
     import html
     folder = OUT / "review"
@@ -339,12 +353,12 @@ def review_page(tag: str, base: str, faces: list[dict]) -> pathlib.Path:
     for face in faces:
         name = face["name"]
         new_left = hashlib.md5(f"{tag}/{base}/{name}".encode()).digest()[0] % 2 == 0
-        pair = [f"../renders/{name}-{tag}p.png", f"../renders/{name}-{base}p.png"]
+        pair = [inline(OUT / "renders" / f"{name}-{tag}p.png"), inline(OUT / "renders" / f"{name}-{base}p.png")]
         left, right = pair if new_left else pair[::-1]
-        photo = pathlib.Path("..") / upright(HERE / face["photo"]).relative_to(OUT)
+        photo = inline(upright(HERE / face["photo"]))
         key = base64.b64encode(("left" if new_left else "right").encode()).decode()
         cards.append(f'''<section data-key="{key}" data-name="{html.escape(name)}">
-  <figure><img src="{photo.as_posix()}" alt="photo"><figcaption>photo</figcaption></figure>
+  <figure><img src="{photo}" alt="photo"><figcaption>photo</figcaption></figure>
   <figure><img src="{left}" alt="A"><figcaption>A</figcaption></figure>
   <figure><img src="{right}" alt="B"><figcaption>B</figcaption></figure>
   <div class="pick"><button data-side="left">A looks more like them</button>
