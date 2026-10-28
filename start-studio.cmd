@@ -15,7 +15,8 @@ if not exist "assets\face_landmarker.task" (
 )
 
 echo Starting avatar studio. Open http://localhost:8777
-echo Teammates on the same network use this PC's address, shown below.
+echo It listens on this PC only. For teammates on the same network, run
+echo   .venv\Scripts\python.exe app.py --lan
 echo.
-.venv\Scripts\python.exe app.py
+.venv\Scripts\python.exe app.py %*
 pause

@@ -1,0 +1,21 @@
+# Free on a public repository. Uses no photos, assets, models or keys:
+# premerge.py --ci checks nothing private is tracked, everything compiles and
+# the asset-free checks pass. The full checks need the assets: run
+# `python premerge.py` on the PC that has them.
+name: check
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "mediapipe<1" numpy pillow trimesh flask scipy pygltflib opencv-python-headless
+      - run: python premerge.py --ci
