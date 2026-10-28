@@ -354,7 +354,7 @@ def stress(tag: str, people: list[dict], skip_build: bool = False, workers: int 
     def run(job):
         face, kind, stem, path, expect = job
         glb = OUT / f"{tag}-{stem}.glb"
-        if not skip_build:
+        if not skip_build or not glb.with_suffix(".json").exists():     # skipped only where already built
             env = {**os.environ, "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "PYTHONPATH": str(HERE)}
             done = subprocess.run([sys.executable, str(HERE / "compose.py"), str(path), "-o", str(glb),
                                    "--gender", face.get("gender", "male")],
