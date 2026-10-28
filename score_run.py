@@ -62,9 +62,12 @@ JSON list in data/testset/, git-ignored:
     "consent_id": "c01", "split": "dev",
     "sides": ["data/testset/p01/left35.jpg", "data/testset/p01/right35.jpg"],
     "held_out": "data/testset/p01/left20.jpg",
-    "others": ["data/testset/p01/o1.jpg", "data/testset/p01/o2.jpg"]}, ...]
+    "others": ["data/testset/p01/o1.jpg", "data/testset/p01/o2.jpg"],
+    "teeth": "data/testset/p01/smile.jpg"}, ...]
 `others` and `held_out` are scored against, never built from; `sides` are
 turned photos built from (compose.py --side, as guided capture sends them).
+`teeth`, a photo with the teeth showing, is built on its own (TAG-NAME@teeth)
+and gives the face its teeth_dE, which a closed mouth cannot.
 Keep them apart, or the score judges the avatar on its own input. A face
 whose consent_id is missing from data/testset/consent.csv, withdrawn, without
 the "score" scope or past its retain_until date is left out, and said so.
@@ -210,6 +213,11 @@ def build(tag: str, face: dict) -> str:
     if run.returncode:
         raise RuntimeError(f"{face['name']} did not build:\n{run.stderr[-2000:]}")
     return face["name"]
+
+
+def teeth_face(face: dict) -> dict:
+    """The face's teeth photo as a face of its own, to build and render."""
+    return {"name": f"{face['name']}@teeth", "photo": face["teeth"], "gender": face.get("gender", "male")}
 
 
 def upright(path: pathlib.Path) -> pathlib.Path:
@@ -648,6 +656,10 @@ def score(tag: str, faces: list[dict]) -> dict:
         row["hair"] = None if row["hair"] is None else round(row["hair"], 1)
         row.update({k: None if v is None else round(v, 3)
                     for k, v in (appearance_error(flat(photo), render_p) or {}).items()})
+        teeth_png = OUT / "renders" / f"{name}@teeth-{tag}p.png"
+        if face.get("teeth") and teeth_png.exists():
+            got = (appearance_error(flat(upright(HERE / face["teeth"])), flat(teeth_png)) or {}).get("teeth_dE")
+            row["teeth_dE"] = None if got is None else round(got, 3)
         out[name] = row
     return out
 
@@ -779,14 +791,16 @@ def main() -> int:
     began = time.time()
     if not args.skip_build:
         with ThreadPoolExecutor(args.workers) as pool:
-            for name in pool.map(lambda f: build(args.tag, f), faces):
+            for name in pool.map(lambda f: build(args.tag, f), faces + [teeth_face(f) for f in people if f.get("teeth")]):
                 print(f"built {name}", flush=True)
     if not args.skip_render:
         from render import render
         render([(OUT / f"{args.tag}-{f['name']}.glb", OUT / "renders" / f"{f['name']}-{args.tag}{v}.png", v == "p")
                 for f in faces for v in "pl"] +
                [(held_glb(args.tag, f), OUT / "renders" / f"{f['name']}-{args.tag}h.png", True)
-                for f in people if f.get("held_out")])
+                for f in people if f.get("held_out")] +
+               [(OUT / f"{args.tag}-{f['name']}@teeth.glb", OUT / "renders" / f"{f['name']}@teeth-{args.tag}p.png", True)
+                for f in people if f.get("teeth")])
     scores = score(args.tag, faces)
     (OUT / "scores").mkdir(parents=True, exist_ok=True)
     if args.noise:
