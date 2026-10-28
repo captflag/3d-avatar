@@ -88,6 +88,25 @@ def check_rubric():
     print("ok  rubric: bars read the right way round, 80% of faces must clear each")
 
 
+def check_robustness():
+    scores = {"p01": {"identity_p": 0.55}, "p02": {"identity_p": 0.50}}
+    good = {"p01~dark": {"kind": "dark", "result": "built", "expect": "photo is dark",
+                         "advice": ["The photo is dark (the face at 40 of 255)"]},
+            "p01~jpeg-30": {"kind": "jpeg 30", "result": "built", "expect": None, "advice": [], "identity_p": 0.53},
+            "p02~small": {"kind": "small", "result": "refused", "expect": "pixels"}}
+    verdict, text = score_run.robustness(scores, good)
+    assert verdict == "8 reached", text
+    crashed = {**good, "p02~alpha": {"kind": "alpha", "result": "crashed", "error": "Traceback"}}
+    assert score_run.robustness(scores, crashed)[0] == "below 8"
+    missed = {**good, "p02~blurred": {"kind": "blurred", "result": "built", "expect": "blurred", "advice": []}}
+    verdict, text = score_run.robustness(scores, missed)
+    assert verdict == "below 8" and "p02~blurred" in text, text
+    lost = {**good, "p02~tilted-15": {"kind": "tilted 15", "result": "built", "expect": None, "advice": [], "identity_p": 0.30},
+            "p02~alpha": {"kind": "alpha", "result": "built", "expect": None, "advice": [], "identity_p": 0.20}}
+    assert score_run.robustness(scores, lost)[0] == "below 8"      # two of three builds lost over 0.05
+    print("ok  robustness: a crash, a missed warning or builds that lose the face keep it below 8")
+
+
 def check_review_page():
     import base64
     from PIL import Image
@@ -118,4 +137,5 @@ if __name__ == "__main__":
     check_spreads()
     check_consent()
     check_rubric()
+    check_robustness()
     check_review_page()

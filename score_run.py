@@ -42,6 +42,12 @@ spreads, and identity at the pose may not fall by more than its spread. From
 ten people up, a sign test and a Wilcoxon test (p < 0.05) must agree as well;
 below ten the verdict says it is provisional. Exits 1 when the gate fails.
 
+With --stress each photo is also built degraded (STRESS_KINDS: small, blurred,
+dark, lit from one side, behind dark glasses, two faces, JPEG 30, tilted,
+transparent, a phone's EXIF rotation) into out/stress/, and robustness is
+judged: no crash, the advice naming each degradation it should, every clean
+face recognisable, and little lost where a degraded photo must build as well.
+
 Every run also prints each area against what an 8 means (RUBRIC: fixed bars,
 and the share of faces that must clear them), and with --review a blind
 before/after page, out/review/TAG-vs-BASE.html: the two builds per face in a
@@ -113,6 +119,11 @@ RUBRIC = {
     "face shape": [("lm_held", 3.0), ("lm_front_outline", 3.0), ("lm_front_nose", 1.5)],
 }
 RUBRIC_SHARE = 0.8
+# Robustness's 8: every degraded photo builds or is refused cleanly (no crash),
+# every one that should be warned about is, every clean face is recognisably
+# the person, and what degrading costs a photo that is built stays small.
+STRESS_IDENTITY = 0.45
+STRESS_DROP = 0.05
 PROVISIONAL_BELOW = 10
 
 
@@ -261,6 +272,137 @@ def landmark_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     return out
 
 
+def _degrade(kind: str, photo, marks):
+    """One stress copy of the photo (PIL, upright): (image, the advice word it
+    must draw, or None where it must build as well as the photo does)."""
+    from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
+    w, h = photo.size
+    face_px = abs(marks[454].x - marks[234].x) * w
+    if kind == "small":                           # a face 150 pixels across
+        k = 150.0 / face_px
+        return photo.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS), "pixels"
+    if kind == "blurred":
+        return photo.filter(ImageFilter.GaussianBlur(face_px / 40)), "blurred"
+    if kind == "dark":
+        return ImageEnhance.Brightness(photo).enhance(0.22), "photo is dark"
+    if kind == "one side lit":
+        out = photo.copy()
+        out.paste(ImageEnhance.Brightness(photo.crop((0, 0, w // 2, h))).enhance(0.4), (0, 0))
+        return out, "one side"
+    if kind == "dark glasses":
+        out = photo.copy()
+        draw = ImageDraw.Draw(out)
+        for ring in ([33, 133, 159, 145], [263, 362, 386, 374]):
+            xs = [marks[i].x * w for i in ring]
+            ys = [marks[i].y * h for i in ring]
+            cx, cy, r = sum(xs) / 4, sum(ys) / 4, 0.75 * (max(xs) - min(xs))
+            draw.ellipse((cx - r, cy - 0.7 * r, cx + r, cy + 0.7 * r), fill=(18, 18, 22))
+        return out, "covered"
+    if kind == "two faces":
+        out = Image.new("RGB", (2 * w, h))
+        out.paste(photo, (0, 0))
+        out.paste(photo, (w, 0))
+        return out, None                          # built from one of them; the studio warns
+    if kind == "jpeg 30":
+        import io
+        buf = io.BytesIO()
+        photo.save(buf, "JPEG", quality=30)
+        return Image.open(io.BytesIO(buf.getvalue())).convert("RGB"), None
+    if kind == "tilted 15":
+        return photo.rotate(15, resample=Image.BICUBIC, expand=True, fillcolor=(128, 128, 128)), None
+    if kind == "alpha":
+        out = photo.convert("RGBA")
+        alpha = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(alpha).rectangle((w // 10, 0, w - w // 10, h), fill=255)
+        out.putalpha(alpha)
+        return out, None
+    raise KeyError(kind)
+
+
+STRESS_KINDS = ["small", "blurred", "dark", "one side lit", "dark glasses", "two faces", "jpeg 30",
+                "tilted 15", "alpha", "phone rotated"]
+
+
+def stress(tag: str, people: list[dict], skip_build: bool = False, workers: int = 3) -> dict:
+    """Each test photo degraded as phones and people degrade them (STRESS_KINDS),
+    built one by one: per person and kind, whether it built, crashed or was
+    refused, the build's advice, and, where it must build as well as the photo
+    does, the identity of its render at the pose against the clean photo."""
+    import identity_score as ids
+    from PIL import Image
+    from generate import fit_face
+    from render import render
+    folder = OUT / "stress"
+    folder.mkdir(parents=True, exist_ok=True)
+    jobs = []
+    for face in people:
+        _, marks, _, photo = fit_face(HERE / face["photo"])
+        for kind in STRESS_KINDS:
+            stem = f"{face['name']}~{kind.replace(' ', '-')}"
+            if kind == "phone rotated":          # pixels turned, upright by the EXIF tag, as a phone saves it
+                exif = Image.Exif()
+                exif[0x0112] = 6                 # "rotate 90 clockwise to view"
+                path = folder / f"{stem}.jpg"
+                photo.rotate(90, expand=True).save(path, exif=exif.tobytes(), quality=92)
+                expect = None
+            else:
+                image, expect = _degrade(kind, photo, marks)
+                path = folder / f"{stem}.{'png' if image.mode == 'RGBA' else 'jpg'}"
+                image.save(path, **({} if image.mode == "RGBA" else {"quality": 92}))
+            jobs.append((face, kind, stem, path, expect))
+
+    def run(job):
+        face, kind, stem, path, expect = job
+        glb = OUT / f"{tag}-{stem}.glb"
+        if not skip_build:
+            env = {**os.environ, "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "PYTHONPATH": str(HERE)}
+            done = subprocess.run([sys.executable, str(HERE / "compose.py"), str(path), "-o", str(glb),
+                                   "--gender", face.get("gender", "male")],
+                                  cwd=HERE, env=env, capture_output=True, text=True)
+            if done.returncode not in (0, 1):
+                return stem, {"kind": kind, "result": "crashed", "error": done.stderr[-400:]}
+            if done.returncode == 1:
+                return stem, {"kind": kind, "result": "refused", "expect": expect}
+        info = json.loads(glb.with_suffix(".json").read_text(encoding="utf-8"))
+        return stem, {"kind": kind, "result": "built", "expect": expect, "advice": info.get("advice", [])}
+
+    with ThreadPoolExecutor(workers) as pool:
+        out = dict(pool.map(run, jobs))
+    kept = [stem for stem, r in out.items() if r["result"] == "built" and r["expect"] is None]
+    render([(OUT / f"{tag}-{stem}.glb", OUT / "renders" / f"{stem}-{tag}p.png", True) for stem in kept])
+    photos = {face["name"]: upright(HERE / face["photo"]) for face in people}
+    for stem in kept:
+        out[stem]["identity_p"] = round(float(ids.similarity(photos[stem.split("~")[0]],
+                                                             OUT / "renders" / f"{stem}-{tag}p.png")), 4)
+    return out
+
+
+def robustness(scores: dict, stressed: dict) -> tuple[str, str]:
+    """Robustness against its 8 (see RUBRIC's note): the verdict and its bars."""
+    rows = {n: r for n, r in scores.items() if "~" not in n}
+    crashed = [s for s, r in stressed.items() if r["result"] == "crashed"]
+    warned = [s for s, r in stressed.items() if r.get("expect")]
+    missed = [s for s in warned if stressed[s]["result"] == "built"
+              and not any(stressed[s]["expect"] in a for a in stressed[s]["advice"])]
+    clean = [r.get("identity_p") for r in rows.values() if r.get("identity_p") is not None]
+    kept = [(s, r) for s, r in stressed.items() if r["result"] == "built" and not r.get("expect")]
+    drops = [rows[s.split("~")[0]]["identity_p"] - r["identity_p"] for s, r in kept
+             if r.get("identity_p") is not None and rows.get(s.split("~")[0], {}).get("identity_p") is not None]
+    bars = [("no crash", 1.0 - len(crashed) / max(len(stressed), 1), 1.0),
+            ("warned when it should be", 1.0 - len(missed) / max(len(warned), 1), 1.0),
+            (f"clean identity >= {STRESS_IDENTITY}", float(np.mean([c >= STRESS_IDENTITY for c in clean])) if clean else None, RUBRIC_SHARE),
+            (f"degrading costs <= {STRESS_DROP}", float(np.mean([d <= STRESS_DROP for d in drops])) if drops else None, RUBRIC_SHARE)]
+    measured = [(name, share, need) for name, share, need in bars if share is not None]
+    verdict = ("8 reached" if len(measured) == len(bars) and all(share >= need for _, share, need in measured)
+               else "below 8")
+    text = "; ".join(f"{name}: {share:.0%}" if share is not None else f"{name}: not measured" for name, share, _ in bars)
+    if crashed:
+        text += f" (crashed: {', '.join(crashed)})"
+    if missed:
+        text += f" (not warned: {', '.join(missed)})"
+    return verdict, text
+
+
 def appearance_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     """Colour and hair against the photo, the render aligned onto it on the
     landmarks expressions hardly move. CIE 1976 colour differences (dE): the
@@ -299,7 +441,7 @@ def appearance_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     return out
 
 
-def rubric(scores: dict) -> str:
+def rubric(scores: dict, stressed: dict | None = None) -> str:
     """Each area against its bars (RUBRIC): per bar, the share of faces that
     clear it; the area passes when every bar is cleared by RUBRIC_SHARE."""
     rows = [row for name, row in scores.items() if "~" not in name]
@@ -318,7 +460,11 @@ def rubric(scores: dict) -> str:
         verdict = ("not measured" if not shares else
                    "8 reached" if len(shares) == len(bars) and min(shares) >= RUBRIC_SHARE else "below 8")
         lines.append(f"{area:16s} {verdict:14s} " + "; ".join(parts))
-    lines.append(f"{'robustness':16s} {'not measured':14s} the stress set is not built yet")
+    if stressed:
+        verdict, text = robustness(scores, stressed)
+        lines.append(f"{'robustness':16s} {verdict:14s} {text}")
+    else:
+        lines.append(f"{'robustness':16s} {'not measured':14s} run with --stress")
     lines.append(f"{'body':16s} {'not measured':14s} needs full-body photos in the set")
     if len(rows) < PROVISIONAL_BELOW:
         lines.append(f"(provisional: {len(rows)} faces, under {PROVISIONAL_BELOW})")
@@ -545,6 +691,8 @@ def main() -> int:
     parser.add_argument("--noise", action="store_true", help="also measure each score's spread per face")
     parser.add_argument("--set", type=pathlib.Path, default=TESTSET / "test-set.json")
     parser.add_argument("--split", default="dev", choices=["dev", "lockbox", "all"])
+    parser.add_argument("--stress", action="store_true",
+                        help="also build each photo degraded (STRESS_KINDS) and judge robustness")
     parser.add_argument("--review", action="store_true",
                         help="with --against: also write the blind before/after page, out/review/TAG-vs-BASE.html")
     parser.add_argument("--skip-build", action="store_true", help="render and score GLBs already built")
@@ -577,7 +725,11 @@ def main() -> int:
         if base_scores is None:
             print(f"no scores for {args.against}; score it first", file=sys.stderr)
     print(table(args.tag, scores, args.against, base_scores))
-    print(rubric(scores))
+    stressed = None
+    if args.stress:
+        stressed = stress(args.tag, people, args.skip_build, args.workers)
+        (OUT / "scores" / f"{args.tag}-stress.json").write_text(json.dumps(stressed, indent=1), encoding="utf-8")
+    print(rubric(scores, stressed))
     if args.review and args.against:
         print(f"blind review: {review_page(args.tag, args.against, people)}")
     print(f"{len(faces)} faces in {time.time() - began:.0f} s")
