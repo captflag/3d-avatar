@@ -45,6 +45,20 @@ def check_gate():
     print("ok  gate: keeps clear gains, drops losses, one bad face and identity drops")
 
 
+def check_level():
+    noise = {f"p{i:02d}": {"identity_p": 0.02, "lm_held": 0.2} for i in range(4)}
+    base = {n: {"identity_p": 0.5, "lm_held": 3.0} for n in noise}
+    assert score_run.level({n: dict(r) for n, r in base.items()}, base, noise)      # unchanged: kept
+    one = {n: dict(r) for n, r in base.items()}
+    one["p02"]["lm_held"] = 3.5                                                     # one face 2.5 spreads worse
+    assert not score_run.level(one, base, noise)
+    drift = {n: {"identity_p": 0.48, "lm_held": 3.0} for n in base}                 # all a spread worse
+    assert not score_run.level(drift, base, noise)
+    better = {n: {"identity_p": 0.55, "lm_held": 2.0} for n in base}
+    assert score_run.level(better, base, noise)
+    print("ok  gate level: an unchanged or better run kept, one face or a drift worse dropped")
+
+
 def check_spreads():
     got = score_run.spreads({"p01": {"x": 1.0}, "p01~0": {"x": 1.2}, "p01~1": {"x": 0.8}, "p02": {"x": 2.0}})
     assert abs(got["p01"]["x"] - 0.2) < 1e-6 and "x" not in got["p02"], got
@@ -134,6 +148,7 @@ def check_review_page():
 
 if __name__ == "__main__":
     check_gate()
+    check_level()
     check_spreads()
     check_consent()
     check_rubric()
