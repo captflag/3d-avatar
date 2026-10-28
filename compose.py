@@ -88,6 +88,8 @@ MOUTH_LINING = 0.015
 # The ARKit shapes that part the lips, scaled together so the avatar's mouth
 # opens as far as the photo's (open_as_photo).
 OPENING = ("jawOpen", "mouthLowerDown", "mouthUpperUp")
+# The shapes that part the lips alone, the teeth left together.
+LIPS_APART = ("mouthUpperUpLeft", "mouthUpperUpRight", "mouthLowerDownLeft", "mouthLowerDownRight")
 # Cloth sheen: colour (linear RGB) and roughness. At 0.35 it washed navy out
 # to slate grey.
 CLOTH_SHEEN = ((0.12, 0.12, 0.12), 0.8)
@@ -521,26 +523,47 @@ def open_as_photo(expression: dict, vertices: np.ndarray, shapes: np.ndarray, ma
     against the photo's 0.149, both rows of teeth and the tongue showing
     under a thick rolled upper lip. The expression the fit took off instead
     undershoots one (REALISM-GAP.md, route 7a). Measured on the mesh, so no
-    render is needed; `marks` are the landmarks' vertices (morph.lip_corr)."""
+    render is needed; `marks` are the landmarks' vertices (morph.lip_corr).
+
+    A talking mouth can be scored with no opening at all (the test set's
+    first face, smiling with the teeth showing: no jawOpen, mouthUpperUp
+    0.02), and scaled it stayed shut. Where the scores scaled cannot part the
+    lips as far, the lips themselves are parted (LIPS_APART), the teeth left
+    together as a talking mouth has them; the jaw opens only past that.
+    Opening the jaw first showed the mouth's red inside where the photo has
+    teeth."""
     w, h = photo_size
     at = lambda i: np.array([landmarks[i].x * w, landmarks[i].y * h])
     wanted = np.linalg.norm(at(13) - at(14)) / np.linalg.norm(at(33) - at(263))
     names = list(morph.ARKIT_NAMES)
+    expression = {name: 0.0 for name in ("jawOpen", *LIPS_APART)} | expression
 
-    def gap(scale):
+    def weights(scale, lips=0.0, jaw=0.0):
+        out = {name: (min(1.0, weight * scale) if name.startswith(OPENING) else weight)
+               for name, weight in expression.items()}
+        for name in LIPS_APART:
+            out[name] = max(out[name], lips)
+        out["jawOpen"] = max(out["jawOpen"], jaw)
+        return out
+
+    def gap(scale, lips=0.0, jaw=0.0):
         moved = vertices[marks[[13, 14, 33, 263]]].astype(np.float64)
-        for name, weight in expression.items():
-            k = min(1.0, weight * scale) if name.startswith(OPENING) else weight
+        for name, k in weights(scale, lips, jaw).items():
             moved = moved + k * shapes[names.index(name)][marks[[13, 14, 33, 263]]]
         return np.linalg.norm((moved[0] - moved[1])[:2]) / np.linalg.norm((moved[2] - moved[3])[:2])
 
-    lo, hi = 0.0, 3.0
-    for _ in range(30):
-        mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if gap(mid) < wanted else (lo, mid)
-    scale = (lo + hi) / 2
-    return {name: (min(1.0, weight * scale) if name.startswith(OPENING) else weight)
-            for name, weight in expression.items()}
+    def solve(f, hi):
+        lo = 0.0
+        for _ in range(30):
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if f(mid) < wanted else (lo, mid)
+        return (lo + hi) / 2
+
+    if gap(3.0) >= wanted:
+        return weights(solve(gap, 3.0))
+    if gap(3.0, 1.0) >= wanted:
+        return weights(3.0, solve(lambda lips: gap(3.0, lips), 1.0))
+    return weights(3.0, 1.0, solve(lambda jaw: gap(3.0, 1.0, jaw), 1.0))
 
 
 def expression_morphs(mesh, shapes: np.ndarray):
@@ -1150,10 +1173,20 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             dye = delight.albedo_for(top_rgb)
             outfit = [{**i, "recolour": {**i["recolour"], "top": [int(c) for c in dye]}}
                       if i.get("recolour") else i for i in outfit]
+        # And the trousers, where the photo shows them (appearance.trousers_colour).
+        bottom_rgb = appearance.trousers_colour(photo_rgb, landmarks, parts)
+        if bottom_rgb is not None:
+            dye = delight.albedo_for(bottom_rgb)
+            outfit = [{**i, "recolour": {**i["recolour"], "bottom": [int(c) for c in dye]}}
+                      if i.get("recolour", {}).get("bottom") else i for i in outfit]
 
     # Teeth and tongue go in every mouth, whatever is worn: hidden at rest,
     # and what an opened jaw shows.
     outfit = outfit + [items_by_id()[i] for i in ("teeth", "tongue") if i not in {o["id"] for o in outfit}]
+    # The teeth at the photo's own exposure where it shows them (appearance.teeth_colour).
+    tooth = appearance.teeth_colour(photo_rgb, landmarks)
+    if tooth is not None:
+        outfit = [{**i, "tooth_colour": [int(c) for c in tooth]} if i["category"] == "teeth" else i for i in outfit]
 
     worn, hair_rgb, curve, hair_comb = [], None, None, None
     brow_depth = facetexture.brow_depth(photo_rgb, landmarks)

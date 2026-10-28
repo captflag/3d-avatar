@@ -118,6 +118,33 @@ def sclera_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = No
     return _rgb(np.array([lightness, *(128.0 + NATURAL_WHITE)])).astype(np.float64)
 
 
+# The lips' inner edge (MediaPipe ids), and a tooth's natural hue as LAB a*,
+# b* offsets from neutral (the catalogue's tooth colour, 232 224 208).
+INNER_LIPS = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95]
+TOOTH_HUE = np.array([1.0, 9.0])
+
+
+def teeth_colour(photo_rgb: np.ndarray, landmarks):
+    """The teeth as the photo shows them (sRGB), or None where it shows too
+    little of them: the brighter half inside the inner lips, at the photo's
+    exposure, its hue held to a natural tooth's and its lightness to
+    SCLERA_L. The catalogue's fixed near-white rendered at L* 88 in a photo
+    whose teeth read 51 (the test set's first face, smiling)."""
+    if len(landmarks) <= 477:
+        return None
+    h, w = photo_rgb.shape[:2]
+    at = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in INNER_LIPS], np.int32)
+    inner = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(inner, [cv2.convexHull(at)], 1)
+    eye = np.hypot((landmarks[33].x - landmarks[263].x) * w, (landmarks[33].y - landmarks[263].y) * h)
+    if inner.sum() < 0.03 * eye ** 2:                      # a closed mouth: nothing to read
+        return None
+    pixels = _lab(photo_rgb[inner > 0])
+    bright = pixels[pixels[:, 0] >= np.median(pixels[:, 0])]
+    lightness = np.clip(np.median(bright[:, 0]) * 100 / 255, *SCLERA_L) * 255 / 100
+    return _rgb(np.array([lightness, *(128.0 + TOOTH_HUE)])).astype(np.float64)
+
+
 def white_balance(rgb: np.ndarray, cast: np.ndarray, strength: float = 0.6) -> np.ndarray:
     """`rgb` with `strength` of the measured cast taken out of every pixel."""
     lab = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
@@ -967,7 +994,39 @@ def clothing_colour(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None):
     if not len(ids) or hits.max() < 30:
         return None
     mine = cv2.erode((label == ids[hits.argmax()]).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
-    lab = _lab(photo_rgb[mine])
+    return _cloth_colour(_lab(photo_rgb[mine]))
+
+
+# Where trousers are, below the chin in face widths (cheek to cheek, about
+# 14 cm): from the hips (~4.5) to the knees (~7).
+TROUSERS_BAND = (4.5, 7.0)
+
+
+def trousers_colour(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None):
+    """The colour of the trousers, or None where the photo does not show
+    them: the segmenter's clothes between hips and knees, measured down from
+    the chin, no further out than the shoulders. Only the top was read, and
+    the trousers kept the outfit's own (grey jeans under the test set's first
+    face's black trousers)."""
+    if parts is None or len(landmarks) <= 454:
+        return None
+    h, w = parts.shape
+    chin_y = landmarks[152].y * h
+    face_w = abs(landmarks[454].x - landmarks[234].x) * w
+    cx = landmarks[152].x * w
+    top, bottom = (int(chin_y + k * face_w) for k in TROUSERS_BAND)
+    if top > h - 0.5 * face_w:
+        return None
+    band = np.zeros((h, w), bool)
+    band[top:min(bottom, h), max(int(cx - 1.5 * face_w), 0):int(cx + 1.5 * face_w)] = True
+    mine = cv2.erode(((parts == CLOTHES) & band).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    if mine.sum() < 0.5 * face_w ** 2:
+        return None
+    return _cloth_colour(_lab(photo_rgb[mine]))
+
+
+def _cloth_colour(lab: np.ndarray) -> np.ndarray:
+    """A piece of cloth's own colour from its pixels (LAB, OpenCV's scale)."""
     # The cloth's own colour, the largest of three colour groups: the
     # segmenter's cloth also takes in skin at a V-neck and the photo's frame,
     # and a median over all of it read ref-woman's white top as mid grey.

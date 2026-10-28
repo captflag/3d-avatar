@@ -1182,6 +1182,15 @@ def check_appearance():
     parts[0:30, 80:100], picture[0:30, 80:100] = appearance.CLOTHES, (30, 30, 150)
     top = appearance.clothing_colour(picture, marks, parts)
     assert top is not None and top[0] > 120 and top[2] < 60, f"read the wrong cloth: {top}"
+    # The trousers: cloth between hips and knees, none where the photo stops above them.
+    tall_parts, tall = np.zeros((400, 100), np.uint8), np.zeros((400, 100, 3), np.uint8)
+    tall_parts[80:400, 30:70], tall[80:400, 30:70] = appearance.CLOTHES, (150, 30, 30)
+    tall_parts[140:400, 30:70], tall[140:400, 30:70] = appearance.CLOTHES, (20, 20, 25)   # from the belt down
+    tall_marks = [P(x=0.5, y=0.5)] * 455
+    tall_marks[152], tall_marks[234], tall_marks[454] = P(x=0.5, y=0.15), P(x=0.4, y=0.1), P(x=0.6, y=0.1)
+    bottom = appearance.trousers_colour(tall, tall_marks, tall_parts)
+    assert bottom is not None and bottom.max() < 50, f"read the trousers as {bottom}"
+    assert appearance.trousers_colour(picture, marks, parts) is None, "read trousers off a head-and-shoulders photo"
 
     photo = HERE / "samples" / "portrait.jpg"
     if photo.exists() and appearance.SEGMENTER_TASK.exists():
