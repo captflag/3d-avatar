@@ -209,12 +209,48 @@ def expression_of(result) -> dict:
     return dict(sorted(scores.items(), key=lambda kv: -kv[1]))
 
 
-def generate_avatar(photo_path: pathlib.Path, out_path: pathlib.Path) -> dict:
+# Landmarks whose fused depth is not kept (MediaPipe's lip set): thin, moving
+# and read off a painted lip line, they stood a centimetre proud of a rendered
+# test head when fused (compose.py, which trusts their depth no further).
+LIPS = sorted({i for c in mp.tasks.vision.FaceLandmarksConnections.FACE_LANDMARKS_LIPS for i in (c.start, c.end)})
+# How many of the nearest other landmarks carry the depth fusion gave them to the lips.
+LIP_NEIGHBOURS = 8
+
+
+def with_sides(mesh: trimesh.Trimesh, photo_path: pathlib.Path, side_photos: list[pathlib.Path]) -> int:
+    """Put the depth the turned photos measure (views.fuse) into the face mesh,
+    as compose does for the full body; returns how many turned photos were
+    used. A turned photo with no face found in it is left out. The lips keep
+    the front photo's depth, moved by as much as fusion moved the landmarks
+    nearest them, so the mouth stays seated in the face around it."""
+    import views
+    sides = []
+    for side in side_photos:
+        try:
+            sides.append(views.view_of(side))
+        except NoFaceFound:
+            pass
+    if not sides:
+        return 0
+    front = np.asarray(mesh.vertices, dtype=np.float64)
+    fused = views.fuse([views.view_of(photo_path)] + sides)[0]
+    rest = np.setdiff1d(np.arange(len(front)), LIPS)
+    gap = np.linalg.norm(front[LIPS, None, :2] - front[None, rest, :2], axis=2)
+    near = rest[np.argsort(gap, axis=1)[:, :LIP_NEIGHBOURS]]
+    fused[LIPS, 2] = front[LIPS, 2] + (fused[near, 2] - front[near, 2]).mean(axis=1)
+    mesh.vertices = fused
+    return len(sides)
+
+
+def generate_avatar(photo_path: pathlib.Path, out_path: pathlib.Path,
+                    side_photos: list[pathlib.Path] | None = None) -> dict:
     """Fit a face from `photo_path`, write `out_path` (.glb) and its sidecar
-    JSON, and return the sidecar contents. Raises NoFaceFound if there is no
-    face in the photo."""
+    JSON, and return the sidecar contents. `side_photos`, the head turned
+    each way, give the face its measured depth (with_sides). Raises
+    NoFaceFound if there is no face in the photo."""
     mesh, landmarks, result, photo = fit_face(photo_path)
     faces = load_canonical_faces()
+    turned = with_sides(mesh, photo_path, side_photos or [])
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     mesh.export(out_path)
@@ -226,6 +262,7 @@ def generate_avatar(photo_path: pathlib.Path, out_path: pathlib.Path) -> dict:
         "triangles": int(len(faces)),
         "size_kb": round(out_path.stat().st_size / 1024),
         "expression": expression_of(result),
+        "side_photos": turned,
     }
     out_path.with_suffix(".json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     return info
@@ -235,6 +272,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build a 3D face from one photo.")
     parser.add_argument("photo", type=pathlib.Path)
     parser.add_argument("-o", "--out", type=pathlib.Path, required=True, help="output .glb")
+    parser.add_argument("--side", type=pathlib.Path, action="append",
+                        help="a photo with the head turned to one side (repeatable)")
     args = parser.parse_args()
 
     if not args.photo.exists():
@@ -242,7 +281,7 @@ def main() -> int:
         return 2
 
     try:
-        info = generate_avatar(args.photo, args.out)
+        info = generate_avatar(args.photo, args.out, args.side)
     except NoFaceFound:
         print("no face found in the photo", file=sys.stderr)
         return 1

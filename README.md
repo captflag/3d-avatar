@@ -18,13 +18,14 @@ card is a render of the avatar itself, badged `full body` or `face only`, so you
 can see at a glance what each run produced. Opening the review page with no model
 named shows the newest avatar.
 
-There are two ways in. **Choose from gallery** takes any photo. **Guided
-capture** takes three, each checked before it is taken against the limits the
-pipeline was measured to need: the face straight on, then the head turned to the
-person's left and to their right, 30-45 degrees. The turned photos measure how
-far the nose, lips and chin stand out, which one photo only guesses, and paint
-the cheeks' sides and the jaw towards the ears, which the front photo never sees
-(`views.py`; full body only). The checks:
+There are two ways in. **Guided capture**, the first button, takes three photos,
+each checked before it is taken against the limits the pipeline was measured to
+need: the face straight on, then the head turned to the person's left and to
+their right, 30-45 degrees. **Choose a photo** takes any one photo. The turned
+photos measure how far the nose, lips and chin stand out, which one photo only
+guesses (`views.py`, for the face mesh and the full body alike), and on a
+full-body avatar paint the cheeks' sides and the jaw towards the ears, which the
+front photo never sees. The checks:
 - the face 500+ pixels across (400 turned), twice what the photo advice asks;
 - facing the camera, or turned the asked way by 30-45 degrees (MediaPipe reads
   that as 25-40), chin level and head upright;

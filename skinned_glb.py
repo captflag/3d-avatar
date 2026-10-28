@@ -57,6 +57,7 @@ class Part:
         self.sheen = None
         self.ior = None                 # KHR_materials_ior, where not glTF's 1.5
         self.anisotropy = None          # (strength, rotation in radians): KHR_materials_anisotropy
+        self.clearcoat = None           # (strength, roughness): KHR_materials_clearcoat
 
 
 class _Buffer:
@@ -395,6 +396,12 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
                 "anisotropyStrength": float(strength), "anisotropyRotation": float(rotation)}
             if "KHR_materials_anisotropy" not in gltf.extensionsUsed:
                 gltf.extensionsUsed.append("KHR_materials_anisotropy")
+        if part.clearcoat is not None:
+            coat, coat_roughness = part.clearcoat
+            material.extensions["KHR_materials_clearcoat"] = {
+                "clearcoatFactor": float(coat), "clearcoatRoughnessFactor": float(coat_roughness)}
+            if "KHR_materials_clearcoat" not in gltf.extensionsUsed:
+                gltf.extensionsUsed.append("KHR_materials_clearcoat")
         if part.sheen is not None:
             colour, sheen_roughness = part.sheen
             material.extensions["KHR_materials_sheen"] = {
