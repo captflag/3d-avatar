@@ -1071,7 +1071,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                                        expression_of(result), front,
                                                        outline_trust, depth=depth_trust)
     shape_weights = morph.lip_volume(shape_weights, shape_names, base, corr, person)
-    vertices = morph.apply(base, shape_weights)
+    # The crown kept round above the hairline (morph.apply).
+    vertices = morph.apply(base, shape_weights, hairline=float(base[corr[10], 1]))
     shape_fit = morph.explained(base, corr, person, average, shape_weights, expression, front)
     # The lips' and eyelids' shape the targets could not reach, free-form.
     # Only those: corrected everywhere, the nose followed MediaPipe's own nose
