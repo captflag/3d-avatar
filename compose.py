@@ -1356,18 +1356,25 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         # laugh.
         photo_face = open_as_photo(photo_face, vertices, face_shapes, morph.lip_corr(base, corr),
                                    landmarks, (pw, ph))
-    # And the mouth then put on the photo's own (morph.photo_mouth), shown
-    # with the photo's expression.
-    on_skin = np.zeros(len(vertices), bool)
-    on_skin[np.unique(groups["body"])] = True
-    teeth = next(m for item, m in worn if item["category"] == "teeth")
-    teeth_moves = expression_morphs(teeth, face_shapes)
-    laughing_teeth = np.asarray(teeth.vertices, dtype=np.float64)
-    if teeth_moves is not None:
-        laughing_teeth = laughing_teeth + sum(w * teeth_moves[morph.ARKIT_NAMES.index(k)] for k, w in photo_face.items())
-    face_shapes = np.concatenate([face_shapes, morph.photo_mouth(
-        vertices, face_shapes, photo_face, morph.lip_corr(base, corr), person, on_skin, laughing_teeth)[None]])
-    photo_face["photoMouth"] = 1.0
+    # And a laughing mouth then put on the photo's own (morph.photo_mouth),
+    # shown with the photo's expression. Not a closed one: the fit has put
+    # its lips at rest already, and pulled again they moved off the photo's
+    # (the test set's first face, relaxed: mouth landmarks 1.9 -> 4.0% of the
+    # eye spacing off, nose 0.7 -> 2.1%). The target stays, empty, so every
+    # file carries the same blendshapes.
+    photo_mouth = np.zeros_like(vertices, dtype=np.float32)
+    if mouth_filled:
+        on_skin = np.zeros(len(vertices), bool)
+        on_skin[np.unique(groups["body"])] = True
+        teeth = next(m for item, m in worn if item["category"] == "teeth")
+        teeth_moves = expression_morphs(teeth, face_shapes)
+        laughing_teeth = np.asarray(teeth.vertices, dtype=np.float64)
+        if teeth_moves is not None:
+            laughing_teeth = laughing_teeth + sum(w * teeth_moves[morph.ARKIT_NAMES.index(k)] for k, w in photo_face.items())
+        photo_mouth = morph.photo_mouth(vertices, face_shapes, photo_face, morph.lip_corr(base, corr), person,
+                                        on_skin, laughing_teeth)
+        photo_face["photoMouth"] = 1.0
+    face_shapes = np.concatenate([face_shapes, photo_mouth[None]])
     # Normals from the whole skin, not from each part's own triangles: split
     # at the neck, each side averaged only its own, and light broke along the
     # seam in angular patches under the ear.
