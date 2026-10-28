@@ -73,7 +73,41 @@ def check_consent():
     print("ok  consent: withdrawn, expired, unscoped and unregistered faces left out")
 
 
+def check_rubric():
+    assert score_run.lower_better("hair") and score_run.lower_better("hair_dE") and score_run.lower_better("lm_held")
+    assert not score_run.lower_better("hair_iou") and not score_run.lower_better("identity_p")
+    good = {"skin_dE": 3.0, "hair_iou": 0.8, "hair_dE": 5.0, "hair": 10.0}
+    rows = {f"p{i:02d}": dict(good) for i in range(5)}
+    rows["p04"]["hair_iou"] = 0.5                       # one face in five misses: 80% still clears
+    text = score_run.rubric(rows)
+    line = lambda area: next(l for l in text.splitlines() if l.startswith(area))
+    assert "8 reached" in line("skin and colour") and "8 reached" in line("hair"), text
+    assert "not measured" in line("likeness") and "provisional" in text, text
+    rows["p03"]["hair_iou"] = 0.5                       # two in five: 60%, below
+    assert "below 8" in score_run.rubric(rows).splitlines()[[l.split()[0] for l in text.splitlines()].index("hair")]
+    print("ok  rubric: bars read the right way round, 80% of faces must clear each")
+
+
+def check_review_page():
+    import base64
+    with tempfile.TemporaryDirectory() as tmp:
+        old_out, old_upright = score_run.OUT, score_run.upright
+        score_run.OUT = pathlib.Path(tmp)
+        score_run.upright = lambda path: pathlib.Path(tmp) / "upright" / "x.png"
+        try:
+            page = score_run.review_page("new", "old", [{"name": f"p{i:02d}", "photo": "x.jpg"} for i in range(8)])
+        finally:
+            score_run.OUT, score_run.upright = old_out, old_upright
+        text = page.read_text(encoding="utf-8")
+    keys = [base64.b64decode(k).decode() for k in __import__("re").findall(r'data-key="([^"]+)"', text)]
+    assert len(keys) == 8 and set(keys) == {"left", "right"}, keys     # shuffled, not always one side
+    assert "p00-newp.png" in text and "p00-oldp.png" in text and ">new<" not in text, "the page names the new build"
+    print("ok  review page: both builds per face, sides shuffled, the new one hidden")
+
+
 if __name__ == "__main__":
     check_gate()
     check_spreads()
     check_consent()
+    check_rubric()
+    check_review_page()

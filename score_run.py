@@ -20,6 +20,10 @@ process per face), renders it at the photo's head pose and level
              (lm_held), rendered at that photo's own head pose. The held-out
              photo is never built from, so it judges shape the front photo
              cannot fake.
+  skin_dE,   colour against the photo, aligned on the face: the cheeks'
+  mouth_dE,  median colours, per pixel over the mouth, the hair's median
+  hair_dE    colours (CIE 1976 dE; under about 2 is unnoticeable, 5 just so).
+  hair_iou   how far the hair above the brows overlaps the photo's (0-1).
   hair       the angle between the strands the photo shows and those the
              render shows, aligned on the face, where both read clearly
              (0 = same way, 45 = unrelated, 90 = across). None where the hair
@@ -37,6 +41,11 @@ the mean must improve, no face may get worse by more than 2 of its own
 spreads, and identity at the pose may not fall by more than its spread. From
 ten people up, a sign test and a Wilcoxon test (p < 0.05) must agree as well;
 below ten the verdict says it is provisional. Exits 1 when the gate fails.
+
+Every run also prints each area against what an 8 means (RUBRIC: fixed bars,
+and the share of faces that must clear them), and with --review a blind
+before/after page, out/review/TAG-vs-BASE.html: the two builds per face in a
+shuffled order, picked by eye before it shows which was new.
 
 The test set (TESTSET.md has the photo protocol and the consent form) is a
 JSON list in data/testset/, git-ignored:
@@ -78,8 +87,32 @@ STABLE = [168, 6, 1, 2, 10, 152, 234, 454, 33, 263]
 # MediaPipe's own landmark regions, for the per-region shape error.
 REGIONS = {"outline": ["FACE_OVAL"], "nose": ["NOSE"], "eyes": ["LEFT_EYE", "RIGHT_EYE"],
            "mouth": ["LIPS"], "brows": ["LEFT_EYEBROW", "RIGHT_EYEBROW"]}
+# Cheeks, for the skin's colour: below each eye, clear of nose and mouth; and
+# the mouth's outline (MediaPipe ids).
+CHEEKS = [[50, 205, 187, 123, 116, 117, 118, 101], [280, 425, 411, 352, 345, 346, 347, 330]]
+MOUTH = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146]
 # Scores where lower is better; the rest are better higher.
-LOWER = ("hair", "lm_")
+LOWER = ("lm_", "skin_dE", "mouth_dE", "hair_dE")
+lower_better = lambda metric: metric == "hair" or metric.startswith(LOWER)   # hair: the strand angle; not hair_iou
+# What an 8 is, per area: each score's bar, and the share of faces that must
+# clear every bar of the area. Fixed before the baseline (2026-10-28) so a
+# result cannot move them; change one only with the reason written here.
+#   likeness: as close as another photo of the person (real same-person pairs
+#     scored 0.48-0.67 on this repo's photos), and closer to them than to anyone else.
+#   skin: the cheeks' colour within a just-noticeable difference of the photo's.
+#   mouth: the lips where the photo has them, and the mouth's colour, aligned.
+#   hair: the cut's outline, its colour and the way it runs.
+#   face shape: landmarks on the photo's within these shares of the eye spacing.
+# Robustness (the stress set) and body (full-body photos) are not measured
+# here yet, and show as such.
+RUBRIC = {
+    "likeness": [("identity_p", 0.50), ("others_p", 0.45), ("rank1", 1.0)],
+    "skin and colour": [("skin_dE", 5.0)],
+    "mouth": [("lm_front_mouth", 3.0), ("mouth_dE", 15.0)],
+    "hair": [("hair_iou", 0.75), ("hair_dE", 8.0), ("hair", 20.0)],
+    "face shape": [("lm_held", 3.0), ("lm_front_outline", 3.0), ("lm_front_nose", 1.5)],
+}
+RUBRIC_SHARE = 0.8
 PROVISIONAL_BELOW = 10
 
 
@@ -228,6 +261,137 @@ def landmark_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     return out
 
 
+def appearance_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
+    """Colour and hair against the photo, the render aligned onto it on the
+    landmarks expressions hardly move. CIE 1976 colour differences (dE): the
+    cheeks' median colours (skin_dE), per pixel over the mouth (mouth_dE), the
+    hair's median colours (hair_dE); and how far the hair above the brows
+    overlaps the photo's (hair_iou, intersection over union)."""
+    import cv2
+    import appearance
+    pm, rm = landmarks(photo), landmarks(render)
+    if pm is None or rm is None:
+        return None
+    h, w = photo.shape[:2]
+    fit, _ = cv2.estimateAffinePartial2D(rm[STABLE].astype(np.float32), pm[STABLE].astype(np.float32))
+    warped = cv2.warpAffine(render, fit, (w, h), flags=cv2.INTER_AREA, borderValue=(200, 200, 200))
+    lab = lambda im: cv2.cvtColor(im, cv2.COLOR_RGB2LAB).astype(np.float64) * [100 / 255, 1, 1] - [0, 128, 128]
+    lp, lr = lab(photo), lab(warped)
+
+    def hull(idx):
+        mask = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(mask, [cv2.convexHull(pm[idx].round().astype(np.int32))], 1)
+        return mask > 0
+
+    cheeks = hull(CHEEKS[0]) | hull(CHEEKS[1])
+    out = {"skin_dE": float(np.linalg.norm(np.median(lp[cheeks], axis=0) - np.median(lr[cheeks], axis=0))),
+           "mouth_dE": float(np.linalg.norm(lp - lr, axis=2)[hull(MOUTH)].mean())}
+    # Hair as hair_error reads it: the photo's segmented, the render's what is
+    # neither skin nor backdrop, both above the brows.
+    above = np.arange(h)[:, None] < float(pm[[105, 334], 1].mean())
+    hair_p = (appearance.segment(photo) == appearance.HAIR) & above
+    parts = appearance.segment(warped)
+    skin = (parts == appearance.FACE_SKIN) | (parts == appearance.BODY_SKIN)
+    hair_r = ~(np.abs(warped.astype(int) - 200).sum(axis=2) < 12) & ~skin & above
+    if hair_p.sum() > 50 and hair_r.sum() > 50:
+        out["hair_dE"] = float(np.linalg.norm(np.median(lp[hair_p], axis=0) - np.median(lr[hair_r], axis=0)))
+        out["hair_iou"] = float((hair_p & hair_r).sum() / (hair_p | hair_r).sum())
+    return out
+
+
+def rubric(scores: dict) -> str:
+    """Each area against its bars (RUBRIC): per bar, the share of faces that
+    clear it; the area passes when every bar is cleared by RUBRIC_SHARE."""
+    rows = [row for name, row in scores.items() if "~" not in name]
+    lines = [f"{'area':16s} {'verdict':14s} bars (share of faces clearing each)"]
+    for area, bars in RUBRIC.items():
+        parts, shares = [], []
+        for metric, bar in bars:
+            values = [row[metric] for row in rows if row.get(metric) is not None]
+            if not values:
+                parts.append(f"{metric} not measured")
+                continue
+            lower = lower_better(metric)
+            share = float(np.mean([(v <= bar) if lower else (v >= bar) for v in values]))
+            shares.append(share)
+            parts.append(f"{metric} {'<=' if lower else '>='} {bar:g}: {share:.0%}")
+        verdict = ("not measured" if not shares else
+                   "8 reached" if len(shares) == len(bars) and min(shares) >= RUBRIC_SHARE else "below 8")
+        lines.append(f"{area:16s} {verdict:14s} " + "; ".join(parts))
+    lines.append(f"{'robustness':16s} {'not measured':14s} the stress set is not built yet")
+    lines.append(f"{'body':16s} {'not measured':14s} needs full-body photos in the set")
+    if len(rows) < PROVISIONAL_BELOW:
+        lines.append(f"(provisional: {len(rows)} faces, under {PROVISIONAL_BELOW})")
+    return "\n".join(lines)
+
+
+def review_page(tag: str, base: str, faces: list[dict]) -> pathlib.Path:
+    """A blind before/after page: per face the photo and the two builds at the
+    photo's pose, in an order shuffled per face (seeded, so the page is the
+    same on a rerun); the viewer picks the closer one, and only then sees
+    which was the new build, with the tally."""
+    import base64
+    import hashlib
+    import html
+    folder = OUT / "review"
+    folder.mkdir(parents=True, exist_ok=True)
+    cards = []
+    for face in faces:
+        name = face["name"]
+        new_left = hashlib.md5(f"{tag}/{base}/{name}".encode()).digest()[0] % 2 == 0
+        pair = [f"../renders/{name}-{tag}p.png", f"../renders/{name}-{base}p.png"]
+        left, right = pair if new_left else pair[::-1]
+        photo = pathlib.Path("..") / upright(HERE / face["photo"]).relative_to(OUT)
+        key = base64.b64encode(("left" if new_left else "right").encode()).decode()
+        cards.append(f'''<section data-key="{key}" data-name="{html.escape(name)}">
+  <figure><img src="{photo.as_posix()}" alt="photo"><figcaption>photo</figcaption></figure>
+  <figure><img src="{left}" alt="A"><figcaption>A</figcaption></figure>
+  <figure><img src="{right}" alt="B"><figcaption>B</figcaption></figure>
+  <div class="pick"><button data-side="left">A looks more like them</button>
+  <button data-side="right">B looks more like them</button><button data-side="same">Can't tell</button></div>
+</section>''')
+    page = folder / f"{tag}-vs-{base}.html"
+    page.write_text(f'''<!doctype html><meta charset="utf-8"><title>Blind review</title>
+<style>
+  body {{ background:#16181d; color:#e8e8ea; font:15px system-ui, sans-serif; margin:16px; }}
+  section {{ display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin:0 0 28px; max-width:1200px; }}
+  figure {{ margin:0; }} img {{ width:100%; background:#26292f; border-radius:6px; }}
+  figcaption {{ text-align:center; color:#9a9ca3; }}
+  .pick {{ grid-column:1 / -1; display:flex; gap:8px; }}
+  button {{ font:inherit; padding:8px 12px; border-radius:6px; border:1px solid #3a3d44; background:#22252b; color:inherit; cursor:pointer; }}
+  button.on {{ background:#3d6df2; border-color:#3d6df2; }}
+  #tally {{ white-space:pre-wrap; }}
+</style>
+<h1>Which build looks more like the person?</h1>
+<p>Pick for every face before revealing. Which build is new is hidden until then.</p>
+{"".join(cards)}
+<button id="reveal">Reveal</button><p id="tally"></p>
+<script>
+const picks = {{}};
+document.querySelectorAll('section').forEach((s) => s.querySelectorAll('.pick button').forEach((b) =>
+  b.addEventListener('click', () => {{
+    picks[s.dataset.name] = b.dataset.side;
+    s.querySelectorAll('.pick button').forEach((x) => x.classList.toggle('on', x === b));
+  }})));
+document.getElementById('reveal').addEventListener('click', () => {{
+  const all = [...document.querySelectorAll('section')];
+  const missing = all.filter((s) => !picks[s.dataset.name]).length;
+  if (missing) {{ document.getElementById('tally').textContent = `${{missing}} faces not picked yet.`; return; }}
+  let newer = 0, older = 0, same = 0; const lines = [];
+  for (const s of all) {{
+    const side = atob(s.dataset.key), pick = picks[s.dataset.name];
+    const won = pick === 'same' ? 'unsure' : pick === side ? 'new' : 'old';
+    newer += won === 'new'; older += won === 'old'; same += won === 'unsure';
+    lines.push(`${{s.dataset.name}}: ${{won}}`);
+  }}
+  document.getElementById('tally').textContent =
+    `New build ({html.escape(tag)}) preferred on ${{newer}}, old ({html.escape(base)}) on ${{older}}, unsure on ${{same}}.` + String.fromCharCode(10) + lines.join(String.fromCharCode(10));
+}});
+</script>
+''', encoding="utf-8")
+    return page
+
+
 def score(tag: str, faces: list[dict]) -> dict:
     import identity_score as ids
     out = {}
@@ -272,6 +436,7 @@ def score(tag: str, faces: list[dict]) -> dict:
             row["lm_held"] = None if held is None else round(held["all"], 2)
         row["hair"] = hair_error(flat(photo), render_p)
         row["hair"] = None if row["hair"] is None else round(row["hair"], 1)
+        row.update({k: round(v, 3) for k, v in (appearance_error(flat(photo), render_p) or {}).items()})
         out[name] = row
     return out
 
@@ -318,7 +483,7 @@ def spreads(scores: dict) -> dict:
 def gate(metric: str, scores: dict, base: dict, noise: dict) -> bool:
     """Keep (True) or drop the change, by `metric` (see the module doc)."""
     from scipy.stats import binomtest, wilcoxon
-    sign = -1 if metric.startswith(LOWER) else 1
+    sign = -1 if lower_better(metric) else 1
     names = [n for n in scores if scores[n].get(metric) is not None and base.get(n, {}).get(metric) is not None]
     if not names:
         print(f"gate: no face has {metric} in both runs")
@@ -366,6 +531,8 @@ def main() -> int:
     parser.add_argument("--noise", action="store_true", help="also measure each score's spread per face")
     parser.add_argument("--set", type=pathlib.Path, default=TESTSET / "test-set.json")
     parser.add_argument("--split", default="dev", choices=["dev", "lockbox", "all"])
+    parser.add_argument("--review", action="store_true",
+                        help="with --against: also write the blind before/after page, out/review/TAG-vs-BASE.html")
     parser.add_argument("--skip-build", action="store_true", help="render and score GLBs already built")
     parser.add_argument("--skip-render", action="store_true", help="score renders already made")
     parser.add_argument("--workers", type=int, default=max(1, min(5, (os.cpu_count() or 2) // 2)))
@@ -396,6 +563,9 @@ def main() -> int:
         if base_scores is None:
             print(f"no scores for {args.against}; score it first", file=sys.stderr)
     print(table(args.tag, scores, args.against, base_scores))
+    print(rubric(scores))
+    if args.review and args.against:
+        print(f"blind review: {review_page(args.tag, args.against, people)}")
     print(f"{len(faces)} faces in {time.time() - began:.0f} s")
     if args.gate:
         noise_path = OUT / "scores" / "noise.json"
