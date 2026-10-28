@@ -72,6 +72,11 @@ PHOTO_NORMAL_ROUNDS = 120
 SKIN_SHEEN = ((0.20, 0.07, 0.04), 0.55)
 # How far teeth and tongue sit back from where the model puts them (mesh units).
 TEETH_RECESS = 0.05
+# How far the upper teeth sit above where the model puts them (mesh units,
+# ~3 mm). The model's gum dips between the crowns 3 mm below the top of the
+# crowns, and in a laugh it showed as pink arches under the upper lip where a
+# photo shows the crowns up to the lip (samples/portrait.jpg).
+TEETH_RAISE = 0.03
 # How far the mouth's lining is set back into the mouth (mesh units, ~1.5 mm).
 MOUTH_LINING = 0.015
 # The ARKit shapes that part the lips, scaled together so the avatar's mouth
@@ -1096,6 +1101,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # and teeth 1 to 3 mm behind it showed as a white line across a
             # closed mouth. An opened jaw still shows them.
             mesh.vertices = mesh.vertices - np.array([0.0, 0.0, TEETH_RECESS])
+        if item["category"] == "teeth":
+            # The upper teeth (those hung from the upper teeth helper) raised.
+            upper = np.isin(mesh.metadata["mhclo_idx"], np.unique(groups["helper-upper-teeth"])).all(axis=1)
+            mesh.vertices = mesh.vertices + np.outer(upper, [0.0, TEETH_RAISE, 0.0])
         worn.append((item, mesh))
 
     # Trousers down to the ankle make the shoes' socks redundant, and posed they
