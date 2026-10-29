@@ -87,13 +87,13 @@ def check_consent():
             f"c5,p05,{today},build;score,{today + dt.timedelta(days=30)},\n", encoding="utf-8")
         (folder / "test-set.json").write_text(json.dumps(
             [{"name": f"p0{i}", "photo": "x.jpg", "consent_id": f"c{i}"} for i in range(1, 6)] +
-            [{"name": "p06", "photo": "x.jpg"}] +
+            [{"name": "p06", "photo": "x.jpg"}] + [{"name": "s01", "photo": "x.jpg", "synthetic": True}] +
             [{"name": "p05", "photo": "x.jpg", "consent_id": "c5", "split": "lockbox"}]), encoding="utf-8")
         dev = [f["name"] for f in score_run.load_faces(folder / "test-set.json", "dev")]
-        assert dev == ["p01", "p05"], dev
+        assert dev == ["p01", "p05", "s01"], dev
         locked = [f["split"] for f in score_run.load_faces(folder / "test-set.json", "lockbox")]
         assert locked == ["lockbox"], locked
-    print("ok  consent: withdrawn, expired, unscoped and unregistered faces left out")
+    print("ok  consent: withdrawn, expired, unscoped and unregistered faces left out; generated ones taken")
 
 
 def check_rubric():

@@ -2,6 +2,12 @@
 next pseudonym, a row in the consent register, an entry in the set file.
 
     python add_person.py FOLDER --signed 2026-10-29 --gender female [--photo-check]
+    python add_person.py FOLDER --synthetic --gender female
+
+--synthetic files a generated, fictional person: no one to consent, so no
+register row; the set entry says `"synthetic": true` and score_run.py takes it
+without one. Their scores stand for real people's only as far as the generator's
+faces do (TESTSET.md).
 
 FOLDER holds the photos named as TESTSET.md lists them (front, left35,
 right35, left50, right50, left20, o1, o2, smile, body; any image type). Run it
@@ -56,14 +62,17 @@ def read(path: pathlib.Path) -> tuple[float, float]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("folder", type=pathlib.Path)
-    parser.add_argument("--signed", required=True, type=dt.date.fromisoformat,
+    parser.add_argument("--signed", type=dt.date.fromisoformat,
                         help="the date on the person's signed consent form")
+    parser.add_argument("--synthetic", action="store_true", help="a generated, fictional person: no consent row")
     parser.add_argument("--gender", required=True, choices=["male", "female"])
     parser.add_argument("--keep-days", type=int, default=365, help="photos deleted after this many days")
     parser.add_argument("--photo-check", action="store_true",
                         help="they also ticked sending the photos to the Claude API")
     parser.add_argument("--force", action="store_true", help="file it even where a photo fails its check")
     args = parser.parse_args()
+    if not args.synthetic and args.signed is None:
+        parser.error("--signed DATE (the consent form's) is needed for a real person; --synthetic for a generated one")
 
     photos = {p.stem.lower(): p for p in args.folder.iterdir() if p.stem.lower() in KINDS and p.is_file()}
     if "front" not in photos:
@@ -71,14 +80,16 @@ def main() -> int:
         return 2
     problems, yaws = [], {}
     for kind, path in sorted(photos.items()):
+        if kind == "body":                    # the face is too small there to read; nothing to check
+            print(f"{path.name:16s} full body, not checked")
+            continue
         try:
             yaw, width = read(path)
         except Exception as err:                      # no face, unreadable file
             problems.append(f"{path.name}: {type(err).__name__} {err}")
             continue
         yaws[kind] = yaw
-        found = [turn_problem(kind, yaw), f"face {width:.0f} px across, wants {MIN_FACE_PX}+" if width < MIN_FACE_PX
-                 and kind != "body" else None]
+        found = [turn_problem(kind, yaw), f"face {width:.0f} px across, wants {MIN_FACE_PX}+" if width < MIN_FACE_PX else None]
         print(f"{path.name:16s} turned {yaw:+6.1f}  face {width:5.0f} px  " + ("; ".join(f for f in found if f) or "ok"))
         problems += [f"{path.name}: {f}" for f in found if f]
     for a, b in (("left35", "right35"), ("left50", "right50")):
@@ -99,7 +110,8 @@ def main() -> int:
     for kind, path in photos.items():
         shutil.copy2(path, HERE / filed[kind])
 
-    face = {"name": name, "photo": filed["front"], "gender": args.gender, "consent_id": consent_id,
+    face = {"name": name, "photo": filed["front"], "gender": args.gender,
+            **({"synthetic": True} if args.synthetic else {"consent_id": consent_id}),
             # About one person in five held back for sign-off (TESTSET.md).
             "split": "lockbox" if number % 5 == 0 else "dev", "tags": {}}
     if "left35" in filed and "right35" in filed:
@@ -110,6 +122,9 @@ def main() -> int:
     if [k for k in ("o1", "o2") if k in filed]:
         face["others"] = [filed[k] for k in ("o1", "o2") if k in filed]
     set_path.write_text(json.dumps(faces + [face], indent=1), encoding="utf-8")
+    if args.synthetic:
+        print(f"\nfiled as {name} ({face['split']}), synthetic. Re-run score_run.py --noise.")
+        return 0
     if not register.exists():
         register.write_text("consent_id,pseudonym,date,scopes,retain_until,withdrawn\n", encoding="utf-8")
     scopes = "build;score" + (";photo_check" if args.photo_check else "")

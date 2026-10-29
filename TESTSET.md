@@ -46,6 +46,13 @@ its name says: a "35" photo 25-45 degrees, the sides opposite ways) and only
 then files them as the next `pNN` in `data/testset/`, with the register row
 and the set entry below. One person in five goes to the lockbox.
 
+A generated, fictional person (an image model's, no real person pictured) is
+filed with `--synthetic` in place of `--signed`: no consent row, and the entry
+says `"synthetic": true`. Use them to fill the set out, never in place of real
+people for sign-off: the generator invents what a turned head looks like, so
+they say little about face shape, and keeping one face the same across its
+photos is the generator's guess too.
+
 ## The register: `data/testset/consent.csv`
 
 ```
