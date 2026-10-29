@@ -290,6 +290,13 @@ def landmarks(rgb: np.ndarray) -> np.ndarray | None:
     return np.array([[p.x * w, p.y * h] for p in found.face_landmarks[0]])
 
 
+# How far in from the hair's outline, in eye spacings, strands are read for
+# the hair angle. At the combing's 0.25 the test set's first face (a quiff)
+# read in a band across its middle, a dozen sample points: it scored the
+# tufts or the cap that happened to lie there. At 0.06, most of the hair.
+HAIR_MARGIN = 0.06
+
+
 def hair_error(photo: np.ndarray, render: np.ndarray) -> float | None:
     """Mean angle, degrees, between photo and render strands (see the module doc)."""
     import cv2
@@ -303,13 +310,13 @@ def hair_error(photo: np.ndarray, render: np.ndarray) -> float | None:
     fit, _ = cv2.estimateAffinePartial2D(rm[STABLE].astype(np.float32), pm[STABLE].astype(np.float32))
     warped = cv2.warpAffine(render, fit, (w, h), borderValue=(200, 200, 200))
     eye = float(np.linalg.norm(pm[33] - pm[263]))
-    strand_p, clear_p = _strand_field(photo, appearance.segment(photo) == appearance.HAIR, eye)
+    strand_p, clear_p = _strand_field(photo, appearance.segment(photo) == appearance.HAIR, eye, HAIR_MARGIN)
     parts = appearance.segment(warped)
     skin = (parts == appearance.FACE_SKIN) | (parts == appearance.BODY_SKIN)
     backdrop = np.abs(warped.astype(int) - 200).sum(axis=2) < 12
     brows = float(pm[[105, 334], 1].mean())
     hair_r = ~backdrop & ~skin & (np.arange(h)[:, None] < brows)
-    strand_r, clear_r = _strand_field(warped, hair_r, eye)
+    strand_r, clear_r = _strand_field(warped, hair_r, eye, HAIR_MARGIN)
     both = np.minimum(clear_p, clear_r)
     seen = both > 0.3
     if seen.sum() < 50:

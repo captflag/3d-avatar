@@ -1222,32 +1222,43 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             tint, colour = colour, np.full(3, skinned_glb.HAIR_GREY)
         mesh = build_item(item, colour, vertices)
         mesh.metadata["tint"] = tint
-        if item["category"] == "hair" and "mhclo" in item and parts is not None and hair_reading:
-            # Combed the way the photo's hair runs, before it is shaped to its outline.
-            hair_comb = garments.comb_hair(mesh, vertices, head_only, render_turn, person,
-                                           np.array([[lm.x * pw, lm.y * ph] for lm in landmarks]),
-                                           photo_rgb, parts == appearance.HAIR)
-        if item["category"] == "hair" and "mhclo" in item and hair_reading and hair_reading.get("hairline"):
-            # The fringe up to where the photo's hair ends, in eye spacings
-            # above the brows on the shaped head.
-            spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
-            hairline_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["hairline"] * spacing
-            curve = hairline_on_head(hair_reading.get("hairline_points"), landmarks, photo.size, full_face.vertices)
-            garments.sweep_back(mesh, vertices, groups, appearance.opaque_hair(mesh),
-                                hairline_y if curve is None else curve, above=float(vertices[corr[[105, 334]], 1].mean()))
-        if item["category"] == "hair" and "mhclo" in item and hair_reading and hair_reading.get("rise"):
-            # And up to the photo's height over the forehead: the stock cuts lie flat.
-            spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
-            rise_y = float(vertices[corr[[105, 334]], 1].mean()) + hair_reading["rise"] * spacing
-            garments.volumise(mesh, vertices, groups, rise_y)
-            # And out to the photo's outline at the sides.
-            garments.widen(mesh, vertices, groups, float(vertices[corr[[105, 334]], 1].mean()), spacing,
-                           hair_reading.get("widths"))
-        if item["category"] == "hair" and "mhclo" in item and parts is not None and hair_reading:
-            # And its outline to the photo's, seen as the photo saw the head.
-            garments.fit_hair(mesh, vertices, head_only, render_turn, person,
-                              np.array([[lm.x * pw, lm.y * ph] for lm in landmarks]),
-                              parts == appearance.HAIR, appearance.opaque_hair)
+        if item["category"] == "hair" and "mhclo" in item and hair_reading:
+            def shape_hair(cut):
+                spacing = float(np.linalg.norm(vertices[corr[33], :2] - vertices[corr[263], :2]))
+                brows_y = float(vertices[corr[[105, 334]], 1].mean())
+                if hair_reading.get("hairline"):
+                    # The fringe up to where the photo's hair ends, in eye
+                    # spacings above the brows on the shaped head.
+                    curve = hairline_on_head(hair_reading.get("hairline_points"), landmarks, photo.size,
+                                             full_face.vertices)
+                    garments.sweep_back(cut, vertices, groups, appearance.opaque_hair(cut),
+                                        brows_y + hair_reading["hairline"] * spacing if curve is None else curve,
+                                        above=brows_y)
+                if hair_reading.get("rise"):
+                    # And up to the photo's height over the forehead: the stock cuts lie flat.
+                    garments.volumise(cut, vertices, groups, brows_y + hair_reading["rise"] * spacing)
+                    # And out to the photo's outline at the sides.
+                    garments.widen(cut, vertices, groups, brows_y, spacing, hair_reading.get("widths"))
+                if parts is not None:
+                    # And its outline to the photo's, seen as the photo saw the head.
+                    garments.fit_hair(cut, vertices, head_only, render_turn, person,
+                                      np.array([[lm.x * pw, lm.y * ph] for lm in landmarks]),
+                                      parts == appearance.HAIR, appearance.opaque_hair)
+
+            if parts is not None:
+                # Combed the way the photo's hair runs, before it is shaped, but
+                # read where each point will show once it is: shaped first on a
+                # copy. Read where it lay on the scalp, a raised quiff took its
+                # strands from the photo below it; on the test set's first face
+                # they ran across the front where the photo's run up (hair angle
+                # 17.6 -> 29.9 degrees when the round crown moved the scalp).
+                shaped = mesh.copy()
+                shape_hair(shaped)
+                hair_comb = garments.comb_hair(mesh, vertices, head_only, render_turn, person,
+                                               np.array([[lm.x * pw, lm.y * ph] for lm in landmarks]),
+                                               photo_rgb, parts == appearance.HAIR,
+                                               seen_at=np.asarray(shaped.vertices))
+            shape_hair(mesh)
         if item["category"] == "brows":
             mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
         if item["category"] in ("teeth", "tongue"):

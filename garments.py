@@ -734,8 +734,11 @@ VOLUME_SPAN = ((0.3, 0.8), (60.0, 150.0))
 # in full. Lifted right at the edge, the hair stood off the forehead as a
 # shell and its dark inside showed under the fringe.
 VOLUME_RAMP = 0.6
-# A quiff's lift over the crown, as a share of its lift at the front.
-QUIFF_BACK = 0.4
+# A quiff's lift over the crown, as a share of its lift at the front. At 0.4,
+# on the round crown (morph.apply's hairline), the top rose as a dome whose
+# strands, combed back, were seen edge-on as stripes across it where the
+# photo's front rises as a wall: hair angle 29.5 -> 24.0 degrees at 0.2.
+QUIFF_BACK = 0.2
 
 
 # How many skin vertices each hair vertex's scalp normal is averaged over.
@@ -1044,9 +1047,10 @@ COMB_STRAND = 14
 COMB_CARD_MAX = 0.6
 
 
-def _strand_field(photo_rgb: np.ndarray, hair: np.ndarray, eye_px: float):
+def _strand_field(photo_rgb: np.ndarray, hair: np.ndarray, eye_px: float, margin: float = 0.25):
     """The photo's strand direction (radians, image axes) and how clearly it
-    reads (coherence 0-1, zero off the hair and near its outline)."""
+    reads (coherence 0-1, zero off the hair and within `margin` eye spacings
+    of its outline)."""
     import cv2
     grey = cv2.GaussianBlur(photo_rgb.astype(np.float32).mean(axis=2), (0, 0), max(0.01 * eye_px, 0.6))
     gx, gy = cv2.Sobel(grey, cv2.CV_32F, 1, 0), cv2.Sobel(grey, cv2.CV_32F, 0, 1)
@@ -1056,7 +1060,7 @@ def _strand_field(photo_rgb: np.ndarray, hair: np.ndarray, eye_px: float):
     clear = np.sqrt((jxx - jyy) ** 2 + 4 * jxy ** 2) / (jxx + jyy + 1e-6)
     # Kept off the hair's outline: its edge against background or forehead
     # reads as one long strand along it.
-    inner = cv2.erode(hair.astype(np.uint8), np.ones((int(0.25 * eye_px) * 2 + 1,) * 2, np.uint8))
+    inner = cv2.erode(hair.astype(np.uint8), np.ones((int(margin * eye_px) * 2 + 1,) * 2, np.uint8))
     return strand, clear * inner
 
 
@@ -1081,7 +1085,8 @@ def hair_pieces(hair: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray]:
 
 
 def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray, rotation: np.ndarray,
-              person: np.ndarray, pixels: np.ndarray, photo_rgb: np.ndarray, photo_hair: np.ndarray) -> dict:
+              person: np.ndarray, pixels: np.ndarray, photo_rgb: np.ndarray, photo_hair: np.ndarray,
+              seen_at: np.ndarray | None = None) -> dict:
     """A haircut combed the way the photo's hair runs.
 
     The stock cuts carry their own parting: short01's cap is painted with
@@ -1155,10 +1160,11 @@ def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarra
         return tangent(away / radius - np.array([0.0, 2.0, 0.0]) * behind[:, None]
                        + np.array([sweep, 0.0, 0.0]) * top[:, None], n)
 
-    # The photo's reading at each hair vertex.
+    # The photo's reading at each hair vertex, where it will show (`seen_at`,
+    # the cut as shaped later) if given.
     points = hair.vertices
     n = normal_at(points)
-    in_view = view(points)
+    in_view = view(points if seen_at is None else seen_at)
     inverse = np.linalg.inv(to_view[:, :2])
     photo_px = (in_view - to_view[:, 2]) @ inverse.T
     xs, ys = np.round(photo_px[:, 0]).astype(int), np.round(photo_px[:, 1]).astype(int)
