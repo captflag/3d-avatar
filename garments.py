@@ -1044,9 +1044,10 @@ COMB_STRAND = 14
 COMB_CARD_MAX = 0.6
 
 
-def _strand_field(photo_rgb: np.ndarray, hair: np.ndarray, eye_px: float):
+def _strand_field(photo_rgb: np.ndarray, hair: np.ndarray, eye_px: float, margin: float = 0.25):
     """The photo's strand direction (radians, image axes) and how clearly it
-    reads (coherence 0-1, zero off the hair and near its outline)."""
+    reads (coherence 0-1, zero off the hair and within `margin` eye spacings
+    of its outline)."""
     import cv2
     grey = cv2.GaussianBlur(photo_rgb.astype(np.float32).mean(axis=2), (0, 0), max(0.01 * eye_px, 0.6))
     gx, gy = cv2.Sobel(grey, cv2.CV_32F, 1, 0), cv2.Sobel(grey, cv2.CV_32F, 0, 1)
@@ -1056,7 +1057,7 @@ def _strand_field(photo_rgb: np.ndarray, hair: np.ndarray, eye_px: float):
     clear = np.sqrt((jxx - jyy) ** 2 + 4 * jxy ** 2) / (jxx + jyy + 1e-6)
     # Kept off the hair's outline: its edge against background or forehead
     # reads as one long strand along it.
-    inner = cv2.erode(hair.astype(np.uint8), np.ones((int(0.25 * eye_px) * 2 + 1,) * 2, np.uint8))
+    inner = cv2.erode(hair.astype(np.uint8), np.ones((int(margin * eye_px) * 2 + 1,) * 2, np.uint8))
     return strand, clear * inner
 
 
