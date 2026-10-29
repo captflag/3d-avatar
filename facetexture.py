@@ -265,6 +265,10 @@ class FaceSampler:
         return pixels, strength
 
 
+# A beard's grain, as a share of the face's width (facial_hair).
+BEARD_GRAIN = 0.006
+
+
 def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> np.ndarray:
     """Where the photo shows a beard or moustache, 0-1, in photo pixels.
 
@@ -275,6 +279,13 @@ def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> n
     nose tip. Sideburns and stubble lighter than that threshold are left to the
     fade.
 
+    Darker than the cheek on the same side: lit from one side, the shadowed
+    half of a clean-shaven face sat 40 L* under the median of both cheeks and
+    read as beard (jaw_beard 0.42 on three generated women, cheeks 50-70%
+    apart), was kept out of the skin's smoothing and darkened as beard: brown
+    patches. The reference runs across the face from one cheek's lightness to
+    the other's.
+
     ponytail: darkness only, so a hard jaw shadow on a clean-shaven face also
     survives the fade. Add a texture (local variance) test if that shows.
     """
@@ -282,10 +293,32 @@ def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> n
     lightness = cv2.cvtColor(photo_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB)[..., 0].astype(np.float64)
     xs = np.clip(cheek_pixels[:, 0].astype(int), 0, w - 1)
     ys = np.clip(cheek_pixels[:, 1].astype(int), 0, h - 1)
-    skin_l = float(np.median(lightness[ys, xs]))
+    nose_x = landmarks[1].x * w
+    sides = [(xs < nose_x), (xs >= nose_x)]
+    if all(s.any() for s in sides):
+        (xl, ll), (xr, lr) = ((float(xs[s].mean()), float(np.median(lightness[ys[s], xs[s]]))) for s in sides)
+        across = np.clip((np.arange(w)[None, :] - xl) / max(xr - xl, 1.0), 0.0, 1.0)
+        skin_l = ll + (lr - ll) * across
+    else:
+        skin_l = float(np.median(lightness[ys, xs]))
 
     darker = np.clip((skin_l - lightness - 25.0) / 30.0, 0.0, 1.0)
     darker = darker * darker * (3.0 - 2.0 * darker)
+    # And grainy, as hair is and a shadow is not: the fine-scale variation
+    # (BEARD_GRAIN of the face's width) against the cheeks'. Darkness alone
+    # took a side-lit woman's whole lower face for beard, and the skin's
+    # smoothing kept it as dark patches.
+    face_w = abs(landmarks[454].x - landmarks[234].x) * w
+    fine = max(BEARD_GRAIN * face_w, 0.8)
+    local = lightness - cv2.GaussianBlur(lightness, (0, 0), fine)
+    grain = np.sqrt(cv2.GaussianBlur(local * local, (0, 0), 3 * fine))
+    cheek_grain = float(np.median(grain[ys, xs]))
+    textured = np.clip((grain - 1.5 * cheek_grain) / max(1.5 * cheek_grain, 1.0), 0.0, 1.0)
+    # A full, dense beard is too even to be grainy (a black beard on dark skin:
+    # grain 7 against its cheeks' 14) but far darker than any shadow: 50 L*
+    # (of 255) under the same-side cheek counts as beard grain or none.
+    dense = np.clip((skin_l - lightness - 50.0) / 30.0, 0.0, 1.0)
+    darker = darker * np.maximum(textured, dense)
 
     nose_y = landmarks[1].y * h
     chin_y = landmarks[152].y * h
