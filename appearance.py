@@ -1496,3 +1496,93 @@ def warm_ears(rgb: np.ndarray, ear: np.ndarray) -> np.ndarray:
     lab += EAR_SHIFT[None, None, :] * ear[..., None]
     out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
     return np.dstack([out, rgb[..., 3:]]) if rgb.shape[-1] == 4 else out
+
+
+# ------------------------------------------------------------ smooth skin ----
+
+# Flawless skin (smooth_skin), as shares of the face's width: the scale marks
+# are smoothed away at (freckles, pores, spots; the nose's and cheeks' form is
+# larger and stays), the scale the colour is evened at and how far towards its
+# median (light's patches), the edge's feather, how far past the eyes, brows
+# and lips they are kept, and how much of the skin's own grain is left so it
+# does not read as wax.
+SMOOTH_MARKS = 0.035
+SMOOTH_BROAD = 0.035
+SMOOTH_EVEN = 1.0
+SMOOTH_FEATHER = 0.012
+SMOOTH_KEEP = 0.025
+SMOOTH_GRAIN = 0.0
+# The features kept from the photo sharpened (unsharp mask): how much, and at
+# what scale (a share of the face's width). Beside the smoothed skin they read
+# soft, the photo's own focus and the texture's resampling both.
+FEATURE_SHARPEN = (0.8, 0.004)
+BROWS = ([70, 63, 105, 66, 107, 55, 65, 52, 53, 46], [300, 293, 334, 296, 336, 285, 295, 282, 283, 276])
+
+
+def _skin_blur(rgb: np.ndarray, source: np.ndarray, sigma: float) -> np.ndarray:
+    """`rgb` blurred from `source` pixels only, filled from four times as far
+    where too few are near (a fringe, a feature), blended so no seam shows."""
+    out = []
+    for s in (sigma, 4 * sigma):
+        weight = cv2.GaussianBlur(source.astype(np.float64), (0, 0), s)
+        out.append((cv2.GaussianBlur(rgb * source[..., None], (0, 0), s) / np.maximum(weight, 1e-6)[..., None], weight))
+    (near, w_near), (far, _) = out
+    t = np.clip(w_near / 0.3, 0.0, 1.0)[..., None]
+    return near * t + far * (1.0 - t)
+
+
+def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: np.ndarray | None,
+                beard: np.ndarray | None = None) -> np.ndarray:
+    """The face's skin smooth and even: no freckles, spots, pores or the
+    blotches a photo's light leaves; its form (the nose, the cheekbones), the
+    eyes, brows, lips and any beard kept as the photo has them.
+
+    Asked for: smooth, flawless skin, no marks of any kind. Frequency
+    separation: the skin's detail under SMOOTH_MARKS of the face's width is
+    taken out but for SMOOTH_GRAIN of it, and its colour evened SMOOTH_EVEN of
+    the way to the median at SMOOTH_BROAD, features included. Smoothed at the
+    broad scale alone (the first version) the face went soft: the nose and
+    cheekbones flattened with the freckles. Hair over the face above the brows
+    (a fringe, the hairline: the avatar is built bald) is skin to fill."""
+    h, w = face_mask.shape
+    px = np.array([[lm.x * w, lm.y * h] for lm in landmarks[:468]])
+    face_w = float(np.ptp(px[:, 0]))
+    keep = np.zeros((h, w), np.uint8)
+    for ring in (*EYE_CONTOURS, *BROWS, OUTER_LIPS):
+        cv2.fillPoly(keep, [cv2.convexHull(px[list(ring)].round().astype(np.int32))], 1)
+    grow = max(int(SMOOTH_KEEP * face_w), 1)
+    keep = cv2.dilate(keep, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1,) * 2)) > 0
+    if beard is not None:
+        keep |= beard > 0.2
+    hair = (parts == HAIR) if parts is not None else np.zeros((h, w), bool)
+    # The photo's hair above the brows is the bald head's skin too: baked as it
+    # was, the hairline lay on the bare scalp as a dark band.
+    hair = hair & (np.arange(h)[:, None] < float(px[[105, 334], 1].mean()))
+    # All the photo's skin, not the landmark mesh's outline alone: the bake
+    # paints the forehead to the hairline and the jaw past the outline from
+    # the photo too.
+    skin_parts = ((parts == FACE_SKIN) | (parts == BODY_SKIN)) if parts is not None else np.zeros((h, w), bool)
+    region = (face_mask | skin_parts | hair) & ~keep
+    source = region & ~hair
+    if source.sum() < 500:
+        return skin_rgb
+    rgb = skin_rgb.astype(np.float64)
+    fine = _skin_blur(rgb, source, max(SMOOTH_MARKS * face_w, 1.0))
+    broad = _skin_blur(rgb, source, max(SMOOTH_BROAD * face_w, 1.0))
+    shift = SMOOTH_EVEN * (np.median(rgb[source], axis=0) - broad)
+    feather = max(SMOOTH_FEATHER * face_w, 1.0)
+    whole = cv2.GaussianBlur((region | keep & face_mask).astype(np.float64), (0, 0), feather)[..., None]
+    alpha = cv2.GaussianBlur(region.astype(np.float64), (0, 0), feather)[..., None]
+    # Hair filled from the skin round it: its own detail is hair's, not grain.
+    grain = SMOOTH_GRAIN * (rgb - fine) * (~hair)[..., None]
+    skin = fine + grain + shift
+    # Where the photo had hair, the face's own median skin, softened in: filled
+    # from the skin round it, the darker skin at the hairline came with it and
+    # lay on the bald scalp as a band.
+    median = np.median(rgb[source], axis=0)
+    filled = cv2.GaussianBlur(hair.astype(np.float64), (0, 0), 2 * feather)[..., None]
+    skin = skin * (1.0 - filled) + median * filled
+    amount, scale = FEATURE_SHARPEN
+    detail = rgb - cv2.GaussianBlur(rgb, (0, 0), max(scale * face_w, 0.6))
+    sharp = rgb + amount * detail * (keep & face_mask)[..., None]
+    return np.clip((sharp + shift * whole) * (1.0 - alpha) + skin * alpha, 0, 255).astype(np.uint8)

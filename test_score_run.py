@@ -99,16 +99,15 @@ def check_consent():
 def check_rubric():
     assert score_run.lower_better("hair") and score_run.lower_better("hair_dE") and score_run.lower_better("lm_held")
     assert not score_run.lower_better("hair_iou") and not score_run.lower_better("identity_p")
-    good = {"skin_dE": 3.0, "skin_detail": 0.2, "iris_dE": 6.0, "sclera_dE": 4.0, "teeth_dE": 5.0,
-            "hair_iou": 0.8, "hair_dE": 5.0, "hair": 10.0}
+    good = {"skin_dE": 3.0, "iris_dE": 6.0, "sclera_dE": 4.0, "teeth_dE": 5.0}
     rows = {f"p{i:02d}": dict(good) for i in range(5)}
-    rows["p04"]["hair_iou"] = 0.5                       # one face in five misses: 80% still clears
+    rows["p04"]["skin_dE"] = 7.0                        # one face in five misses: 80% still clears
     text = score_run.rubric(rows)
     line = lambda area: next(l for l in text.splitlines() if l.startswith(area))
-    assert "8 reached" in line("skin, eyes, teeth") and "8 reached" in line("hair"), text
+    assert "8 reached" in line("skin, eyes, teeth") and "not scored" in line("hair"), text
     assert "not measured" in line("likeness") and "provisional" in text, text
-    rows["p03"]["hair_iou"] = 0.5                       # two in five: 60%, below
-    assert "below 8" in score_run.rubric(rows).splitlines()[[l.split()[0] for l in text.splitlines()].index("hair")]
+    rows["p03"]["skin_dE"] = 7.0                        # two in five: 60%, below
+    assert "below 8" in next(l for l in score_run.rubric(rows).splitlines() if l.startswith("skin"))
     print("ok  rubric: bars read the right way round, 80% of faces must clear each")
 
 

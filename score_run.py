@@ -122,21 +122,21 @@ lower_better = lambda metric: metric == "hair" or metric.startswith(LOWER)   # h
 #   likeness: as close as another photo of the person (real same-person pairs
 #     scored 0.48-0.67 on this repo's photos), and closer to them than to anyone else.
 #   skin: the cheeks' colour within a just-noticeable difference of the photo's,
-#     and their fine texture between 0.7 and 1.4 times the photo's (|log2| 0.5).
+#     Their fine texture is no longer held to the photo's (2026-10-29): skin is
+#     meant smooth and flawless (appearance.smooth_skin), so skin_detail is
+#     reported, not barred.
 #     Eyes and teeth (added 2026-10-28, before they were first measured): the
 #     iris, the eye white and the teeth within dE 10 of the photo's, the same
 #     colour at a glance (looser than the cheeks: small regions, lit by highlights).
 #   mouth: the lips where the photo has them, and the mouth's colour, aligned.
-#   hair: the cut's outline, its colour and the way it runs.
+#   hair: not scored since 2026-10-29: avatars are built bald, the person picks a cut.
 #   face shape: landmarks on the photo's within these shares of the eye spacing.
 # Robustness (the stress set) and body (full-body photos) are not measured
 # here yet, and show as such.
 RUBRIC = {
     "likeness": [("identity_p", 0.50), ("others_p", 0.45), ("rank1", 1.0)],
-    "skin, eyes, teeth": [("skin_dE", 5.0), ("skin_detail", 0.5), ("iris_dE", 10.0), ("sclera_dE", 10.0),
-                          ("teeth_dE", 10.0)],
+    "skin, eyes, teeth": [("skin_dE", 5.0), ("iris_dE", 10.0), ("sclera_dE", 10.0), ("teeth_dE", 10.0)],
     "mouth": [("lm_front_mouth", 3.0), ("mouth_dE", 15.0)],
-    "hair": [("hair_iou", 0.75), ("hair_dE", 8.0), ("hair", 20.0)],
     "face shape": [("lm_held", 3.0), ("lm_front_outline", 3.0), ("lm_front_nose", 1.5)],
 }
 RUBRIC_SHARE = 0.8
@@ -563,6 +563,7 @@ def rubric(scores: dict, stressed: dict | None = None) -> str:
         lines.append(f"{'robustness':16s} {verdict:14s} {text}")
     else:
         lines.append(f"{'robustness':16s} {'not measured':14s} run with --stress")
+    lines.append(f"{'hair':16s} {'not scored':14s} the person picks it (the studio's hair picker)")
     lines.append(f"{'body':16s} {'not measured':14s} needs full-body photos in the set")
     if len(rows) < PROVISIONAL_BELOW:
         lines.append(f"(provisional: {len(rows)} faces, under {PROVISIONAL_BELOW})")
