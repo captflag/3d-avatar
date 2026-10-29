@@ -106,12 +106,19 @@ HAIR_ANISOTROPY = (0.7, np.pi / 2)
 # at 0.18 under a full coat the highlight over a light iris rendered 86-88 L*
 # against the photos' 55, and the irises 2-9 L* dark. Measured on 1800-pixel
 # renders of four faces, summed: highlight 77 -> 53 L* off, iris 20 -> 8.
-ROUGHNESS = {"skin": 0.5, "eyes": 0.4, "hair": 0.45,
+# Then 0.8 (2026-10-29), with the iris lit IRIS_GAIN: at 0.4 a broad sheen lay
+# over the whole eye and a brown iris read as black glass, a doll's stare; the
+# clear coat alone now gives the eye its small wet catchlight.
+ROUGHNESS = {"skin": 0.5, "eyes": 0.8, "hair": 0.45,
              "top": 0.85, "bottom": 0.85, "shoes": 0.4}
 # The cornea as a clear coat over the eye (strength, roughness), written into
 # the file so other viewers show its wet highlight too; the studio reads it
 # from there. Without it, Blender, Unity or a web viewer drew a matte eye.
 CORNEA_COAT = (0.3, 0.03)
+# How much lighter the iris is painted than the photo reads it: the eyeball sits
+# behind the lids, in their shade, and a brown iris read at the photo's
+# colour rendered near black, its pupil lost in it.
+IRIS_GAIN = 1.8
 
 
 def body_mesh(vertices: np.ndarray | None = None) -> trimesh.Trimesh:
@@ -1145,6 +1152,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb = appearance.lip_tone(skin_rgb, landmarks)
     # The beard darker by what the studio's light lifts dark paint.
     skin_rgb = appearance.darken_beard(skin_rgb, facial_hair, landmarks)
+    # Smooth, even skin: no freckles, pores, spots or light's patches
+    # (appearance.smooth_skin); eyes, brows, lips and beard as the photo has them.
+    parts = appearance.segment(photo_rgb)
+    skin_rgb = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)
@@ -1155,18 +1166,17 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
 
     # The hair as the photo shows it, from a segmentation of the photo: its
     # colour, and — unless an outfit was chosen by hand — which haircut.
-    parts = appearance.segment(photo_rgb)
     hair_reading = appearance.read_hair(photo_rgb, landmarks, parts)
     top_rgb = None
     outfit = outfit_for(gender, wear)
     if wear is None:
-        default_cut = next((i["id"] for i in outfit if i["category"] == "hair" and "mhclo" in i), None)
-        # `hair` (--hair) picks the cut by hand, everything else as read.
-        cut = (None if hair == "bald" else hair) if hair else appearance.hair_style(hair_reading, default_cut)
-        # Where the segmentation read no hair to measure, the photo check's
-        # haircut (photo_check.hair_hint: a catalogue id, or "bald") decides.
-        if hair_hint and (hair_reading is None or hair_reading["top"] is None):
-            cut = None if hair_hint == "bald" else hair_hint
+        # No haircut unless asked for (--hair): the person picks one, and its
+        # colour, in the studio's hair picker, which every file carries every
+        # cut for. Picked from the photo (appearance.hair_style), the cut was
+        # a likeness the person could not choose; the photo's own cut scored
+        # 0.497 at the pose against 0.411 built bald on the test set's first
+        # face, the price of letting them.
+        cut = hair if hair and hair != "bald" else None
         # Bald: no hair at all. Otherwise the chosen cut over the underlayer.
         rest = [i for i in outfit if i["category"] != "hair"]
         # No scalp layer under a real haircut: the head texture is tinted in
@@ -1486,6 +1496,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # to a natural eye colour (appearance.iris_colour).
     # The whites at the photo's own exposure (appearance.sclera_colour).
     iris, eye_colour = appearance.iris_colour(photo_rgb, landmarks)
+    iris = np.clip(iris * IRIS_GAIN, 0, 255)
     eyes, eye_uv, eye_texture = build_eyes(vertices, groups, iris, appearance.sclera_colour(photo_rgb, landmarks))
 
     # --- rig it --- (skeleton and weights made above, with the nails)
