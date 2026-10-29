@@ -734,8 +734,11 @@ VOLUME_SPAN = ((0.3, 0.8), (60.0, 150.0))
 # in full. Lifted right at the edge, the hair stood off the forehead as a
 # shell and its dark inside showed under the fringe.
 VOLUME_RAMP = 0.6
-# A quiff's lift over the crown, as a share of its lift at the front.
-QUIFF_BACK = 0.4
+# A quiff's lift over the crown, as a share of its lift at the front. At 0.4,
+# on the round crown (morph.apply's hairline), the top rose as a dome whose
+# strands, combed back, were seen edge-on as stripes across it where the
+# photo's front rises as a wall: hair angle 29.5 -> 24.0 degrees at 0.2.
+QUIFF_BACK = 0.2
 
 
 # How many skin vertices each hair vertex's scalp normal is averaged over.
@@ -1082,7 +1085,8 @@ def hair_pieces(hair: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray]:
 
 
 def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarray, rotation: np.ndarray,
-              person: np.ndarray, pixels: np.ndarray, photo_rgb: np.ndarray, photo_hair: np.ndarray) -> dict:
+              person: np.ndarray, pixels: np.ndarray, photo_rgb: np.ndarray, photo_hair: np.ndarray,
+              seen_at: np.ndarray | None = None) -> dict:
     """A haircut combed the way the photo's hair runs.
 
     The stock cuts carry their own parting: short01's cap is painted with
@@ -1156,10 +1160,11 @@ def comb_hair(hair: trimesh.Trimesh, vertices: np.ndarray, head_faces: np.ndarra
         return tangent(away / radius - np.array([0.0, 2.0, 0.0]) * behind[:, None]
                        + np.array([sweep, 0.0, 0.0]) * top[:, None], n)
 
-    # The photo's reading at each hair vertex.
+    # The photo's reading at each hair vertex, where it will show (`seen_at`,
+    # the cut as shaped later) if given.
     points = hair.vertices
     n = normal_at(points)
-    in_view = view(points)
+    in_view = view(points if seen_at is None else seen_at)
     inverse = np.linalg.inv(to_view[:, :2])
     photo_px = (in_view - to_view[:, 2]) @ inverse.T
     xs, ys = np.round(photo_px[:, 0]).astype(int), np.round(photo_px[:, 1]).astype(int)
