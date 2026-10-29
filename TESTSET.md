@@ -34,8 +34,17 @@ eyes or brows.
 | `smile.jpg` | optional, a smile showing teeth | teeth checks |
 
 The studio's guided capture takes `front`, `left35` and `right35` with its
-checks; take the rest by hand. Put each person's photos in
-`data/testset/pNN/`.
+checks; take the rest by hand. Name them as above in one folder, and once the
+signed form is on file:
+
+```
+python add_person.py FOLDER --signed 2026-10-29 --gender female
+```
+
+It checks every photo (a face, at least 250 pixels across, the head turned as
+its name says: a "35" photo 25-45 degrees, the sides opposite ways) and only
+then files them as the next `pNN` in `data/testset/`, with the register row
+and the set entry below. One person in five goes to the lockbox.
 
 ## The register: `data/testset/consent.csv`
 
