@@ -161,7 +161,8 @@ def load_faces(path: pathlib.Path, split: str) -> list[dict]:
     faces = []
     for face in json.loads(path.read_text(encoding="utf-8")):
         r = rows.get(str(face.get("consent_id", "")).strip())
-        why = ("no consent on record" if r is None
+        why = (None if face.get("synthetic")            # generated: nobody to consent (add_person.py --synthetic)
+               else "no consent on record" if r is None
                else "consent withdrawn" if (r.get("withdrawn") or "").strip()
                else "no consent to scoring" if "score" not in (r.get("scopes") or "")
                else "past its retain_until date" if (r.get("retain_until") or "") < today
