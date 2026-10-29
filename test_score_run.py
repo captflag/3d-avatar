@@ -59,6 +59,15 @@ def check_level():
     print("ok  gate level: an unchanged or better run kept, one face or a drift worse dropped")
 
 
+def check_add_person():
+    import add_person
+    assert add_person.turn_problem("left35", -33.0) is None and add_person.turn_problem("right35", 31.0) is None
+    assert add_person.turn_problem("left35", 7.4), "a side photo turned 7 degrees passed"
+    assert add_person.turn_problem("front", 14.0), "a turned front photo passed"
+    assert add_person.turn_problem("o1", 40.0) is None, "another-day photos may be turned"
+    print("ok  add person: side, held-out and front photos checked for their turn")
+
+
 def check_spreads():
     got = score_run.spreads({"p01": {"x": 1.0}, "p01~0": {"x": 1.2}, "p01~1": {"x": 0.8}, "p02": {"x": 2.0}})
     assert abs(got["p01"]["x"] - 0.2) < 1e-6 and "x" not in got["p02"], got
@@ -78,13 +87,13 @@ def check_consent():
             f"c5,p05,{today},build;score,{today + dt.timedelta(days=30)},\n", encoding="utf-8")
         (folder / "test-set.json").write_text(json.dumps(
             [{"name": f"p0{i}", "photo": "x.jpg", "consent_id": f"c{i}"} for i in range(1, 6)] +
-            [{"name": "p06", "photo": "x.jpg"}] +
+            [{"name": "p06", "photo": "x.jpg"}] + [{"name": "s01", "photo": "x.jpg", "synthetic": True}] +
             [{"name": "p05", "photo": "x.jpg", "consent_id": "c5", "split": "lockbox"}]), encoding="utf-8")
         dev = [f["name"] for f in score_run.load_faces(folder / "test-set.json", "dev")]
-        assert dev == ["p01", "p05"], dev
+        assert dev == ["p01", "p05", "s01"], dev
         locked = [f["split"] for f in score_run.load_faces(folder / "test-set.json", "lockbox")]
         assert locked == ["lockbox"], locked
-    print("ok  consent: withdrawn, expired, unscoped and unregistered faces left out")
+    print("ok  consent: withdrawn, expired, unscoped and unregistered faces left out; generated ones taken")
 
 
 def check_rubric():
@@ -150,6 +159,7 @@ def check_review_page():
 if __name__ == "__main__":
     check_gate()
     check_level()
+    check_add_person()
     check_spreads()
     check_consent()
     check_rubric()
