@@ -113,8 +113,13 @@ IRISES = [(468, [469, 470, 471, 472]), (473, [474, 475, 476, 477])]
 # Skin detail: the cheeks' lightness band-passed between these shares of the
 # eye spacing (wrinkle and pore-cluster scale, coarser than a render pixel).
 DETAIL_BAND = (1 / 60, 1 / 15)
+# The jaw outline below the ears, chin included (MediaPipe ids; morph.JAW_OUTLINE).
+JAW = [132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361]
+# A build's jaw_beard reading from which its face counts as bearded (the jaw
+# and chin compared bearded against not).
+BEARDED = 0.15
 # Scores where lower is better; the rest are better higher.
-LOWER = ("lm_", "skin_dE", "mouth_dE", "hair_dE", "iris_dE", "sclera_dE", "teeth_dE", "skin_detail")
+LOWER = ("lm_", "dlib_", "skin_dE", "mouth_dE", "hair_dE", "iris_dE", "sclera_dE", "teeth_dE", "skin_detail")
 lower_better = lambda metric: metric == "hair" or metric.startswith(LOWER)   # hair: the strand angle; not hair_iou
 # What an 8 is, per area: each score's bar, and the share of faces that must
 # clear every bar of the area. Fixed before the baseline (2026-10-28) so a
@@ -333,6 +338,12 @@ def landmark_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
                              for i in (c.start, c.end)}) for region, parts in REGIONS.items()}
     out = {region: float(off[idx].mean()) for region, idx in marks.items()}
     out["all"] = float(off[sorted({i for idx in marks.values() for i in idx})].mean())
+    # The jaw below the ears and the chin's height alone: a beard painted on a
+    # head with no beard's volume left both short of the photo's (the photo's
+    # chin is the beard's), which the whole outline's mean hides.
+    eye = np.linalg.norm(pm[33] - pm[263])
+    out["jaw"] = float(off[JAW].mean())
+    out["chin"] = float(abs(placed[152, 1] - pm[152, 1]) / eye * 100)
     return out
 
 
@@ -676,6 +687,10 @@ def score(tag: str, faces: list[dict]) -> dict:
                 continue
             cos = lambda e: float(np.dot(got.ravel(), e.ravel()) / (np.linalg.norm(got) * np.linalg.norm(e)))
             row[f"identity_{view}"] = round(cos(reference), 4)
+            if view == "p":
+                # The second recogniser's distance, photo to the pose render.
+                a, b = ids.dlib_embedding(photo), ids.dlib_embedding(png)
+                row["dlib_p"] = None if a is None or b is None else round(float(np.linalg.norm(a - b)), 4)
             if others:
                 row[f"others_{view}"] = round(float(np.mean([cos(e) for e in others if e is not None])), 4)
         got = ids.embedding(OUT / "renders" / f"{name}-{tag}p.png")
@@ -689,6 +704,9 @@ def score(tag: str, faces: list[dict]) -> dict:
         for region, value in (landmark_error(flat(photo), render_p) or {}).items():
             if region != "all":
                 row[f"lm_front_{region}"] = round(value, 2)
+        info = OUT / f"{tag}-{name}.json"
+        if info.exists():
+            row["jaw_beard"] = json.loads(info.read_text()).get("jaw_beard")
         held_png = OUT / "renders" / f"{name}-{tag}h.png"
         if face.get("held_out") and held_png.exists():
             held = landmark_error(flat(upright(HERE / face["held_out"])), flat(held_png))
@@ -709,6 +727,15 @@ def summary(scores: dict) -> dict:
     keys = sorted({k for row in scores.values() for k in row})
     return {k: round(float(np.mean(v)), 4) for k in keys
             if (v := [row[k] for row in scores.values() if row.get(k) is not None])}
+
+
+def beard_line(scores: dict) -> str:
+    """The jaw and chin (% of eye spacing), bearded faces against the rest."""
+    groups = {"bearded": [r for r in scores.values() if (r.get("jaw_beard") or 0.0) >= BEARDED],
+              "not": [r for r in scores.values() if (r.get("jaw_beard") or 0.0) < BEARDED]}
+    mean = lambda rows, k: (f"{np.mean(v):.2f}" if (v := [r[k] for r in rows if r.get(k) is not None]) else "-")
+    return "jaw / chin %: " + ", ".join(f"{g} ({len(rows)}) {mean(rows, 'lm_front_jaw')} / {mean(rows, 'lm_front_chin')}"
+                                        for g, rows in groups.items())
 
 
 def table(tag: str, scores: dict, base: str | None, base_scores: dict | None) -> str:
@@ -859,6 +886,7 @@ def main() -> int:
         if base_scores is None:
             print(f"no scores for {args.against}; score it first", file=sys.stderr)
     print(table(args.tag, scores, args.against, base_scores))
+    print(beard_line(scores))
     stressed = None
     if args.stress:
         stressed = stress(args.tag, people, args.skip_build, args.workers)
