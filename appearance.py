@@ -1604,14 +1604,21 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     # face's width); a thin brow's own edge is one too, so only on a face
     # wearing glasses (such a line under the eyes as well, where no brow is),
     # and only below the lowest such line in each column.
-    def level_lines(where):
-        thin = (np.abs(lightness - no_lines) > BROW_DARKER) & where
+    def level_lines(where, darker=BROW_DARKER):
+        thin = (np.abs(lightness - no_lines) > darker) & where
         thin = cv2.dilate(thin.astype(np.uint8), np.ones((3, 1), np.uint8))
         return cv2.morphologyEx(thin, cv2.MORPH_OPEN, np.ones((1, max(int(FRAME_RUN * face_w), 5)), np.uint8)) > 0
     eyes_y = float(px[[159, 386], 1].mean()); nose_y = float(px[1, 1])
     under = np.zeros((h, w), bool)
     under[int(eyes_y + 0.35 * (nose_y - eyes_y)):int(nose_y), int(px[:, 0].min()):int(px[:, 0].max())] = True
-    glasses = level_lines(under & ~keep).sum() > FRAME_RUN * face_w
+    # A rim under each eye, at twice a brow's contrast: wrinkles and a cheek's
+    # creases under the eyes made lines too, fainter or on one side only
+    # (p07's both sides at 5 and 3 rim lengths at a brow's contrast, none at
+    # twice; p02's one side at 7; the two faces wearing glasses 8 or more on
+    # each side).
+    rims = level_lines(under & ~keep, 2 * BROW_DARKER)
+    side = np.arange(w)[None, :] < float(px[1, 0])
+    glasses = min((rims & side).sum(), (rims & ~side).sum()) > FRAME_RUN * face_w
     if glasses:
         # Where the rim slopes it is no level line: the thin lines that run on
         # well outside the brow are the rim, and not brow either inside it.
@@ -1634,11 +1641,13 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
             cut = np.zeros((h, w), bool)
             cut[:, cols] = np.arange(h)[:, None] > lowest[None, :]
             brow_hair &= ~cut
-    # And no thinner from top to bottom than a rim: where the rim touches the
-    # brow, the line filter above gave it back as a thin line along the brow's
-    # underside. A brow is several times thicker.
+    # And on glasses no thinner from top to bottom than a rim: where the rim
+    # touches the brow, the line filter above gave it back as a thin line
+    # along the brow's underside. A brow is several times thicker, but for its
+    # tail: without glasses that went, and the tail showed as a gap and dots.
     tall = max(int(FRAME_WIDTH * face_w), 3)
-    brow_hair = cv2.morphologyEx(brow_hair.astype(np.uint8), cv2.MORPH_OPEN, np.ones((tall, 2), np.uint8))
+    brow_hair = brow_hair.astype(np.uint8)
+    brow_hair = cv2.morphologyEx(brow_hair, cv2.MORPH_OPEN, np.ones((tall, 2) if glasses else (3, 3), np.uint8))
     # A rim crossing the brow leaves a thin gap in it; filled with skin it
     # showed as a light line through the brow. The gap is brow, coloured from
     # the line-free image below.
