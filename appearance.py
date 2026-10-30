@@ -1656,7 +1656,11 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     # fell 0.379 -> 0.298 on p01, 0.243 -> 0.226 over the eight test faces.
     keep |= brow_hair if glasses else cv2.dilate(hull(BROWS), disc) > 0
     if beard is not None:
-        keep |= beard > 0.2
+        # The gaps between a moustache's clumps kept too, stubble and all:
+        # smoothed, they read as bare islands of skin and the moustache as
+        # separate patches (p08).
+        gaps = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(int(0.1 * face_w), 3) | 1,) * 2)
+        keep |= cv2.morphologyEx((beard > 0.2).astype(np.uint8), cv2.MORPH_CLOSE, gaps) > 0
     hair = (parts == HAIR) if parts is not None else np.zeros((h, w), bool)
     # The photo's hair above the brows is the bald head's skin too: baked as it
     # was, the hairline lay on the bare scalp as a dark band.
