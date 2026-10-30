@@ -91,6 +91,37 @@ def rendered(albedo: np.ndarray, light: float = RENDER_LIGHT) -> np.ndarray:
     return np.where(peak < start, c, squeezed)
 
 
+# The bare cheeks under the eyes (MediaPipe ids), where a skin's tone reads.
+CHEEK_PATCHES = ([50, 205, 187, 123, 116, 117, 118, 101], [280, 425, 411, 352, 345, 346, 347, 330])
+
+
+def match_colour(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks,
+                 exclude: np.ndarray | None = None, limits=(0.3, 2.0)):
+    """The finished skin image scaled (linear, a gain per channel) so its
+    cheeks render the colour the photo shows them. delight() sets the
+    exposure on a few cheek points before its shadows are lifted, and the
+    steps after it move the skin again (the cast pulled back, smooth_skin
+    evening the face to its median): the cheeks rendered 7-15 L* lighter
+    than the photos on six of the eight test faces, and redder and yellower
+    on several. Matched in lightness alone they still sat 6.1 dE off.
+    Returns (image, gains)."""
+    h, w = photo_rgb.shape[:2]
+    mask = np.zeros((h, w), np.uint8)
+    for ring in CHEEK_PATCHES:
+        points = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in ring])
+        cv2.fillPoly(mask, [cv2.convexHull(points.round().astype(np.int32))], 1)
+    keep = mask > 0 if exclude is None else (mask > 0) & (exclude < 0.2)
+    if keep.sum() < 50:
+        return skin_rgb, np.ones(3)
+    target = to_linear(np.median(photo_rgb[keep], axis=0).round().astype(np.uint8)[None, :])[0]
+    cheek = to_linear(np.median(skin_rgb[keep], axis=0).round().astype(np.uint8)[None, :])[0]
+    gains = np.ones(3)
+    for _ in range(12):                     # each channel's render rises with its gain
+        shown = rendered(cheek * gains)
+        gains = np.clip(gains * target / np.maximum(shown, 1e-4), *limits)
+    return to_srgb(to_linear(skin_rgb) * gains), np.round(gains, 3)
+
+
 def albedo_for(rgb) -> np.ndarray:
     """The sRGB albedo the studio renders as `rgb` (sRGB, as a photo shows it),
     same hue: the inverse of `rendered`, by its brightness.

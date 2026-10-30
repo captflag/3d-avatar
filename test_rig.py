@@ -1187,8 +1187,19 @@ def check_delight():
     lum = delight.to_linear(out[cheeks[:, 1].astype(int), cheeks[:, 0].astype(int)]) @ [0.2126, 0.7152, 0.0722]
     assert report["exposure"] < 1.0 and abs(np.median(lum) - delight.SKIN_CEILING) < 0.05, \
         f"overexposed skin not capped: cheeks at {np.median(lum):.2f}"
+
+    # The final colour match: a skin rendered too light and too red comes out
+    # rendering the photo's cheek colour (delight.match_colour).
+    pale = np.clip(rgb.astype(int) + [15, 8, 4], 0, 255).astype(np.uint8)
+    matched, gains = delight.match_colour(pale, rgb, marks)
+    patch = np.zeros((h, w), np.uint8)
+    for ring in delight.CHEEK_PATCHES:
+        cv2.fillPoly(patch, [cv2.convexHull(np.array([[marks[i].x * w, marks[i].y * h] for i in ring]).astype(np.int32))], 1)
+    want = delight.to_linear(np.median(rgb[patch > 0], axis=0).round().astype(np.uint8)[None])[0]
+    got = delight.rendered(delight.to_linear(np.median(matched[patch > 0], axis=0).round().astype(np.uint8)[None])[0])
+    assert np.abs(got / want - 1.0).max() < 0.06 and (gains < 1.0).all(), f"cheeks render at {got / want} of the photo's"
     print(f"ok  delight: synthetic lighting removed ({spread:.2%} left), "
-          f"overexposed skin capped, dark skin and background untouched")
+          f"overexposed skin capped, dark skin and background untouched, cheeks matched to the photo's colour")
 
 
 def check_appearance():

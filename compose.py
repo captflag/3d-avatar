@@ -1167,6 +1167,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # (appearance.smooth_skin); eyes, brows, lips and beard as the photo has them.
     parts = appearance.segment(photo_rgb)
     skin_rgb = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair)
+    # And the cheeks at the photo's colour once all that is done (delight.match_colour).
+    skin_rgb, colour_gains = delight.match_colour(skin_rgb, photo_rgb, landmarks, exclude=facial_hair)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)
@@ -1729,6 +1731,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "mouth_filled": mouth_filled,
         "top_colour": None if top_rgb is None else [int(c) for c in top_rgb],
         "jaw_beard": jaw_beard,
+        "colour_gains": [float(g) for g in colour_gains],
         "hair_comb": hair_comb,
         "cast_corrected": list(cast_shift),
         "hair_reading": None if hair_reading is None else
