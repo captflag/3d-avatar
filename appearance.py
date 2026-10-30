@@ -1641,18 +1641,20 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
             cut = np.zeros((h, w), bool)
             cut[:, cols] = np.arange(h)[:, None] > lowest[None, :]
             brow_hair &= ~cut
-    # And on glasses no thinner from top to bottom than a rim: where the rim
-    # touches the brow, the line filter above gave it back as a thin line
-    # along the brow's underside. A brow is several times thicker, but for its
-    # tail: without glasses that went, and the tail showed as a gap and dots.
+    # And no thinner from top to bottom than a rim: where the rim touches the
+    # brow, the line filter above gave it back as a thin line along the brow's
+    # underside. A brow is several times thicker.
     tall = max(int(FRAME_WIDTH * face_w), 3)
-    brow_hair = brow_hair.astype(np.uint8)
-    brow_hair = cv2.morphologyEx(brow_hair, cv2.MORPH_OPEN, np.ones((tall, 2) if glasses else (3, 3), np.uint8))
+    brow_hair = cv2.morphologyEx(brow_hair.astype(np.uint8), cv2.MORPH_OPEN, np.ones((tall, 2), np.uint8))
     # A rim crossing the brow leaves a thin gap in it; filled with skin it
     # showed as a light line through the brow. The gap is brow, coloured from
     # the line-free image below.
     brow_hair = cv2.morphologyEx(brow_hair, cv2.MORPH_CLOSE, np.ones((2 * tall, 3), np.uint8)) > 0
-    keep |= brow_hair
+    # Hair by hair, with the brow drawn under them, only on a face wearing
+    # glasses. Without, the brow is kept whole as the photo has it: hair by
+    # hair it came out thinner and lighter, and likeness at the photo's pose
+    # fell 0.379 -> 0.298 on p01, 0.243 -> 0.226 over the eight test faces.
+    keep |= brow_hair if glasses else cv2.dilate(hull(BROWS), disc) > 0
     if beard is not None:
         keep |= beard > 0.2
     hair = (parts == HAIR) if parts is not None else np.zeros((h, w), bool)
@@ -1674,8 +1676,9 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     # pixels that are not brow hair take it.
     k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(int(2 * FRAME_WIDTH * face_w), 5) | 1,) * 2)
     clean = cv2.morphologyEx(cv2.morphologyEx(skin_rgb.astype(np.uint8), cv2.MORPH_CLOSE, k2), cv2.MORPH_OPEN, k2)
-    lines = zone & ~((no_lines < skin_l - BROW_DARKER) & (lightness < skin_l - BROW_DARKER))
-    rgb[lines] = clean[lines]
+    if glasses:
+        lines = zone & ~((no_lines < skin_l - BROW_DARKER) & (lightness < skin_l - BROW_DARKER))
+        rgb[lines] = clean[lines]
     # On a face wearing glasses, the frame out of all the skin: smoothed at
     # SMOOTH_MARKS with some grain kept, the rims round the eyes and the bridge
     # stayed as faint rings, a nose pad's grey shadow as a smudge by the eye
@@ -1709,8 +1712,9 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     whole = cv2.GaussianBlur((region | keep & face_mask).astype(np.float64), (0, 0), feather)[..., None]
     # Every skin pixel fully smoothed, the feather falling on the kept
     # features' side: feathered both ways, the unsmoothed lid skin beside a
-    # brow showed through as a faint light line along it.
-    alpha = np.maximum(cv2.GaussianBlur(region.astype(np.float64), (0, 0), feather), region)[..., None]
+    # brow kept hair by hair showed through as a faint light line along it.
+    alpha = cv2.GaussianBlur(region.astype(np.float64), (0, 0), feather)
+    alpha = (np.maximum(alpha, region) if glasses else alpha)[..., None]
     # Hair filled from the skin round it: its own detail is hair's, not grain.
     grain = SMOOTH_GRAIN * (rgb - fine) * (~hair)[..., None]
     skin = fine + grain + shift
@@ -1733,7 +1737,7 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     dark = brow_hair & (lightness < skin_l - BROW_DARKER)
     hairs = cv2.GaussianBlur(dark.astype(np.float64), (0, 0), 1.0)
     inset = max(int(BROW_INSET * face_w), 1)
-    for ring, inner, outer in zip(BROWS, (55, 285), (46, 276)):
+    for ring, inner, outer in zip(BROWS, (55, 285), (46, 276)) if glasses else ():
         shape = np.zeros((h, w), np.uint8)
         cv2.fillPoly(shape, [px[list(ring)].round().astype(np.int32)], 1)
         shape = cv2.erode(shape, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset + 1,) * 2))
