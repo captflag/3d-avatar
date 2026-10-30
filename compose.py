@@ -60,6 +60,12 @@ EYE_RECESS = 0.06
 PORE_STRENGTH = {"head": 0.5, "body": 0.25}
 # Head and body skin textures, texels a side.
 SKIN_SIZE = 2048
+# Cards blended by their texture's alpha, not cut at half. The lashes are a
+# few pixels on screen, so they are drawn from the texture's smallest mip
+# levels, where a strand's alpha is averaged far below half: cut, the fine
+# strands vanished and the dense roots stayed as black blobs and spikes along
+# the lids and at the corners of every eye.
+SOFT_CARDS = ("eyelashes",)
 # How much a full crease darkens generated skin (appearance.skin_cavity).
 CAVITY_DEPTH = 0.35
 # Skin's index of refraction: about 1.4, a reflectance of 2.8% head on.
@@ -106,12 +112,21 @@ HAIR_ANISOTROPY = (0.7, np.pi / 2)
 # at 0.18 under a full coat the highlight over a light iris rendered 86-88 L*
 # against the photos' 55, and the irises 2-9 L* dark. Measured on 1800-pixel
 # renders of four faces, summed: highlight 77 -> 53 L* off, iris 20 -> 8.
-ROUGHNESS = {"skin": 0.5, "eyes": 0.4, "hair": 0.45,
+# Then 0.8 (2026-10-29), with the iris lit IRIS_GAIN: at 0.4 a broad sheen lay
+# over the whole eye and a brown iris read as black glass, a doll's stare; the
+# clear coat alone now gives the eye its small wet catchlight.
+ROUGHNESS = {"skin": 0.5, "eyes": 0.8, "hair": 0.45,
              "top": 0.85, "bottom": 0.85, "shoes": 0.4}
 # The cornea as a clear coat over the eye (strength, roughness), written into
 # the file so other viewers show its wet highlight too; the studio reads it
 # from there. Without it, Blender, Unity or a web viewer drew a matte eye.
 CORNEA_COAT = (0.3, 0.03)
+# How much lighter the iris is painted than the photo reads it: the eyeball sits
+# behind the lids, in their shade, and a brown iris read at the photo's
+# colour rendered near black, its pupil lost in it. 1.8 until 2026-10-30, when
+# every test face's iris rendered 6-10 L* lighter than its photo's (iris_dE
+# 12.4 mean over the eight dev faces); at 1.3, 7.0, likeness level.
+IRIS_GAIN = 1.3
 
 
 def body_mesh(vertices: np.ndarray | None = None) -> trimesh.Trimesh:
@@ -982,13 +997,16 @@ def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_c
     if mesh.metadata.get("texture") is not None:
         # Authored asset: its own texture, normal map and alpha cut-out.
         # No vertex colour, which glTF would multiply into the texture.
-        return skinned_glb.Part(
+        soft = name in SOFT_CARDS
+        part = skinned_glb.Part(
             name, mesh.vertices, mesh.faces, part_joints, part_weights,
             uv=gltf_uv(mesh.metadata["uv"]), texture=mesh.metadata["texture"],
             normal_texture=mesh.metadata.get("normal_texture"),
-            alpha_mask=mesh.metadata.get("alpha_mask", False),
+            alpha_mask=mesh.metadata.get("alpha_mask", False) and not soft,
             normals=welded_normals(mesh), roughness=roughness,
         )
+        part.alpha_blend = soft and mesh.metadata.get("alpha_mask", False)
+        return part
     return skinned_glb.Part(
         name, mesh.vertices, mesh.faces, part_joints, part_weights,
         colour=mesh.visual.vertex_colors.astype(np.float32) / 255.0,
@@ -1145,6 +1163,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb = appearance.lip_tone(skin_rgb, landmarks)
     # The beard darker by what the studio's light lifts dark paint.
     skin_rgb = appearance.darken_beard(skin_rgb, facial_hair, landmarks)
+    # Smooth, even skin: no freckles, pores, spots or light's patches
+    # (appearance.smooth_skin); eyes, brows, lips and beard as the photo has them.
+    parts = appearance.segment(photo_rgb)
+    skin_rgb = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)
@@ -1155,18 +1177,17 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
 
     # The hair as the photo shows it, from a segmentation of the photo: its
     # colour, and — unless an outfit was chosen by hand — which haircut.
-    parts = appearance.segment(photo_rgb)
     hair_reading = appearance.read_hair(photo_rgb, landmarks, parts)
     top_rgb = None
     outfit = outfit_for(gender, wear)
     if wear is None:
-        default_cut = next((i["id"] for i in outfit if i["category"] == "hair" and "mhclo" in i), None)
-        # `hair` (--hair) picks the cut by hand, everything else as read.
-        cut = (None if hair == "bald" else hair) if hair else appearance.hair_style(hair_reading, default_cut)
-        # Where the segmentation read no hair to measure, the photo check's
-        # haircut (photo_check.hair_hint: a catalogue id, or "bald") decides.
-        if hair_hint and (hair_reading is None or hair_reading["top"] is None):
-            cut = None if hair_hint == "bald" else hair_hint
+        # No haircut unless asked for (--hair): the person picks one, and its
+        # colour, in the studio's hair picker, which every file carries every
+        # cut for. Picked from the photo (appearance.hair_style), the cut was
+        # a likeness the person could not choose; the photo's own cut scored
+        # 0.497 at the pose against 0.411 built bald on the test set's first
+        # face, the price of letting them.
+        cut = hair if hair and hair != "bald" else None
         # Bald: no hair at all. Otherwise the chosen cut over the underlayer.
         rest = [i for i in outfit if i["category"] != "hair"]
         # No scalp layer under a real haircut: the head texture is tinted in
@@ -1280,6 +1301,13 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
 
     # Only clothing hides skin; hair sits on top of it.
     covering = [(item, m) for item, m in worn if item["category"] in ("top", "bottom", "shoes", "outfit")]
+    # And no skin in front of it (garments.tuck_skin).
+    collarbone = float(vertices[np.unique(groups["joint-l-clavicle"])][:, 1].mean())
+    under = np.unique(groups["body"])
+    tucked = garments.tuck_skin(trimesh.Trimesh(vertices, groups["body"], process=False),
+                                [m for _, m in covering], collarbone)
+    vertices = vertices.copy()
+    vertices[under] = tucked[under]
     # Every body triangle is kept; skin under clothes is hidden by the texture's
     # alpha instead, with a band left under each garment edge (coverage_alpha).
     body_faces = groups["body"]
@@ -1486,6 +1514,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # to a natural eye colour (appearance.iris_colour).
     # The whites at the photo's own exposure (appearance.sclera_colour).
     iris, eye_colour = appearance.iris_colour(photo_rgb, landmarks)
+    iris = np.clip(iris * IRIS_GAIN, 0, 255)
     eyes, eye_uv, eye_texture = build_eyes(vertices, groups, iris, appearance.sclera_colour(photo_rgb, landmarks))
 
     # --- rig it --- (skeleton and weights made above, with the nails)

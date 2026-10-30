@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d12">
+<title>Create your avatar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --bg:#0b0d12; --panel:#13161d; --panel-2:#1a1e27; --line:#262b36; --text:#eef0f4; --muted:#9aa2b1;
+    --accent:#8b7cff; --accent-2:#4fd1ff; --ok:#5ee0a0; --warn:#ffb86b; --bad:#ff7a8a;
+    --grad:linear-gradient(135deg,var(--accent),var(--accent-2));
+    --radius:16px;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:15px/1.5 Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+  button { font:inherit; cursor:pointer; border:0; color:inherit; background:none; }
+  button:focus-visible, input:focus-visible { outline:2px solid var(--accent-2); outline-offset:2px; }
+  input[type=file] { display:none; }
+  [hidden] { display:none !important; }
+
+  /* Header and the step tracker */
+  header { position:sticky; top:0; z-index:5; display:flex; align-items:center; justify-content:space-between; gap:16px;
+           padding:14px 20px; background:rgba(11,13,18,.85); backdrop-filter:blur(10px); border-bottom:1px solid var(--line); }
+  .brand { display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:.2px; }
+  .brand i { width:26px; height:26px; border-radius:8px; background:var(--grad); display:block; }
+  .steps { display:flex; gap:6px; list-style:none; margin:0; padding:0; }
+  .steps li { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); padding:5px 10px;
+              border-radius:999px; }
+  .steps li b { width:20px; height:20px; border-radius:50%; display:grid; place-items:center; font-size:11px;
+                background:var(--panel-2); border:1px solid var(--line); }
+  .steps li.now { color:var(--text); background:var(--panel-2); }
+  .steps li.now b { background:var(--grad); border-color:transparent; color:#0b0d12; }
+  .steps li.done b { background:var(--ok); border-color:transparent; color:#0b0d12; }
+  @media (max-width:640px) { .steps li span { display:none; } .steps li.now span { display:inline; } }
+
+  main { max-width:1100px; margin:0 auto; padding:24px 20px 40px; }
+  section[data-step] { display:none; }
+  section[data-step].on { display:block; animation:rise .35s ease; }
+  @keyframes rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+  h1 { font-size:clamp(24px,4vw,34px); line-height:1.15; margin:8px 0 6px; letter-spacing:-.4px; }
+  .lead { color:var(--muted); margin:0 0 24px; max-width:560px; }
+
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:48px; padding:0 22px;
+         border-radius:999px; font-weight:600; background:var(--panel-2); border:1px solid var(--line); }
+  .btn:hover { border-color:#3a4150; }
+  .btn.primary { background:var(--grad); color:#0b0d12; border:0; }
+  .btn.primary:hover { filter:brightness(1.06); }
+  .btn[disabled] { opacity:.45; cursor:default; filter:none; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+
+  /* Step 1: the photo */
+  .photo-grid { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,1fr); gap:24px; align-items:start; }
+  @media (max-width:820px) { .photo-grid { grid-template-columns:1fr; } }
+  .stage { position:relative; aspect-ratio:3/4; max-height:70vh; width:100%; border-radius:var(--radius); overflow:hidden;
+           background:radial-gradient(120% 80% at 50% 0%,#1d2230,#0e1017); border:1px solid var(--line); }
+  .stage video, .stage img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  .stage video { transform:scaleX(-1); }
+  .stage .oval { position:absolute; left:50%; top:44%; width:58%; aspect-ratio:3/4; transform:translate(-50%,-50%);
+                 border-radius:50%; border:2px dashed rgba(255,255,255,.35); box-shadow:0 0 0 999px rgba(0,0,0,.25); transition:border-color .2s; }
+  .stage.ready .oval { border:3px solid var(--ok); }
+  .stage .empty { position:absolute; inset:0; display:grid; place-items:center; text-align:center; color:var(--muted); padding:24px; }
+  .stage .empty svg { width:84px; height:84px; opacity:.5; margin-bottom:10px; }
+  .stage .prompt { position:absolute; left:12px; right:12px; bottom:12px; padding:10px 14px; border-radius:12px;
+                   background:rgba(11,13,18,.78); backdrop-filter:blur(6px); font-weight:600; text-align:center; }
+  .stage .prompt:empty { display:none; }
+  .shots { display:flex; gap:8px; position:absolute; top:12px; left:12px; }
+  .shots span { width:42px; height:56px; border-radius:8px; border:1px solid rgba(255,255,255,.25); background:#0008 center/cover; }
+  .shots span.now { border-color:var(--accent-2); }
+
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:20px; }
+  .card h2 { font-size:15px; margin:0 0 12px; }
+  .seg { display:inline-flex; background:var(--panel-2); border:1px solid var(--line); border-radius:999px; padding:4px; }
+  .seg button { padding:8px 16px; border-radius:999px; color:var(--muted); font-weight:600; min-height:38px; }
+  .seg button[aria-pressed="true"] { background:var(--text); color:#0b0d12; }
+  .tips { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin:0; padding:0; list-style:none; }
+  .tips li { display:flex; gap:10px; align-items:center; font-size:13px; color:var(--muted); }
+  .tips li i { width:30px; height:30px; border-radius:9px; flex:none; display:grid; place-items:center; background:var(--panel-2);
+               font-style:normal; font-size:15px; }
+  .checks { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+  .checks li { display:flex; gap:10px; align-items:center; font-size:14px; }
+  .checks li::before { content:""; width:18px; height:18px; border-radius:50%; flex:none; background:var(--warn); }
+  .checks li.ok::before { background:var(--ok); }
+  .checks:empty { display:none; }
+  .note { font-size:13px; color:var(--muted); margin:10px 0 0; }
+  .error { color:var(--bad); font-size:14px; min-height:20px; margin:12px 0 0; }
+  .stack { display:grid; gap:16px; }
+
+  /* Step 2: creating */
+  .creating { display:grid; place-items:center; text-align:center; min-height:60vh; }
+  .orb { width:180px; height:180px; border-radius:50%; position:relative; margin:0 auto 26px; }
+  .orb img { width:100%; height:100%; border-radius:50%; object-fit:cover; filter:saturate(.8); }
+  .orb::after { content:""; position:absolute; inset:-8px; border-radius:50%; border:3px solid transparent;
+                border-top-color:var(--accent); border-right-color:var(--accent-2); animation:spin 1.2s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .bar { width:min(360px,80vw); height:6px; border-radius:999px; background:var(--panel-2); overflow:hidden; margin:18px auto 8px; }
+  .bar div { height:100%; width:0; background:var(--grad); transition:width .6s ease; }
+  #saying { font-weight:600; font-size:18px; min-height:28px; }
+
+  /* Step 3: style */
+  .studio { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:20px; }
+  .studio > *, .save > *, .photo-grid > * { min-width:0; }   /* a long row of hairstyles must scroll, not widen the page */
+  @media (max-width:900px) { .studio { grid-template-columns:1fr; } }
+  .viewport { position:relative; height:min(72vh,720px); border-radius:var(--radius); overflow:hidden; border:1px solid var(--line);
+              background:radial-gradient(90% 70% at 50% 30%,#1e2330,#0d0f15); }
+  @media (max-width:900px) { .viewport { height:56vh; } }
+  .viewport canvas { width:100%; height:100%; display:block; touch-action:none; }
+  .viewport .chips { position:absolute; top:12px; left:12px; }
+  .viewport .hint { position:absolute; bottom:12px; left:0; right:0; text-align:center; font-size:12px; color:var(--muted); pointer-events:none; }
+  .loading { position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); }
+  .loading[hidden] { display:none; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px; display:flex; flex-direction:column; gap:16px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0; }
+  .cuts { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; max-height:46vh; overflow-y:auto; padding-right:2px; }
+  @media (max-width:900px) { .cuts { display:flex; overflow-x:auto; overflow-y:hidden; max-height:none; scroll-snap-type:x mandatory; }
+                             .cuts button { flex:0 0 92px; scroll-snap-align:start; } }
+  .cuts button { border-radius:12px; border:2px solid transparent; background:var(--panel-2); padding:0 0 6px; text-align:center;
+                 font-size:11px; line-height:1.25; color:var(--muted); transition:border-color .15s, transform .15s; }
+  .cuts button:hover { transform:translateY(-1px); }
+  .cuts button img { display:block; width:100%; aspect-ratio:1; border-radius:10px 10px 0 0; background:#0d0f15; margin-bottom:5px; }
+  .cuts button span { display:block; padding:0 4px; }
+  .cuts button[aria-pressed="true"] { border-color:var(--accent-2); color:var(--text); }
+  .swatches { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  .swatches button { width:34px; height:34px; border-radius:50%; border:2px solid var(--line); }
+  .swatches button[aria-pressed="true"] { border-color:var(--text); box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--accent-2); }
+  .swatches label { position:relative; width:34px; height:34px; border-radius:50%; border:2px dashed var(--line); display:grid; place-items:center;
+                    color:var(--muted); font-size:18px; cursor:pointer; }
+  .swatches input { position:absolute; inset:0; opacity:0; cursor:pointer; }
+
+  /* Step 4: save */
+  .save { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:20px; align-items:start; }
+  @media (max-width:900px) { .save { grid-template-columns:1fr; } }
+  .save .shot { border-radius:var(--radius); border:1px solid var(--line); background:radial-gradient(90% 70% at 50% 30%,#1e2330,#0d0f15);
+                aspect-ratio:3/4; max-height:72vh; width:100%; object-fit:contain; display:block; }
+  .option { display:flex; gap:14px; align-items:center; padding:14px; border-radius:14px; border:1px solid var(--line); background:var(--panel-2);
+            width:100%; text-align:left; }
+  .option:hover { border-color:#3a4150; }
+  .option i { width:44px; height:44px; border-radius:12px; background:var(--grad); flex:none; display:grid; place-items:center;
+              color:#0b0d12; font-style:normal; font-weight:700; font-size:13px; }
+  .option b { display:block; }
+  .option small { color:var(--muted); }
+  .back { color:var(--muted); font-weight:600; padding:10px 0; }
+  .back:hover { color:var(--text); }
+  .foot { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:20px; flex-wrap:wrap; }
+  /* On a phone: the photo shorter, so the buttons show, and the step's main
+     button held at the bottom of the screen. */
+  @media (max-width:820px) {
+    .stage { max-height:48vh; }
+    main { padding-bottom:96px; }
+    .foot { position:fixed; left:0; right:0; bottom:0; margin:0; padding:12px 20px calc(12px + env(safe-area-inset-bottom));
+            background:rgba(11,13,18,.92); backdrop-filter:blur(10px); border-top:1px solid var(--line); z-index:4; }
+    section[data-step]:not(.on) .foot { display:none; }
+  }
+  @media (prefers-reduced-motion:reduce) { *, *::after { animation:none !important; transition:none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><i aria-hidden="true"></i>Avatar</div>
+  <ol class="steps" aria-label="Progress">
+    <li data-for="photo"><b>1</b><span>Photo</span></li>
+    <li data-for="create"><b>2</b><span>Create</span></li>
+    <li data-for="style"><b>3</b><span>Style</span></li>
+    <li data-for="save"><b>4</b><span>Save</span></li>
+  </ol>
+</header>
+
+<main>
+  <!-- 1. The photo -->
+  <section data-step="photo" aria-labelledby="t-photo">
+    <h1 id="t-photo">Start with a selfie</h1>
+    <p class="lead">One clear photo of your face makes a 3D you. Take one now, or upload one you have.</p>
+    <div class="photo-grid">
+      <div class="stage" id="stage">
+        <video id="video" playsinline muted hidden></video>
+        <img id="preview" alt="Your photo" hidden>
+        <div class="oval" id="oval" hidden></div>
+        <div class="shots" id="shots" hidden><span></span><span></span><span></span></div>
+        <div class="empty" id="empty">
+          <div>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+              <circle cx="12" cy="9" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
+            <div>Your photo will show here</div>
+          </div>
+        </div>
+        <div class="prompt" id="prompt" aria-live="polite"></div>
+      </div>
+
+      <div class="stack">
+        <div class="card" id="choose">
+          <div class="row">
+            <button class="btn primary" id="selfie" type="button">Take a selfie</button>
+            <button class="btn" id="upload" type="button">Upload a photo</button>
+            <input type="file" id="file" accept="image/jpeg,image/png,image/webp">
+          </div>
+          <p class="note" id="camnote"></p>
+        </div>
+
+        <div class="card" id="camctl" hidden>
+          <h2 id="camstep">Look straight at the camera</h2>
+          <ul class="checks" id="livechecks"></ul>
+          <div class="row" style="margin-top:14px">
+            <button class="btn" id="shoot" type="button">Take it now</button>
+            <button class="btn" id="skipturn" type="button" hidden>Skip</button>
+            <button class="back" id="stopcam" type="button">Cancel</button>
+          </div>
+          <p class="note">It takes the photo by itself once every point is green.</p>
+        </div>
+
+        <div class="card" id="checked" hidden>
+          <h2>Your photo</h2>
+          <ul class="checks" id="photochecks"></ul>
+          <p class="note" id="checknote"></p>
+        </div>
+
+        <div class="card">
+          <h2>Body style</h2>
+          <div class="seg" role="group" aria-label="Body style">
+            <button type="button" data-gender="male" aria-pressed="true">Masculine</button>
+            <button type="button" data-gender="female" aria-pressed="false">Feminine</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>For the best likeness</h2>
+          <ul class="tips">
+            <li><i>☀</i>Even light on your face</li>
+            <li><i>◎</i>Look straight at the camera</li>
+            <li><i>😐</i>Relaxed face, mouth closed</li>
+            <li><i>👓</i>No sunglasses or hat</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <p class="error" id="photoerror" role="alert"></p>
+    <div class="foot">
+      <span></span>
+      <button class="btn primary" id="create" type="button" disabled>Create my avatar</button>
+    </div>
+  </section>
+
+  <!-- 2. Creating -->
+  <section data-step="create" aria-labelledby="t-create">
+    <div class="creating">
+      <div>
+        <div class="orb"><img id="orbphoto" alt=""></div>
+        <h1 id="t-create">Creating your avatar</h1>
+        <div id="saying" aria-live="polite">Reading your face…</div>
+        <div class="bar"><div id="progress"></div></div>
+        <p class="note">This takes about a minute. Keep this page open.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Style -->
+  <section data-step="style" aria-labelledby="t-style">
+    <h1 id="t-style">Make it yours</h1>
+    <p class="lead">Pick a hairstyle and colour. Drag your avatar to turn it.</p>
+    <div class="studio">
+      <div class="viewport">
+        <canvas id="view" aria-label="Your 3D avatar"></canvas>
+        <div class="chips seg" role="group" aria-label="View">
+          <button type="button" data-view="face" aria-pressed="true">Face</button>
+          <button type="button" data-view="body" aria-pressed="false">Full body</button>
+        </div>
+        <div class="loading" id="viewloading">Loading your avatar…</div>
+        <div class="hint">Drag to turn · pinch or scroll to zoom</div>
+      </div>
+      <div class="panel">
+        <h2>Hairstyle</h2>
+        <div class="cuts" id="cuts" role="group" aria-label="Hairstyle"></div>
+        <h2>Hair colour</h2>
+        <div class="swatches" id="swatches" role="group" aria-label="Hair colour"></div>
+      </div>
+    </div>
+    <div class="foot">
+      <button class="back" type="button" id="again1">← Use another photo</button>
+      <button class="btn primary" type="button" id="tosave">Next: save</button>
+    </div>
+  </section>
+
+  <!-- 4. Save -->
+  <section data-step="save" aria-labelledby="t-save">
+    <h1 id="t-save">Your avatar is ready</h1>
+    <p class="lead">Download it to use anywhere.</p>
+    <div class="save">
+      <img class="shot" id="finalshot" alt="Your avatar">
+      <div class="stack">
+        <button class="option" type="button" id="dl-png"><i>PNG</i><span><b>Picture</b><small>A transparent image of your avatar</small></span></button>
+        <button class="option" type="button" id="dl-glb"><i>3D</i><span><b>3D model (.glb)</b><small>For games, Blender, Unity and 3D apps</small></span></button>
+        <p class="error" id="saveerror" role="alert"></p>
+      </div>
+    </div>
+    <div class="foot">
+      <button class="back" type="button" id="backstyle">← Change style</button>
+      <button class="btn" type="button" id="again2">Make another avatar</button>
+    </div>
+  </section>
+</main>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.162.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.162.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { setupRealism, applyMaterials, groundAndShadow, chooseHair } from '/lib/scene-setup.js';
+import { assess, getLandmarker, STEADY_FRAMES, LEFT } from '/lib/photo-checks.js';
+
+const $ = (id) => document.getElementById(id);
+const state = { front: null, sides: [], gender: 'male', model: null, id: null, hair: null };
+
+// ---- Steps -------------------------------------------------------------------
+const ORDER = ['photo', 'create', 'style', 'save'];
+function go(step) {
+  document.querySelectorAll('section[data-step]').forEach((s) => s.classList.toggle('on', s.dataset.step === step));
+  const at = ORDER.indexOf(step);
+  document.querySelectorAll('.steps li').forEach((li, k) => {
+    li.classList.toggle('now', k === at);
+    li.classList.toggle('done', k < at);
+    if (k === at) li.setAttribute('aria-current', 'step'); else li.removeAttribute('aria-current');
+  });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// ---- Step 1: the photo ---------------------------------------------------------
+// Friendly words for the photo checks (lib/photo-checks.js says what each measures).
+const FRIENDLY = [
+  [/^Face close enough|^Come closer/, 'Face close enough', 'Come a little closer'],
+  [/^Facing the camera|^Turn to face|^Keep your chin/, 'Looking at the camera', 'Look straight at the camera'],
+  [/^Head upright|^Straighten/, 'Head straight', 'Straighten your head'],
+  [/^Relaxed|^Relax/, 'Relaxed face', 'Relax your face, mouth closed'],
+  [/^Eyes open|^Open your eyes/, 'Eyes open', 'Open your eyes'],
+  [/^Sharp|^Blurred/, 'Sharp', 'Hold still'],
+  [/^Even light|^The light falls/, 'Even light', 'Face the light so both cheeks are lit'],
+  [/^Light enough|^Too dark/, 'Bright enough', 'Find more light'],
+  [/^Eyes uncovered|^Take off/, 'Eyes visible', 'Take off sunglasses'],
+  [/^Head and hair|^Move back/, 'Whole head in view', 'Move back a little'],
+  [/^Turned .* the right way|^Wrong way|^Turn further|^Not quite so far/, 'Turned nicely', null],
+];
+function friendly(results) {
+  return results.map((r) => {
+    const rule = FRIENDLY.find(([re]) => re.test(r.text));
+    const text = !rule ? r.text : r.ok ? rule[1] : (rule[2] || r.text);
+    return { ok: r.ok, text };
+  });
+}
+function showChecks(list, results) {
+  list.replaceChildren(...friendly(results).map((r) => Object.assign(document.createElement('li'),
+    { className: r.ok ? 'ok' : '', textContent: r.text })));
+}
+
+function showPhoto(file) {
+  $('preview').src = URL.createObjectURL(file);
+  $('preview').hidden = false; $('empty').hidden = true;
+}
+
+async function checkFile(file) {
+  $('checked').hidden = false;
+  $('photochecks').replaceChildren();
+  $('checknote').textContent = 'Checking your photo…';
+  try {
+    const detector = await getLandmarker('IMAGE');
+    const img = await createImageBitmap(file);
+    const canvas = Object.assign(document.createElement('canvas'), { width: img.width, height: img.height });
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    const results = assess(detector.detect(canvas), canvas, canvas.width, canvas.height);
+    showChecks($('photochecks'), results);
+    const misses = results.filter((r) => !r.ok).length;
+    $('checknote').textContent = misses
+      ? 'You can still go ahead, but fixing the orange points gives a closer likeness.'
+      : 'Looks great.';
+  } catch {
+    $('checknote').textContent = '';   // no detector (offline): the server checks anyway
+  }
+}
+
+function setFront(file, sides = []) {
+  state.front = file; state.sides = sides;
+  showPhoto(file);
+  $('create').disabled = false;
+  $('photoerror').textContent = '';
+}
+
+$('upload').addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', () => {
+  const f = $('file').files[0];
+  $('file').value = '';
+  if (!f) return;
+  stopCamera();
+  setFront(f);
+  checkFile(f);
+});
+
+document.querySelectorAll('[data-gender]').forEach((b) => b.addEventListener('click', () => {
+  state.gender = b.dataset.gender;
+  document.querySelectorAll('[data-gender]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+}));
+
+// The selfie: front, then turned each way (optional), each taken by itself
+// once the live checks hold (as the studio's guided capture does).
+const TURNS = [
+  { title: 'Look straight at the camera', side: null },
+  { title: 'Now turn your head a little to your left', side: LEFT },
+  { title: 'And a little to your right', side: -LEFT },
+];
+let stream = null, loop = 0, steady = 0, turn = 0, shots = [], last = [];
+
+async function startCamera() {
+  $('photoerror').textContent = '';
+  if (!(window.isSecureContext && navigator.mediaDevices?.getUserMedia)) {
+    $('camnote').textContent = 'This browser cannot open the camera here: upload a photo instead.';
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
+  } catch {
+    $('camnote').textContent = 'No camera found, or it was not allowed: upload a photo instead.';
+    return;
+  }
+  const video = $('video');
+  video.srcObject = stream;
+  await video.play();
+  video.hidden = false; $('preview').hidden = true; $('empty').hidden = true;
+  $('oval').hidden = false; $('shots').hidden = false;
+  $('choose').hidden = true; $('camctl').hidden = false; $('checked').hidden = true;
+  $('prompt').textContent = 'Getting ready…';
+  try { await getLandmarker('VIDEO'); } catch { $('prompt').textContent = 'Press “Take it now” when ready.'; }
+  turn = 0; shots = [];
+  [...$('shots').children].forEach((s) => { s.style.backgroundImage = ''; });
+  beginTurn();
+}
+
+function beginTurn() {
+  steady = 0;
+  $('camstep').textContent = TURNS[turn].title;
+  $('prompt').textContent = TURNS[turn].title;
+  $('skipturn').hidden = turn === 0;
+  [...$('shots').children].forEach((s, k) => s.classList.toggle('now', k === turn));
+  const id = ++loop;
+  requestAnimationFrame(() => tick(id));
+}
+
+async function tick(id) {
+  if (id !== loop || !stream) return;
+  const video = $('video');
+  if (video.readyState >= 2) {
+    try {
+      const detector = await getLandmarker('VIDEO');
+      const found = detector.detectForVideo(video, performance.now());
+      last = assess(found, video, video.videoWidth, video.videoHeight, TURNS[turn].side);
+      // A turned photo is lit by its turn and frames differently: only the turn and face checks matter.
+      showChecks($('livechecks'), last);
+      const ok = last.length > 0 && last.every((r) => r.ok);
+      $('stage').classList.toggle('ready', ok);
+      steady = ok ? steady + 1 : 0;
+      if (steady >= STEADY_FRAMES) { take(); return; }
+    } catch { /* no detector: taken by hand */ }
+  }
+  requestAnimationFrame(() => tick(id));
+}
+
+async function take() {
+  ++loop;
+  const video = $('video');
+  const canvas = Object.assign(document.createElement('canvas'), { width: video.videoWidth, height: video.videoHeight });
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  const blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.95));
+  shots[turn] = new File([blob], `selfie-${turn}.jpg`, { type: 'image/jpeg' });
+  $('shots').children[turn].style.backgroundImage = `url(${URL.createObjectURL(blob)})`;
+  turn += 1;
+  if (turn >= TURNS.length) finishCamera(); else beginTurn();
+}
+
+function finishCamera() {
+  const [front, ...sides] = shots;
+  stopCamera();
+  if (!front) return;
+  setFront(front, sides.filter(Boolean));
+  checkFile(front);
+}
+
+function stopCamera() {
+  ++loop;
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = null;
+  $('video').hidden = true; $('oval').hidden = true; $('shots').hidden = true;
+  $('stage').classList.remove('ready');
+  $('choose').hidden = false; $('camctl').hidden = true; $('prompt').textContent = '';
+  if (!state.front) $('empty').hidden = false;
+}
+
+$('selfie').addEventListener('click', startCamera);
+$('shoot').addEventListener('click', take);
+$('skipturn').addEventListener('click', () => { turn += 1; turn >= TURNS.length ? finishCamera() : beginTurn(); });
+$('stopcam').addEventListener('click', () => (turn > 0 ? finishCamera() : stopCamera()));
+
+// ---- Step 2: creating ----------------------------------------------------------
+const SAYINGS = ['Reading your face…', 'Shaping your head…', 'Matching your skin tone…', 'Fitting your eyes…',
+                 'Adding your features…', 'Dressing your avatar…', 'Almost there…'];
+$('create').addEventListener('click', async () => {
+  if (!state.front) return;
+  $('orbphoto').src = URL.createObjectURL(state.front);
+  go('create');
+  const began = performance.now();
+  let k = 0;
+  $('saying').textContent = SAYINGS[0];
+  const timer = setInterval(() => {
+    const t = (performance.now() - began) / 1000;
+    $('progress').style.width = `${Math.min(95, 100 * (1 - Math.exp(-t / 35)))}%`;
+    if (t > (k + 1) * 9 && k < SAYINGS.length - 1) $('saying').textContent = SAYINGS[++k];
+  }, 500);
+  const body = new FormData();
+  body.append('photo', state.front);
+  state.sides.forEach((f) => body.append('side', f));
+  body.append('mode', 'body');
+  body.append('gender', state.gender);
+  try {
+    const res = await fetch('/generate', { method: 'POST', body });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.');
+    state.model = data.model; state.id = data.id;
+    $('progress').style.width = '100%';
+    go('style');
+    await showAvatar(data.model);
+  } catch (err) {
+    go('photo');
+    $('photoerror').textContent = /No face/.test(err.message) ? 'We could not find a face in that photo. Try a clear, front-facing one.'
+      : err.message;
+  } finally {
+    clearInterval(timer);
+  }
+});
+
+// ---- Step 3: style -------------------------------------------------------------
+const canvas = $('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 200);
+const lights = setupRealism(renderer, scene);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.enablePan = false;
+let avatar = null, hairInfo = null, frames = null, view = 'face';
+
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (w && h && (canvas.width !== Math.round(w * renderer.getPixelRatio()) || canvas.height !== Math.round(h * renderer.getPixelRatio()))) {
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    frame(view);
+  }
+}
+
+/** The camera on the face or the whole figure. */
+function frame(which, mark = true) {
+  if (!frames) return;
+  const f = frames[which];
+  const tan = Math.tan((camera.fov * Math.PI) / 360);
+  const distance = Math.max(f.span[1] / (2 * tan), f.span[0] / (2 * tan * camera.aspect));
+  camera.position.set(f.target.x, f.target.y, f.target.z + distance);
+  controls.target.copy(f.target);
+  controls.minDistance = distance * 0.45; controls.maxDistance = distance * 2.5;
+  controls.update();
+  if (!mark) return;
+  view = which;
+  document.querySelectorAll('[data-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === which)));
+}
+document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => frame(b.dataset.view)));
+
+async function showAvatar(url) {
+  $('viewloading').hidden = false;
+  if (avatar) { scene.remove(avatar); avatar = null; }
+  $('cuts').replaceChildren(); $('swatches').replaceChildren();
+  const [gltf, info] = await Promise.all([
+    new GLTFLoader().loadAsync(url),
+    fetch(url.replace(/\.glb$/, '.json')).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+  ]);
+  avatar = gltf.scene;
+  applyMaterials(avatar);
+  const box = new THREE.Box3().setFromObject(avatar);
+  const size = box.getSize(new THREE.Vector3()), centre = box.getCenter(new THREE.Vector3());
+  avatar.position.sub(centre);
+  scene.add(avatar);
+  groundAndShadow(scene, avatar, lights.key);
+  // What each view must show (width, height), fitted to the screen's shape
+  // in frame(): a phone is narrower than it is tall.
+  const eye = size.y / 2 - size.y * 0.085;
+  frames = {
+    body: { span: [size.x * 1.1, size.y * 1.12], target: new THREE.Vector3(0, 0, 0) },
+    face: { span: [size.y * 0.22, size.y * 0.2], target: new THREE.Vector3(0, eye, 0) },
+  };
+  resize();
+  frame('face');
+  hairInfo = info?.hair || null;
+  buildPicker();
+  $('viewloading').hidden = true;
+}
+
+const HAIR_COLOURS = [['Black', [22, 20, 19]], ['Dark brown', [52, 36, 27]], ['Brown', [96, 64, 42]],
+  ['Auburn', [118, 56, 34]], ['Blonde', [186, 148, 96]], ['Light blonde', [200, 178, 138]], ['Grey', [150, 148, 146]]];
+const THUMB = 120;
+
+/** Each cut's picture, on this head in the chosen colour. */
+function drawThumbnails(colour) {
+  let head = null;
+  avatar.traverse((o) => { if (!head && o.isMesh && o.material?.name === 'head') head = o; });
+  if (!head) return;
+  avatar.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(head);
+  const size = box.getSize(new THREE.Vector3());
+  const centre = box.getCenter(new THREE.Vector3()).add(new THREE.Vector3(0, size.y * 0.25, 0));
+  const view = new THREE.PerspectiveCamera(30, canvas.width / canvas.height, 0.01, 100);
+  view.position.set(centre.x + size.y * 0.25, centre.y, centre.z + size.y * 0.58 / Math.tan((view.fov * Math.PI) / 360));
+  view.lookAt(centre);
+  const side = Math.min(canvas.width, canvas.height);
+  const out = Object.assign(document.createElement('canvas'), { width: THUMB, height: THUMB });
+  const pen = out.getContext('2d');
+  for (const b of $('cuts').children) {
+    chooseHair(avatar, b.dataset.cut, colour);
+    renderer.render(scene, view);
+    pen.clearRect(0, 0, THUMB, THUMB);
+    pen.drawImage(canvas, (canvas.width - side) / 2, (canvas.height - side) / 2, side, side, 0, 0, THUMB, THUMB);
+    b.querySelector('img').src = out.toDataURL('image/webp', 0.85);
+  }
+}
+
+function wear(cut, colour) {
+  const recolour = !state.hair || state.hair.colour.join() !== colour.join();
+  if (recolour) drawThumbnails(colour);
+  state.hair = { cut, colour };
+  chooseHair(avatar, cut, colour);
+  for (const b of $('cuts').children) b.setAttribute('aria-pressed', String(b.dataset.cut === cut));
+  for (const b of $('swatches').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.rgb === colour.join(',')));
+}
+
+function buildPicker() {
+  state.hair = null;
+  if (!hairInfo) { $('cuts').textContent = 'No hairstyles in this avatar.'; return; }
+  const options = [{ id: 'bald', label: 'No hair' }, ...hairInfo.options];
+  for (const { id, label } of options) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.dataset.cut = id; b.title = label; b.setAttribute('aria-label', label);
+    b.append(Object.assign(document.createElement('img'), { alt: '' }), Object.assign(document.createElement('span'), { textContent: label }));
+    b.addEventListener('click', () => wear(id, state.hair.colour));
+    $('cuts').append(b);
+  }
+  for (const [name, rgb] of [['Your colour', hairInfo.colour], ...HAIR_COLOURS]) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.title = name; b.setAttribute('aria-label', name);
+    b.style.background = `rgb(${rgb.join(',')})`; b.dataset.rgb = rgb.join(',');
+    b.addEventListener('click', () => wear(state.hair.cut, rgb));
+    $('swatches').append(b);
+  }
+  const any = document.createElement('label');
+  any.title = 'Any colour'; any.textContent = '+';
+  const input = Object.assign(document.createElement('input'), { type: 'color' });
+  input.setAttribute('aria-label', 'Any colour');
+  input.addEventListener('input', () => wear(state.hair.cut, [1, 3, 5].map((i) => parseInt(input.value.slice(i, i + 2), 16))));
+  any.append(input);
+  $('swatches').append(any);
+  wear(hairInfo.shown || 'bald', hairInfo.colour);
+}
+
+(function loopRender() {
+  requestAnimationFrame(loopRender);
+  if (!$('view').offsetParent) return;
+  resize();
+  controls.update();
+  renderer.render(scene, camera);
+})();
+
+$('again1').addEventListener('click', () => go('photo'));
+
+// ---- Step 4: save --------------------------------------------------------------
+/** The avatar as a picture: the whole figure, transparent behind. */
+function picture(width = 1200, height = 1600) {
+  const keep = { w: canvas.width, h: canvas.height, pos: camera.position.clone(), target: controls.target.clone(), aspect: camera.aspect };
+  renderer.setSize(width, height, false);
+  camera.aspect = width / height; camera.updateProjectionMatrix();
+  frame('body', false);
+  renderer.render(scene, camera);
+  const url = canvas.toDataURL('image/png');
+  renderer.setSize(keep.w / renderer.getPixelRatio(), keep.h / renderer.getPixelRatio(), false);
+  camera.aspect = keep.aspect; camera.updateProjectionMatrix();
+  camera.position.copy(keep.pos); controls.target.copy(keep.target); controls.update();
+  return url;
+}
+
+function save(url, name) {
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+}
+
+$('tosave').addEventListener('click', () => {
+  $('finalshot').src = picture(900, 1200);
+  go('save');
+});
+$('dl-png').addEventListener('click', () => save(picture(), 'my-avatar.png'));
+$('dl-glb').addEventListener('click', () => {
+  const q = new URLSearchParams({ hair: state.hair?.cut || 'bald', colour: (state.hair?.colour || []).join(',') });
+  save(`/download/${state.model.split('/').pop()}?${q}`, 'my-avatar.glb');
+});
+$('backstyle').addEventListener('click', () => go('style'));
+$('again2').addEventListener('click', () => {
+  state.front = null; state.sides = [];
+  $('preview').hidden = true; $('empty').hidden = false; $('checked').hidden = true; $('create').disabled = true;
+  go('photo');
+});
+
+// For checking from the console or a test: open a built avatar straight on step 3.
+window.__app = { showAvatar: async (url) => { state.model = url; go("style"); await showAvatar(url); }, state, get avatar() { return avatar; } };
+go('photo');
+</script>
+</body>
+</html>

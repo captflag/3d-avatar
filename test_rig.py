@@ -648,7 +648,7 @@ def check_hair_cap():
         return
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "cap.glb"
-        compose(photo, out, "male")
+        compose(photo, out, "male", hair="hair_short01")   # built bald unless a cut is asked for
         g = gl2.GLTF2().load(str(out)); blob = g.binary_blob()
         names = [m.name for m in g.materials]
         assert "scalp_cap" in names, f"no scalp cap among {names}"
@@ -1077,12 +1077,20 @@ def check_photo_reading():
     skin, beard, hair = (230, 190, 170), (120, 70, 50), (110, 75, 55)
     face = np.full((200, 200, 3), skin, dtype=np.uint8)
     face[150:190] = beard                       # below the nose
+    face[150:190:2, ::2] = (90, 50, 35)         # with a hair's grain
     face[40:55] = beard                         # brows: dark, but above the nose
     marks = _landmarks({1: (0.5, 0.6), 152: (0.5, 0.95)})
     keep = facial_hair(face, marks, np.array([[100.0, 110.0]]))
     assert keep[170, 100] > 0.9, f"beard not kept ({keep[170, 100]:.2f})"
     assert keep[130, 100] < 0.1, "plain skin below the nose was kept as beard"
     assert keep[47, 100] < 0.05, "brows above the nose were taken for a beard"
+    # Lit from one side: the shadowed half of a clean-shaven face is no beard.
+    lit = np.full((200, 200, 3), skin, dtype=np.float64) * np.linspace(1.0, 0.45, 200)[None, :, None]
+    side = facial_hair(lit.astype(np.uint8), marks, np.array([[50.0, 110.0], [150.0, 110.0]]))
+    assert side[150:190].max() < 0.1, f"a side-lit cheek read as beard ({side[150:190].max():.2f})"
+    shadowed = face.copy(); shadowed[:, 100:] = (shadowed[:, 100:] * 0.6).astype(np.uint8)
+    keep = facial_hair(shadowed, marks, np.array([[50.0, 110.0], [150.0, 110.0]]))
+    assert keep[170, 50] > 0.9, f"a beard on the lit side lost ({keep[170, 50]:.2f})"
 
     photo = np.full((200, 200, 3), 255, dtype=np.uint8)   # white backdrop
     photo[10:60, 40:160] = hair
@@ -1195,7 +1203,8 @@ def check_appearance():
     assert pick({**reading, "sides": 0.14}, "x") == "hair_culturalibre_hair_05"
     assert pick({**reading, "sides": 0.06}, "x") == "hair_short01", "a close crop was given the tall cut"
     assert pick({**reading, "fringe": 0.6}, "x") == "hair_short03"
-    assert pick({**reading, "bottom": 0.0}, "x") == "hair_bob01"
+    assert pick({**reading, "bottom": 0.0}, "x") == "hair_toigo_blunt_bob"
+    assert pick({**reading, "bottom": 0.0, "fringe": 0.6}, "x") == "hair_toigo_blunt_bob"
     assert pick({**reading, "bottom": 0.4}, "x") == "hair_long01"
     assert pick({**reading, "amount": 0.02}, "x") is None, "a bald head was given hair"
     assert pick(None, "hair_short02") == "hair_short02", "no segmenter should keep the default"
@@ -1231,6 +1240,13 @@ def check_appearance():
         assert max(hair["colour"]) < 140, f"dark grey hair read as {hair['colour'].tolist()}"
         _, family = appearance.iris_colour(rgb, marks)
         assert family in ("dark brown", "brown"), f"brown eyes read as {family}"
+        # A light iris, though in the lids' shade: grey, not dark brown.
+        h, w = rgb.shape[:2]
+        eye, iris = appearance._eye_masks(marks, (w, h))
+        grey = rgb.copy()
+        grey[eye & iris] = (78, 82, 82)
+        _, family = appearance.iris_colour(grey, marks)
+        assert family in appearance.LIGHT_FAMILIES, f"a grey eye read as {family}"
         # The whites follow the photo's exposure, within a natural white's range.
         lit, dim = appearance.sclera_colour(rgb, marks), appearance.sclera_colour((rgb * 0.5).astype(np.uint8), marks)
         assert dim.mean() < lit.mean() - 20 and dim.min() > 90, f"whites read {lit} lit, {dim} at half exposure"

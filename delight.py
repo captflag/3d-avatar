@@ -281,6 +281,12 @@ def lift_crevices(srgb: np.ndarray, landmarks, size: tuple[int, int], strength: 
     deficit = np.clip(local - lab[..., 0], 0.0, None)
     lift = strength * deficit * soft
     lab[..., 0] += lift
+    # Its colour towards the skin's round it by as much: a black nostril has
+    # next to none, and lifted in lightness alone it came out a cool grey,
+    # which read on the avatar as a blue-grey blot under the nose.
+    toward = (strength * soft * (deficit > 0))[..., None]
+    skin_ab = np.dstack([cv2.medianBlur(lab[..., c].astype(np.uint8), min(k, 255)) for c in (1, 2)]).astype(np.float64)
+    lab[..., 1:] += toward * (skin_ab - lab[..., 1:])
     # Write back only what was lifted: an 8-bit LAB round trip nudges every
     # pixel, and nothing outside the crevices should change at all.
     out = srgb.copy()
