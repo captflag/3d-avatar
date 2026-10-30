@@ -257,6 +257,14 @@ def gallery():
 
 @app.get("/")
 def index():
+    """The app: photo, create, style, save."""
+    return send_from_directory(HERE, "app.html")
+
+
+@app.get("/studio")
+def studio():
+    """The team's testing studio: every option, the photo checks' numbers,
+    earlier builds."""
     return send_from_directory(HERE, "studio.html")
 
 
