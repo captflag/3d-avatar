@@ -1505,13 +1505,17 @@ def warm_ears(rgb: np.ndarray, ear: np.ndarray) -> np.ndarray:
 # larger and stays), the scale the colour is evened at and how far towards its
 # median (light's patches), the edge's feather, how far past the eyes, brows
 # and lips they are kept, and how much of the skin's own grain is left so it
-# does not read as wax.
-SMOOTH_MARKS = 0.035
+# does not read as wax. Marks at 1.2% with a little grain kept ("style B"): at
+# 3.5% with none, fully smooth, the nose and cheekbones flattened with the
+# freckles, and likeness at the photo's pose over the eight test faces fell
+# 0.273 -> 0.178 against the photo's own skin; at 1.2% it is 0.247, the
+# blemishes still gone (2026-10-30, asked for after the first version).
+SMOOTH_MARKS = 0.012
 SMOOTH_BROAD = 0.035
 SMOOTH_EVEN = 1.0
 SMOOTH_FEATHER = 0.012
 SMOOTH_KEEP = 0.025
-SMOOTH_GRAIN = 0.0
+SMOOTH_GRAIN = 0.12
 # The features kept from the photo sharpened (unsharp mask): how much, and at
 # what scale (a share of the face's width). Beside the smoothed skin they read
 # soft, the photo's own focus and the texture's resampling both.
@@ -1607,7 +1611,8 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     eyes_y = float(px[[159, 386], 1].mean()); nose_y = float(px[1, 1])
     under = np.zeros((h, w), bool)
     under[int(eyes_y + 0.35 * (nose_y - eyes_y)):int(nose_y), int(px[:, 0].min()):int(px[:, 0].max())] = True
-    if level_lines(under & ~keep).sum() > FRAME_RUN * face_w:
+    glasses = level_lines(under & ~keep).sum() > FRAME_RUN * face_w
+    if glasses:
         rim = level_lines(zone)
         cols = np.nonzero(rim.any(axis=0))[0]
         if len(cols):
@@ -1648,6 +1653,13 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     clean = cv2.morphologyEx(cv2.morphologyEx(skin_rgb.astype(np.uint8), cv2.MORPH_CLOSE, k2), cv2.MORPH_OPEN, k2)
     lines = zone & ~((no_lines < skin_l - BROW_DARKER) & (lightness < skin_l - BROW_DARKER))
     rgb[lines] = clean[lines]
+    # On a face wearing glasses, the frame's thin lines out of all the skin:
+    # smoothed at SMOOTH_MARKS with some grain kept, the rims round the eyes
+    # and the bridge stayed as faint rings.
+    if glasses:
+        frame = region & (np.abs(skin_rgb.astype(np.float64) - clean).max(axis=2) > BROW_DARKER)
+        frame = cv2.dilate(frame.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        rgb[frame & region] = clean[frame & region]
     fine = _skin_blur(rgb, source, max(SMOOTH_MARKS * face_w, 1.0))
     broad = _skin_blur(rgb, source, max(SMOOTH_BROAD * face_w, 1.0))
     shift = SMOOTH_EVEN * (np.median(rgb[source], axis=0) - broad)
