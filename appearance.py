@@ -980,14 +980,17 @@ def forehead_skin(parts: np.ndarray | None, landmarks) -> np.ndarray | None:
     took the top of the forehead from generated skin. The segmenter sees the
     real forehead; this keeps its face-skin class above the brows and between
     the temples, pulled in from the hair a little, as the part of the photo to
-    bake there.
+    bake there. And the hair over the forehead with it: the avatar is bald, and
+    smooth_skin fills that hair with the face's skin. Left to generated skin, a
+    fringe's strands and the hairline came out on the bald forehead as streaks
+    and a band in the generated skin's other tone (p09, p01).
     """
     if parts is None or len(landmarks) <= 454:
         return None
     h, w = parts.shape
     face_w = abs(landmarks[454].x - landmarks[234].x) * w
     grow = max(int(round(0.03 * face_w)), 1)
-    skin = cv2.erode((parts == FACE_SKIN).astype(np.uint8), np.ones((2 * grow + 1,) * 2, np.uint8))
+    skin = cv2.erode(((parts == FACE_SKIN) | (parts == HAIR)).astype(np.uint8), np.ones((2 * grow + 1,) * 2, np.uint8))
     brow = np.mean([landmarks[i].y for i in (105, 334)]) * h
     lid = np.mean([landmarks[i].y for i in (159, 386)]) * h
     rows, cols = np.arange(h)[:, None], np.arange(w)[None, :]
@@ -1534,6 +1537,9 @@ SMOOTH_EVEN = 1.0
 SMOOTH_FEATHER = 0.012
 SMOOTH_KEEP = 0.025
 SMOOTH_GRAIN = 0.12
+# How far round the photo's hair above the brows its shade reaches, as a share
+# of the face's width: filled with the hair as bald skin (smooth_skin).
+HAIR_SHADE = 0.06
 # The features kept from the photo sharpened (unsharp mask): how much, and at
 # what scale (a share of the face's width). Beside the smoothed skin they read
 # soft, the photo's own focus and the texture's resampling both. At 0.8 the
@@ -1685,7 +1691,13 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     hair = (parts == HAIR) if parts is not None else np.zeros((h, w), bool)
     # The photo's hair above the brows is the bald head's skin too: baked as it
     # was, the hairline lay on the bare scalp as a dark band.
-    hair = hair & (np.arange(h)[:, None] < float(px[[105, 334], 1].mean()))
+    above = np.arange(h)[:, None] < float(px[[105, 334], 1].mean())
+    # With the skin between a fringe's strands and a band under the hairline:
+    # in the hair's shade, darker than the forehead, they kept the fringe's and
+    # the hairline's outline on the bald head as streaks and a ring (p09, p01).
+    shade = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(int(HAIR_SHADE * face_w), 3) | 1,) * 2)
+    hair = cv2.dilate(cv2.morphologyEx((hair & above).astype(np.uint8), cv2.MORPH_CLOSE, shade), shade) > 0
+    hair &= above & ~keep
     # All the photo's skin, not the landmark mesh's outline alone: the bake
     # paints the forehead to the hairline and the jaw past the outline from
     # the photo too.
