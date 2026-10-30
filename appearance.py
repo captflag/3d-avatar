@@ -1613,7 +1613,21 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     under[int(eyes_y + 0.35 * (nose_y - eyes_y)):int(nose_y), int(px[:, 0].min()):int(px[:, 0].max())] = True
     glasses = level_lines(under & ~keep).sum() > FRAME_RUN * face_w
     if glasses:
-        rim = level_lines(zone)
+        # Where the rim slopes it is no level line: the thin lines that run on
+        # well outside the brow are the rim, and not brow either inside it.
+        # Opened first: a hair is a pixel or two wide, a rim several, and
+        # hairs touching the rim joined the whole brow to it.
+        thin = cv2.morphologyEx((np.abs(lightness - no_lines) > 2 * BROW_DARKER).astype(np.uint8),
+                                cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        _, labels = cv2.connectedComponents(thin, connectivity=8)
+        apart = thin & ~(cv2.dilate(brow_hair.astype(np.uint8), disc) > 0)
+        count, pieces, stats, _ = cv2.connectedComponentsWithStats(apart.astype(np.uint8), connectivity=8)
+        extent = np.maximum(stats[1:, cv2.CC_STAT_WIDTH], stats[1:, cv2.CC_STAT_HEIGHT])
+        long = np.flatnonzero((extent > FRAME_RUN * face_w)
+                              & (stats[1:, cv2.CC_STAT_AREA] < FRAME_WIDTH * face_w * extent)) + 1
+        sloped = np.isin(labels, np.setdiff1d(np.unique(labels[np.isin(pieces, long)]), [0]))
+        brow_hair &= ~(cv2.dilate(sloped.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0)
+        rim = level_lines(zone) | sloped & zone
         cols = np.nonzero(rim.any(axis=0))[0]
         if len(cols):
             lowest = h - 1 - rim[::-1, cols].argmax(axis=0)
