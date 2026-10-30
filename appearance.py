@@ -1653,13 +1653,32 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     clean = cv2.morphologyEx(cv2.morphologyEx(skin_rgb.astype(np.uint8), cv2.MORPH_CLOSE, k2), cv2.MORPH_OPEN, k2)
     lines = zone & ~((no_lines < skin_l - BROW_DARKER) & (lightness < skin_l - BROW_DARKER))
     rgb[lines] = clean[lines]
-    # On a face wearing glasses, the frame's thin lines out of all the skin:
-    # smoothed at SMOOTH_MARKS with some grain kept, the rims round the eyes
-    # and the bridge stayed as faint rings.
+    # On a face wearing glasses, the frame out of all the skin: smoothed at
+    # SMOOTH_MARKS with some grain kept, the rims round the eyes and the bridge
+    # stayed as faint rings, a nose pad's grey shadow as a smudge by the eye
+    # and the hinges as dots. Small dark spots go first, as the thin lines'
+    # filter leaves them; then the frame is the long dark lines (rims, bridge,
+    # pad arms, hinges) and the grey beside them (the clear pads and their
+    # shadow), in the eye's kept margin too, filled from the skin round it.
     if glasses:
-        frame = region & (np.abs(skin_rgb.astype(np.float64) - clean).max(axis=2) > BROW_DARKER)
-        frame = cv2.dilate(frame.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
-        rgb[frame & region] = clean[frame & region]
+        eyes = hull(EYE_CONTOURS)
+        lashes = cv2.dilate(eyes, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * (grow // 3) + 1,) * 2)) > 0
+        reach = region | (cv2.dilate(eyes, disc) > 0) & ~lashes
+        spots = np.abs(skin_rgb.astype(np.float64) - clean).max(axis=2)
+        dots = cv2.dilate((region & (spots > BROW_DARKER)).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        rgb[dots & region] = clean[dots & region]
+        thin = (reach & (spots > 2 * BROW_DARKER)).astype(np.uint8)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(thin, connectivity=8)
+        long = np.flatnonzero(np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]) > FRAME_RUN * face_w)
+        frame = np.isin(labels, long[long > 0]).astype(np.uint8)
+        pad = max(int(FRAME_WIDTH * face_w / 2), 2)
+        near = cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (16 * pad + 1,) * 2)) > 0
+        lab = cv2.cvtColor(skin_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
+        chroma = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)
+        grey = chroma < 0.8 * np.median(chroma[source])
+        frame = (cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1,) * 2)) > 0) | near & grey
+        frame = (cv2.dilate(frame.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & reach
+        rgb[frame] = _skin_blur(rgb, source & ~frame, max(SMOOTH_MARKS * face_w, 1.0))[frame]
     fine = _skin_blur(rgb, source, max(SMOOTH_MARKS * face_w, 1.0))
     broad = _skin_blur(rgb, source, max(SMOOTH_BROAD * face_w, 1.0))
     shift = SMOOTH_EVEN * (np.median(rgb[source], axis=0) - broad)
