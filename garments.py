@@ -542,6 +542,31 @@ def recolour(texture, mesh: trimesh.Trimesh, faces_mask: np.ndarray, colour,
     return Image.fromarray(out, "RGB")
 
 
+# How far behind a garment the skin under it is kept (tuck_skin), in mesh units
+# (about 10 cm each): 4 mm.
+SKIN_GAP = 0.04
+
+
+def tuck_skin(body: trimesh.Trimesh, covers: list, below: float, reach: float = 0.33) -> np.ndarray:
+    """The body's vertices with any skin under a garment moved in along its
+    normals to SKIN_GAP behind the garment. The pieces are fitted to the base
+    body; on a fuller figure the blouse's bust lay inside the skin, and the
+    skin there, darkened as covered, showed as dark brown blots on four of the
+    five test women's blouses. Pushing the cloth out instead brought a skirt's
+    waistband through the blouse's hem above it. Only below `below` (the
+    collarbones): a collar sits close round a neck that always shows."""
+    from scipy.spatial import cKDTree
+    v = np.asarray(body.vertices, dtype=np.float64).copy()
+    if not covers:
+        return v
+    cloth = np.vstack([c.vertices for c in covers])
+    distance, nearest = cKDTree(cloth).query(v)
+    normals = body.vertex_normals
+    clear = np.einsum("ij,ij->i", cloth[nearest] - v, normals)
+    sink = np.where((distance < reach) & (v[:, 1] < below), np.clip(SKIN_GAP - clear, 0.0, None), 0.0)
+    return v - normals * sink[:, None]
+
+
 def drop_socks(shoes: trimesh.Trimesh, ankle_y: float) -> int:
     """Remove the sock from a MakeHuman shoe when trousers cover the ankle.
 

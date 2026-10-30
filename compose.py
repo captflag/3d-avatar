@@ -1301,6 +1301,13 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
 
     # Only clothing hides skin; hair sits on top of it.
     covering = [(item, m) for item, m in worn if item["category"] in ("top", "bottom", "shoes", "outfit")]
+    # And no skin in front of it (garments.tuck_skin).
+    collarbone = float(vertices[np.unique(groups["joint-l-clavicle"])][:, 1].mean())
+    under = np.unique(groups["body"])
+    tucked = garments.tuck_skin(trimesh.Trimesh(vertices, groups["body"], process=False),
+                                [m for _, m in covering], collarbone)
+    vertices = vertices.copy()
+    vertices[under] = tucked[under]
     # Every body triangle is kept; skin under clothes is hidden by the texture's
     # alpha instead, with a band left under each garment edge (coverage_alpha).
     body_faces = groups["body"]
