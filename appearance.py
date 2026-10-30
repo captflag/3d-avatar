@@ -1518,8 +1518,11 @@ SMOOTH_KEEP = 0.025
 SMOOTH_GRAIN = 0.12
 # The features kept from the photo sharpened (unsharp mask): how much, and at
 # what scale (a share of the face's width). Beside the smoothed skin they read
-# soft, the photo's own focus and the texture's resampling both.
-FEATURE_SHARPEN = (0.8, 0.004)
+# soft, the photo's own focus and the texture's resampling both. At 0.8 the
+# lips rendered with 55-60% of the photo's fine detail (p07, p01, matched in
+# size); at 1.6 about 77%, likeness level (0.226 -> 0.229 over the eight dev
+# faces). At 2.4 brows and beards began to look stringy, with halos.
+FEATURE_SHARPEN = (1.6, 0.004)
 # Brows kept hair by hair (smooth_skin): pixels this much (L*, of 255) darker
 # than the skin, and lines thinner than FRAME_WIDTH of the face's width taken
 # out first. Kept as a whole zone, a pair of glasses' rim crossing it survived

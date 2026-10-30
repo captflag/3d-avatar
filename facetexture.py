@@ -394,9 +394,13 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
         # Bilinear, not the nearest pixel: a small photo's face is a few
         # dozen pixels wide, spread over hundreds of texels, and nearest
         # lookups painted it as visible squares.
-        painted[ty, tx] = cv2.remap(photo32, (pixels[:, :1] - 0.5).astype(np.float32),
-                                    (pixels[:, 1:] - 0.5).astype(np.float32),
-                                    cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)[:, 0]
+        # As a 1-wide map in runs: OpenCV's remap takes at most 32767 rows, and
+        # a large triangle at a big texture size covers more texels than that.
+        maps = (pixels - 0.5).astype(np.float32)
+        painted[ty, tx] = np.concatenate([
+            cv2.remap(photo32, maps[i:i + 32000, :1], maps[i:i + 32000, 1:],
+                      cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)[:, 0]
+            for i in range(0, len(maps), 32000)])
         weight[ty, tx] = np.maximum(weight[ty, tx], strength)
 
     # A thin unpainted strip inside the painted face (a UV seam's edge, slivers
