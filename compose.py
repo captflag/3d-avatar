@@ -60,6 +60,12 @@ EYE_RECESS = 0.06
 PORE_STRENGTH = {"head": 0.5, "body": 0.25}
 # Head and body skin textures, texels a side.
 SKIN_SIZE = 2048
+# Cards blended by their texture's alpha, not cut at half. The lashes are a
+# few pixels on screen, so they are drawn from the texture's smallest mip
+# levels, where a strand's alpha is averaged far below half: cut, the fine
+# strands vanished and the dense roots stayed as black blobs and spikes along
+# the lids and at the corners of every eye.
+SOFT_CARDS = ("eyelashes",)
 # How much a full crease darkens generated skin (appearance.skin_cavity).
 CAVITY_DEPTH = 0.35
 # Skin's index of refraction: about 1.4, a reflectance of 2.8% head on.
@@ -989,13 +995,16 @@ def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_c
     if mesh.metadata.get("texture") is not None:
         # Authored asset: its own texture, normal map and alpha cut-out.
         # No vertex colour, which glTF would multiply into the texture.
-        return skinned_glb.Part(
+        soft = name in SOFT_CARDS
+        part = skinned_glb.Part(
             name, mesh.vertices, mesh.faces, part_joints, part_weights,
             uv=gltf_uv(mesh.metadata["uv"]), texture=mesh.metadata["texture"],
             normal_texture=mesh.metadata.get("normal_texture"),
-            alpha_mask=mesh.metadata.get("alpha_mask", False),
+            alpha_mask=mesh.metadata.get("alpha_mask", False) and not soft,
             normals=welded_normals(mesh), roughness=roughness,
         )
+        part.alpha_blend = soft and mesh.metadata.get("alpha_mask", False)
+        return part
     return skinned_glb.Part(
         name, mesh.vertices, mesh.faces, part_joints, part_weights,
         colour=mesh.visual.vertex_colors.astype(np.float32) / 255.0,
