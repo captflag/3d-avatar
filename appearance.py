@@ -106,8 +106,13 @@ SCLERA_L = (45.0, 93.0)
 # (0.500, 0.536) with the whites still within the bar (sclera_dE 8.0, 19.6).
 # Over the eight dev faces later the whites rendered 6-17 L* brighter than the
 # photos' and stood out stark; without the 15% they are 15.6 -> 11.1 dE off,
-# likeness level (2026-10-30).
-SCLERA_GAIN = 0.72 / 0.56
+# likeness level (2026-10-30). Still 6 L* lighter than the photos' over the
+# eight then: 10% off that.
+SCLERA_GAIN = 0.72 / 0.56 * 0.9
+# The range (LAB a*, b*) a white's own hue is read in: held to a healthy
+# white's (NATURAL_WHITE), the whites rendered 7 a* and 5 b* cooler than every
+# test photo's, which are warm and pinkish (a* 6-13, b* 6-12).
+SCLERA_HUE = ((1.0, 4.0), (10.0, 12.0))
 
 
 def sclera_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = None) -> np.ndarray:
@@ -125,7 +130,8 @@ def sclera_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = No
         return SCLERA.copy()
     bright = pixels[pixels[:, 0] >= np.percentile(pixels[:, 0], 60)]
     lightness = np.clip(SCLERA_GAIN * np.median(bright[:, 0]) * 100 / 255, *SCLERA_L) * 255 / 100
-    return _rgb(np.array([lightness, *(128.0 + NATURAL_WHITE)])).astype(np.float64)
+    hue = np.clip(np.median(bright[:, 1:], axis=0) - 128.0, *SCLERA_HUE)
+    return _rgb(np.array([lightness, *(128.0 + hue)])).astype(np.float64)
 
 
 # The lips' inner edge (MediaPipe ids), and a tooth's natural hue as LAB a*,
