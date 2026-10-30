@@ -399,6 +399,20 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
                                     cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)[:, 0]
         weight[ty, tx] = np.maximum(weight[ty, tx], strength)
 
+    # A thin unpainted strip inside the painted face (a UV seam's edge, slivers
+    # the triangles miss) takes the painted texels round it: left as the skin
+    # beneath, it showed as a light line along the nose's sill. Only texels the
+    # photo gave nothing to, with painted ones on a quarter of the texels round
+    # them (a seam has them on one side only): the face's own
+    # fade at its edge is left alone.
+    solid = (weight > 0.5).astype(np.float32)
+    reach = (2 * max(size // 512, 1)) * 2 + 1
+    around = cv2.blur(solid, (reach, reach))
+    gap = (weight == 0) & (around > 0.25)
+    if gap.any():
+        near = cv2.blur((painted * solid[..., None]).astype(np.float32), (reach, reach))
+        painted[gap] = near[gap] / around[gap][:, None]
+        weight[gap] = 1.0
     base = skin if textured_base else np.tile(skin, (size, size, 1))
     linear = painted * weight[..., None] + base * (1.0 - weight[..., None])
     linear_u8 = np.clip(linear, 0, 255).astype(np.uint8)
