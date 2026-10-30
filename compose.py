@@ -123,8 +123,10 @@ ROUGHNESS = {"skin": 0.5, "eyes": 0.8, "hair": 0.45,
 CORNEA_COAT = (0.3, 0.03)
 # How much lighter the iris is painted than the photo reads it: the eyeball sits
 # behind the lids, in their shade, and a brown iris read at the photo's
-# colour rendered near black, its pupil lost in it.
-IRIS_GAIN = 1.8
+# colour rendered near black, its pupil lost in it. 1.8 until 2026-10-30, when
+# every test face's iris rendered 6-10 L* lighter than its photo's (iris_dE
+# 12.4 mean over the eight dev faces); at 1.3, 7.0, likeness level.
+IRIS_GAIN = 1.3
 
 
 def body_mesh(vertices: np.ndarray | None = None) -> trimesh.Trimesh:

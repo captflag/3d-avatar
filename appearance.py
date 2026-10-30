@@ -48,6 +48,13 @@ IRIS_PALETTE = {
     "green": (96, 116, 70), "grey": (120, 126, 128), "blue-grey": (96, 118, 138),
     "blue": (72, 112, 158),
 }
+# The iris's lightness (OpenCV LAB, 0-255) from which it is a light eye
+# (hazel, green, grey, blue), told apart by colour alone. An iris reads dark
+# in any photo, in the lids' shade, so matched with lightness every test face
+# came out dark brown: the six brown-eyed read 18-40, the grey-green and
+# blue-grey 59 and 67.
+LIGHT_IRIS = 50.0
+LIGHT_FAMILIES = ("hazel", "green", "grey", "blue-grey", "blue")
 
 
 def _lab(pixels: np.ndarray) -> np.ndarray:
@@ -97,7 +104,10 @@ SCLERA_L = (45.0, 93.0)
 # 15% more: matched exactly, identity fell on both faces tried (p01 0.502 ->
 # 0.493, samples/portrait.jpg 0.538 -> 0.531); 15% brighter it held
 # (0.500, 0.536) with the whites still within the bar (sclera_dE 8.0, 19.6).
-SCLERA_GAIN = 0.72 / 0.56 * 1.15
+# Over the eight dev faces later the whites rendered 6-17 L* brighter than the
+# photos' and stood out stark; without the 15% they are 15.6 -> 11.1 dE off,
+# likeness level (2026-10-30).
+SCLERA_GAIN = 0.72 / 0.56
 
 
 def sclera_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = None) -> np.ndarray:
@@ -171,10 +181,18 @@ def iris_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = None
 
     names = list(IRIS_PALETTE)
     palette = _lab(np.array([IRIS_PALETTE[n] for n in names]))
-    # Hue decides the family; lightness only separates dark from light shades.
-    distance = np.linalg.norm((palette - measured) * np.array([0.5, 1.0, 1.0]), axis=1)
+    # Light or dark by lightness; within a light eye's families by colour alone,
+    # within a brown eye's by lightness too.
+    light = measured[0] >= LIGHT_IRIS
+    weight = np.array([0.0, 1.0, 1.0]) if light else np.array([0.5, 1.0, 1.0])
+    distance = np.linalg.norm((palette - measured) * weight, axis=1)
+    distance[[(n in LIGHT_FAMILIES) != light for n in names]] = np.inf
     nearest = int(distance.argmin())
     snapped = (measured + palette[nearest]) / 2.0
+    # A light eye keeps the photo's own lightness: snapped halfway to the
+    # palette's, a grey iris rendered 15-20 dE off the photo's, lighter.
+    if light:
+        snapped[0] = measured[0]
     return _rgb(snapped).astype(np.float64), names[nearest]
 
 

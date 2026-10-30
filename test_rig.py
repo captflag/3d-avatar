@@ -1240,6 +1240,13 @@ def check_appearance():
         assert max(hair["colour"]) < 140, f"dark grey hair read as {hair['colour'].tolist()}"
         _, family = appearance.iris_colour(rgb, marks)
         assert family in ("dark brown", "brown"), f"brown eyes read as {family}"
+        # A light iris, though in the lids' shade: grey, not dark brown.
+        h, w = rgb.shape[:2]
+        eye, iris = appearance._eye_masks(marks, (w, h))
+        grey = rgb.copy()
+        grey[eye & iris] = (78, 82, 82)
+        _, family = appearance.iris_colour(grey, marks)
+        assert family in appearance.LIGHT_FAMILIES, f"a grey eye read as {family}"
         # The whites follow the photo's exposure, within a natural white's range.
         lit, dim = appearance.sclera_colour(rgb, marks), appearance.sclera_colour((rgb * 0.5).astype(np.uint8), marks)
         assert dim.mean() < lit.mean() - 20 and dim.min() > 90, f"whites read {lit} lit, {dim} at half exposure"
