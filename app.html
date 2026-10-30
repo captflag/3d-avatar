@@ -720,7 +720,10 @@ $('again2').addEventListener('click', () => {
 
 // For checking from the console or a test: open a built avatar straight on step 3.
 window.__app = { showAvatar: async (url) => { state.model = url; go("style"); await showAvatar(url); }, state, get avatar() { return avatar; } };
-go('photo');
+// ?model=/out/<file>.glb opens an avatar already built, at the Style step.
+const shared = new URLSearchParams(location.search).get('model');
+if (shared && /^\/out\/[\w.-]+\.glb$/.test(shared)) window.__app.showAvatar(shared);
+else go('photo');
 </script>
 </body>
 </html>
