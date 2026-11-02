@@ -1696,7 +1696,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                        morph_names=morph.ARKIT_NAMES + ["photoMouth"],
                        expression=photo_face,
                        head_pose=head_pose,
-                       extras={"hair": shown, "hairOptions": [item["id"] for item in hair_options]})
+                       extras={"hair": shown, "hairOptions": [item["id"] for item in hair_options],
+                               # The chin's height and the eye spacing, for the viewer's neck shadow.
+                               "jawLine": [float(vertices[corr[152], 1]),
+                                           float(np.linalg.norm(vertices[corr[33]] - vertices[corr[263]]))]})
 
     info = {
         "advice": photo_advice(landmarks, (pw, ph), expression_of(result), result, photo_rgb),

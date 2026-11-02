@@ -1467,6 +1467,8 @@ def check_review_fixes():
         # ARKit's 52, then the photo's own mouth (morph.photo_mouth), shown with its expression.
         assert gltf.meshes[0].extras.get("targetNames") == morph.ARKIT_NAMES + ["photoMouth"], "ARKit blendshapes missing"
         assert gltf.meshes[0].extras["photoExpression"].get("photoMouth") == 1.0, "the photo's mouth not shown"
+        chin, spacing = gltf.meshes[0].extras["jawLine"]    # for the viewer's neck shadow
+        assert spacing > 0 and chin > 0, f"jaw line in the file: {chin}, {spacing}"
         assert all(len(p.targets) == 53 for p in gltf.meshes[0].primitives), "a part lacks blendshapes"
         assert {"teeth", "tongue"} <= set(info["wearing"]), "no teeth or tongue in the mouth"
         skin_mat = gltf.materials[names.index("head")]
