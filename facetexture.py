@@ -330,6 +330,38 @@ def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> n
 
 # ------------------------------------------------------------------ bake -----
 
+# How far round the photo's edge the generated skin is brought to the photo's
+# colour (meet_rim), as a share of the texture's width, and how dark a rim
+# texel may be, below the rim's median L*, and still count as skin.
+RIM_REACH = 0.04
+RIM_DARKER = 12.0
+
+
+def meet_rim(base: np.ndarray, painted: np.ndarray, weight: np.ndarray) -> np.ndarray:
+    """The generated skin brought to the photo's colour where they meet,
+    fading back to its own over RIM_REACH.
+
+    The generated skin is one colour, the face's median; the photo's skin at
+    its edge is whatever the light and the person made it: on the test set's
+    first face its forehead baked 2.8 L* lighter than the skin above it and
+    the temples 5 a* less red, so the face sat on the head as a lighter patch
+    with a box round it. The difference along the photo's edge (skin only:
+    brows, lashes and beard, darker than the rim's median by RIM_DARKER, left
+    out) is spread outward by normalised convolution and added to the skin."""
+    rim = (weight > 0.25) & (weight < 0.95)
+    if rim.sum() < 50:
+        return base
+    lightness = painted @ np.array([0.299, 0.587, 0.114])
+    rim &= lightness > np.median(lightness[rim]) - RIM_DARKER * 2.55
+    sigma = max(RIM_REACH * base.shape[1], 2.0)
+    m = rim.astype(np.float32)
+    spread = cv2.GaussianBlur(m, (0, 0), sigma)
+    field = cv2.GaussianBlur(((painted - base) * m[..., None]).astype(np.float32), (0, 0), sigma)
+    field = field / np.maximum(spread, 1e-6)[..., None]
+    fade = np.clip(spread / max(float(spread.max()) * 0.3, 1e-6), 0.0, 1.0)[..., None]
+    return base + field * fade
+
+
 def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.ndarray,
          sampler: "FaceSampler", face_centre: np.ndarray, face_radius: float,
          photo_rgb: np.ndarray, skin: np.ndarray, size: int = 1024,
@@ -418,6 +450,7 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
         painted[gap] = near[gap] / around[gap][:, None]
         weight[gap] = 1.0
     base = skin if textured_base else np.tile(skin, (size, size, 1))
+    base = meet_rim(base, painted, weight)
     linear = painted * weight[..., None] + base * (1.0 - weight[..., None])
     linear_u8 = np.clip(linear, 0, 255).astype(np.uint8)
     base_u8 = np.clip(base, 0, 255).astype(np.uint8)

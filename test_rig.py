@@ -1202,6 +1202,22 @@ def check_delight():
           f"overexposed skin capped, dark skin and background untouched, cheeks matched to the photo's colour")
 
 
+def check_meet_rim():
+    """The generated skin meets the photo's colour at the photo's edge and
+    keeps its own far from it."""
+    from facetexture import meet_rim
+    size = 256
+    base = np.full((size, size, 3), 150.0)
+    painted = np.full((size, size, 3), 170.0)
+    weight = np.zeros((size, size))
+    weight[:, :100] = 1.0
+    weight[:, 100:110] = np.linspace(0.9, 0.3, 10)[None, :]
+    out = meet_rim(base, painted, weight)
+    assert out[128, 112, 0] > 162, f"skin at the edge {out[128, 112, 0]:.0f}, the photo's 170"
+    assert abs(out[128, 250, 0] - 150.0) < 3, f"skin far off {out[128, 250, 0]:.0f}, its own 150"
+    print("ok  rim: generated skin meets the photo's colour at its edge, its own far off")
+
+
 def check_appearance():
     """Haircut, hair and eye colour are read from the photo; outfits dye by part."""
     import appearance
@@ -1810,6 +1826,7 @@ if __name__ == "__main__":
         check_photo_reading()
         check_bodies_and_assets()
         check_delight()
+        check_meet_rim()
         check_appearance()
         check_finishing()
         check_review_fixes()
