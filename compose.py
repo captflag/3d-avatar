@@ -379,7 +379,13 @@ def place_face(face: trimesh.Trimesh, vertices: np.ndarray, groups: dict) -> tri
                        skull["mouth"], skull["chin"]])
     source = face_anchor_points(face)
 
-    src, dst = source[:, :2], target[:, :2]
+    # By the eyes and the nose tip only. With the mouth and chin in the solve,
+    # a face whose lower half is longer than the skull's was shrunk and shifted
+    # to meet the skull's mouth and chin halfway, and the fit never saw the
+    # difference: every test face's mouth and chin came out 2-3% of the eye
+    # spacing high against its eyes and nose (the philtrum MakeHuman's base
+    # has at 0.10-0.13 of the eye spacing, the photos at 0.17-0.22).
+    src, dst = source[:3, :2], target[:3, :2]
     src_mean, dst_mean = src.mean(axis=0), dst.mean(axis=0)
     scale = float(((src - src_mean) * (dst - dst_mean)).sum() / ((src - src_mean) ** 2).sum())
 
