@@ -11,6 +11,8 @@ import json
 import pathlib
 import tempfile
 
+import numpy as np
+
 import score_run
 
 
@@ -109,6 +111,20 @@ def check_rubric():
     rows["p03"]["skin_dE"] = 7.0                        # two in five: 60%, below
     assert "below 8" in next(l for l in score_run.rubric(rows).splitlines() if l.startswith("skin"))
     print("ok  rubric: bars read the right way round, 80% of faces must clear each")
+
+    # The render is aligned on the inner face by least squares: a known turn,
+    # scale and shift is recovered exactly, and no scored region steers it.
+    points = np.random.default_rng(1).normal(size=(11, 2)) * 50
+    angle, k = 0.2, 1.3
+    turn = k * np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    moved = points @ turn.T + [7.0, -3.0]
+    fit = score_run.align(points, moved)
+    assert np.allclose(points @ fit[:, :2].T + fit[:, 2], moved), "align missed a plain similarity"
+    regions = {i for part in score_run.REGIONS["outline"] + score_run.REGIONS["mouth"]
+               for c in getattr(__import__("mediapipe.tasks.python.vision", fromlist=["x"]).FaceLandmarksConnections,
+                                f"FACE_LANDMARKS_{part}") for i in (c.start, c.end)}
+    assert not regions & set(score_run.STABLE), "the alignment uses points the score then measures"
+    print("ok  alignment: least squares, on points the outline and mouth scores do not measure")
 
 
 def check_robustness():

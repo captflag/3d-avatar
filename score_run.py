@@ -96,8 +96,14 @@ import numpy as np
 HERE = pathlib.Path(__file__).resolve().parent
 OUT = HERE / "out"
 TESTSET = HERE / "data" / "testset"
-# Landmarks that move least with expression, to align a render onto its photo.
-STABLE = [168, 6, 1, 2, 10, 152, 234, 454, 33, 263]
+# Landmarks that move least with expression, to align a render onto its photo:
+# the eye corners and the nose's bridge and tip. Rigid, and none of what is
+# scored against them. Until 2026-11-02 this took 168, 6, 1, 2, 10, 152, 234, 454,
+# 33, 263 through OpenCV's RANSAC, which kept 3-5 of the ten by a 3-pixel test
+# and four of them lay on the outline: on builds with the same geometry the
+# mouth moved up to 2.2% of the eye spacing, and a short chin passed as 0.0
+# (p07's is -5.5) where the fit had aligned on the chin. The bars are unchanged.
+STABLE = [33, 133, 362, 263, 168, 6, 197, 195, 5, 4, 1]
 # MediaPipe's own landmark regions, for the per-region shape error.
 REGIONS = {"outline": ["FACE_OVAL"], "nose": ["NOSE"], "eyes": ["LEFT_EYE", "RIGHT_EYE"],
            "mouth": ["LIPS"], "brows": ["LEFT_EYEBROW", "RIGHT_EYEBROW"]}
@@ -306,7 +312,7 @@ def hair_error(photo: np.ndarray, render: np.ndarray) -> float | None:
     if pm is None or rm is None:
         return None
     h, w = photo.shape[:2]
-    fit, _ = cv2.estimateAffinePartial2D(rm[STABLE].astype(np.float32), pm[STABLE].astype(np.float32))
+    fit = align(rm[STABLE], pm[STABLE])
     warped = cv2.warpAffine(render, fit, (w, h), borderValue=(200, 200, 200))
     eye = float(np.linalg.norm(pm[33] - pm[263]))
     strand_p, clear_p = _strand_field(photo, appearance.segment(photo) == appearance.HAIR, eye)
@@ -324,6 +330,19 @@ def hair_error(photo: np.ndarray, render: np.ndarray) -> float | None:
     return float(np.degrees((apart * both)[seen].sum() / both[seen].sum()))
 
 
+def align(points: np.ndarray, onto: np.ndarray) -> np.ndarray:
+    """The similarity (2x3, as cv2.warpAffine takes) taking `points` onto
+    `onto` by least squares, every point counted: the same input gives the
+    same answer, and no point is dropped as an outlier."""
+    a, b = points[:, :2].astype(np.float64), onto[:, :2].astype(np.float64)
+    ma, mb = a.mean(axis=0), b.mean(axis=0)
+    a, b = a - ma, b - mb
+    dot, cross = (a * b).sum(), (a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]).sum()
+    norm = (a * a).sum()
+    turn = np.array([[dot, -cross], [cross, dot]]) / norm
+    return np.c_[turn, mb - turn @ ma]
+
+
 def landmark_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     """Per region and over all of them, % of the eye spacing (see the module doc)."""
     import cv2
@@ -331,7 +350,7 @@ def landmark_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     pm, rm = landmarks(photo), landmarks(render)
     if pm is None or rm is None:
         return None
-    fit, _ = cv2.estimateAffinePartial2D(rm[STABLE].astype(np.float32), pm[STABLE].astype(np.float32))
+    fit = align(rm[STABLE], pm[STABLE])
     placed = rm @ fit[:, :2].T + fit[:, 2]
     off = np.linalg.norm(placed - pm, axis=1) / np.linalg.norm(pm[33] - pm[263]) * 100
     marks = {region: sorted({i for part in parts for c in getattr(C, f"FACE_LANDMARKS_{part}")
@@ -493,7 +512,7 @@ def appearance_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     if pm is None or rm is None:
         return None
     h, w = photo.shape[:2]
-    fit, _ = cv2.estimateAffinePartial2D(rm[STABLE].astype(np.float32), pm[STABLE].astype(np.float32))
+    fit = align(rm[STABLE], pm[STABLE])
     warped = cv2.warpAffine(render, fit, (w, h), flags=cv2.INTER_AREA, borderValue=(200, 200, 200))
     lab = lambda im: cv2.cvtColor(im, cv2.COLOR_RGB2LAB).astype(np.float64) * [100 / 255, 1, 1] - [0, 128, 128]
     lp, lr = lab(photo), lab(warped)
