@@ -259,7 +259,7 @@
   <!-- 3. Style -->
   <section data-step="style" aria-labelledby="t-style">
     <h1 id="t-style">Make it yours</h1>
-    <p class="lead">Pick a hairstyle and colour. Drag your avatar to turn it.</p>
+    <p class="lead">Pick a hairstyle, colour and glasses. Drag your avatar to turn it.</p>
     <div class="studio">
       <div class="viewport">
         <canvas id="view" aria-label="Your 3D avatar"></canvas>
@@ -275,6 +275,8 @@
         <div class="cuts" id="cuts" role="group" aria-label="Hairstyle"></div>
         <h2>Hair colour</h2>
         <div class="swatches" id="swatches" role="group" aria-label="Hair colour"></div>
+        <h2>Glasses</h2>
+        <div class="cuts" id="glasses" role="group" aria-label="Glasses"></div>
       </div>
     </div>
     <div class="foot">
@@ -312,11 +314,11 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { setupRealism, applyMaterials, groundAndShadow, chooseHair } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, groundAndShadow, chooseHair, chooseGlasses } from '/lib/scene-setup.js';
 import { assess, getLandmarker, STEADY_FRAMES, LEFT } from '/lib/photo-checks.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { front: null, sides: [], gender: 'male', model: null, id: null, hair: null };
+const state = { front: null, sides: [], gender: 'male', model: null, id: null, hair: null, glasses: 'none' };
 
 // ---- Steps -------------------------------------------------------------------
 const ORDER = ['photo', 'create', 'style', 'save'];
@@ -581,7 +583,7 @@ document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('clic
 async function showAvatar(url) {
   $('viewloading').hidden = false;
   if (avatar) { scene.remove(avatar); avatar = null; }
-  $('cuts').replaceChildren(); $('swatches').replaceChildren();
+  $('cuts').replaceChildren(); $('swatches').replaceChildren(); $('glasses').replaceChildren();
   const [gltf, info] = await Promise.all([
     new GLTFLoader().loadAsync(url),
     fetch(url.replace(/\.glb$/, '.json')).then((r) => (r.ok ? r.json() : null)).catch(() => null),
@@ -604,6 +606,7 @@ async function showAvatar(url) {
   frame('face');
   hairInfo = info?.hair || null;
   buildPicker();
+  buildGlasses(info?.glasses);
   $('viewloading').hidden = true;
 }
 
@@ -611,8 +614,8 @@ const HAIR_COLOURS = [['Black', [22, 20, 19]], ['Dark brown', [52, 36, 27]], ['B
   ['Auburn', [118, 56, 34]], ['Blonde', [186, 148, 96]], ['Light blonde', [200, 178, 138]], ['Grey', [150, 148, 146]]];
 const THUMB = 120;
 
-/** Each cut's picture, on this head in the chosen colour. */
-function drawThumbnails(colour) {
+/** Each button's picture, on this head: `show(button)` puts its option on. */
+function drawThumbnails(buttons, show) {
   let head = null;
   avatar.traverse((o) => { if (!head && o.isMesh && o.material?.name === 'head') head = o; });
   if (!head) return;
@@ -626,8 +629,8 @@ function drawThumbnails(colour) {
   const side = Math.min(canvas.width, canvas.height);
   const out = Object.assign(document.createElement('canvas'), { width: THUMB, height: THUMB });
   const pen = out.getContext('2d');
-  for (const b of $('cuts').children) {
-    chooseHair(avatar, b.dataset.cut, colour);
+  for (const b of buttons) {
+    show(b);
     renderer.render(scene, view);
     pen.clearRect(0, 0, THUMB, THUMB);
     pen.drawImage(canvas, (canvas.width - side) / 2, (canvas.height - side) / 2, side, side, 0, 0, THUMB, THUMB);
@@ -637,7 +640,7 @@ function drawThumbnails(colour) {
 
 function wear(cut, colour) {
   const recolour = !state.hair || state.hair.colour.join() !== colour.join();
-  if (recolour) drawThumbnails(colour);
+  if (recolour) drawThumbnails($('cuts').children, (b) => chooseHair(avatar, b.dataset.cut, colour));
   state.hair = { cut, colour };
   chooseHair(avatar, cut, colour);
   for (const b of $('cuts').children) b.setAttribute('aria-pressed', String(b.dataset.cut === cut));
@@ -670,6 +673,26 @@ function buildPicker() {
   any.append(input);
   $('swatches').append(any);
   wear(hairInfo.shown || 'bald', hairInfo.colour);
+}
+
+/** The glasses picker: none, or a pair the file carries (compose's info.glasses), starting on its `shown`. */
+function buildGlasses(glasses) {
+  if (!glasses) { $('glasses').textContent = 'No glasses in this avatar.'; return; }
+  for (const { id, label } of [{ id: 'none', label: 'No glasses' }, ...glasses.options]) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.dataset.pair = id; b.title = label; b.setAttribute('aria-label', label);
+    b.append(Object.assign(document.createElement('img'), { alt: '' }), Object.assign(document.createElement('span'), { textContent: label }));
+    b.addEventListener('click', () => wearGlasses(id));
+    $('glasses').append(b);
+  }
+  drawThumbnails($('glasses').children, (b) => chooseGlasses(avatar, b.dataset.pair));
+  wearGlasses(glasses.shown || 'none');
+}
+
+function wearGlasses(pair) {
+  state.glasses = pair;
+  chooseGlasses(avatar, pair);
+  for (const b of $('glasses').children) b.setAttribute('aria-pressed', String(b.dataset.pair === pair));
 }
 
 (function loopRender() {
@@ -708,7 +731,7 @@ $('tosave').addEventListener('click', () => {
 });
 $('dl-png').addEventListener('click', () => save(picture(), 'my-avatar.png'));
 $('dl-glb').addEventListener('click', () => {
-  const q = new URLSearchParams({ hair: state.hair?.cut || 'bald', colour: (state.hair?.colour || []).join(',') });
+  const q = new URLSearchParams({ hair: state.hair?.cut || 'bald', colour: (state.hair?.colour || []).join(','), glasses: state.glasses });
   save(`/download/${state.model.split('/').pop()}?${q}`, 'my-avatar.glb');
 });
 $('backstyle').addEventListener('click', () => go('style'));

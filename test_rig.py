@@ -85,6 +85,19 @@ def check_export():
         print(f"ok  export: {len(skin.joints)} joints, "
               f"{len(gltf.meshes[0].primitives)} primitives, all skinned, the cornea's coat in the file")
 
+        # Every pair of glasses in the file, for the studio's picker; the
+        # download keeps the one picked, or none.
+        pairs = [i["id"] for i in items_by_id().values() if i["category"] == "glasses"]
+        assert pairs and gltf.meshes[0].extras.get("glassesOptions") == pairs, "the file does not carry the glasses"
+        names = lambda doc: {doc.materials[p.material].name for p in doc.meshes[0].primitives}
+        assert set(pairs) <= names(gltf), "a pair of glasses is missing from the file's primitives"
+        for keep in (pairs[-1], None):
+            kept = pathlib.Path(tmp) / "kept.glb"
+            kept.write_bytes(skinned_glb.with_hair(out.read_bytes(), "bald", glasses=keep))
+            left = names(gl.GLTF2().load(str(kept))) & set(pairs)
+            assert left == ({keep} if keep else set()), f"the download kept glasses {left}, not {keep}"
+        print(f"ok  glasses in the file: {len(pairs)} pairs, the download keeps only the one picked")
+
         # The compat copy for old viewers: no quantisation left, same geometry.
         compat = pathlib.Path(tmp) / "compat.glb"
         compat.write_bytes(skinned_glb.dequantised(out.read_bytes()))
@@ -1102,6 +1115,47 @@ def check_photo_reading():
     print(f"ok  photo: beard kept through the fade, hair read as {got.tolist()}")
 
 
+def check_glasses():
+    """Every pair of glasses loads with its texture, has its lenses out (the
+    eyes show through), sits in front of the eyes at their height, and clears
+    the face on both bodies (garments.glasses_frames)."""
+    import morph
+    from garments import GLASSES_CLEAR, glasses_frames
+    from scipy.spatial import cKDTree
+
+    base, groups = load_base()
+    pairs = [i for i in items_by_id().values() if i["category"] == "glasses"]
+    assert pairs, "no glasses in the catalogue"
+    missing = [i["id"] for i in pairs if not (HERE / "assets" / i["mhclo"]).exists()]
+    if missing:
+        print(f"skip glasses check: {missing} missing (python fetch_assets.py)")
+        return
+    for figure in ("male", "female"):
+        vertices = morph.body_for(base, figure)
+        eyes = np.array([vertices[np.unique(groups[g])] for g in ("helper-l-eye", "helper-r-eye")])
+        centres = eyes.mean(axis=1)
+        skin = trimesh.Trimesh(vertices, groups["body"], process=False)
+        skin_points = np.unique(groups["body"])
+        tree = cKDTree(vertices[skin_points])
+        for item in pairs:
+            mesh = build_item(item, None, vertices)
+            assert mesh.metadata.get("texture") is not None, f"{item['id']}: its texture did not load"
+            frames = glasses_frames(mesh, centres, skin)
+            assert 0 < len(frames.faces) <= len(mesh.faces), f"{item['id']}: no frames left"
+            again = glasses_frames(frames, centres, skin)
+            assert len(again.faces) == len(frames.faces), f"{item['id']}: a lens is left over an eye"
+            points = frames.vertices[np.unique(frames.faces)]
+            front = points[points[:, 2] > centres[:, 2].mean()]
+            assert front[:, 2].max() > eyes[..., 2].max(), f"{item['id']}: not in front of the eyes on the {figure}"
+            assert front[:, 1].min() < centres[:, 1].min() and front[:, 1].max() > centres[:, 1].max(), \
+                f"{item['id']}: the rims are not at the eyes' height on the {figure}"
+            near = skin_points[tree.query(front)[1]]
+            gap = ((front - vertices[near]) * skin.vertex_normals[near]).sum(axis=1)
+            assert gap.min() > GLASSES_CLEAR / 2, \
+                f"{item['id']}: {(gap < 0).sum()} points inside the {figure} face, {gap.min() * 100:.1f} mm off it"
+    print(f"ok  glasses: {len(pairs)} pairs load, lenses out, in front of the eyes and clear of both faces")
+
+
 def check_bodies_and_assets():
     """Male and female bodies differ; MakeHuman assets load with UVs; the pose
     names real bones and brings the arms in."""
@@ -1825,6 +1879,7 @@ if __name__ == "__main__":
         check_import()
         check_photo_reading()
         check_bodies_and_assets()
+        check_glasses()
         check_delight()
         check_meet_rim()
         check_appearance()

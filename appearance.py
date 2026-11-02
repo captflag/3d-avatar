@@ -1617,10 +1617,12 @@ def _skin_blur(rgb: np.ndarray, source: np.ndarray, sigma: float) -> np.ndarray:
 
 
 def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: np.ndarray | None,
-                beard: np.ndarray | None = None) -> np.ndarray:
+                beard: np.ndarray | None = None) -> tuple[np.ndarray, bool]:
     """The face's skin smooth and even: no freckles, spots, pores or the
     blotches a photo's light leaves; its form (the nose, the cheekbones), the
-    eyes, brows, lips and any beard kept as the photo has them.
+    eyes, brows, lips and any beard kept as the photo has them. And whether
+    the photo shows glasses (a frame's rim under each eye), which the
+    studio's glasses picker starts from.
 
     Asked for: smooth, flawless skin, no marks of any kind. Frequency
     separation: the skin's detail under SMOOTH_MARKS of the face's width is
@@ -1738,7 +1740,7 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     region = (face_mask | skin_parts | hair) & ~keep
     source = region & ~hair
     if source.sum() < 500:
-        return skin_rgb
+        return skin_rgb, glasses
     rgb = skin_rgb.astype(np.float64)
     # The rims out of the brow zone's colour too, so the smoothing's feather
     # round the brow hairs does not let them back in as a faint arc.
@@ -1829,4 +1831,4 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
         fill = cv2.GaussianBlur(shape.astype(np.float64), (0, 0), max(BROW_FEATHER * face_w, 1.0)) * strength
         fill = (fill * (1.0 - hairs))[..., None]
         out = out * (1.0 - fill) + colour * fill
-    return np.clip(out, 0, 255).astype(np.uint8)
+    return np.clip(out, 0, 255).astype(np.uint8), glasses

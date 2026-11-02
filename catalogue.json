@@ -547,6 +547,47 @@
       ],
       "roughness": 0.6,
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
+      "id": "glasses_spamrakuen_tbm_glasses_frames_01",
+      "category": "glasses",
+      "label": "Dark frames",
+      "mhclo": "community_packs/glasses01_cc0/clothes/spamrakuen_tbm_glasses_frames_01/spamrakuen_tbm_glasses_frames_01.mhclo",
+      "roughness": 0.3,
+      "licence": "CC0-1.0 (spamrakuen, from The Base Mesh, MakeHuman community asset repository http://www.makehumancommunity.org/node/3330; glasses01_cc0.zip from files2.makehumancommunity.org/asset_packs, marked CC0 in its packs manifest)",
+      "_why": "Glasses: frames from MakeHuman's community pack, fitted like any mhclo asset and shipped hidden in every file for the studio's picker (compose); the first is the pair worn when the photo shows glasses."
+    },
+    {
+      "id": "glasses_spamrakuen_sagerfrogs_glasses_02",
+      "category": "glasses",
+      "label": "Red frames",
+      "mhclo": "community_packs/glasses01_cc0/clothes/spamrakuen_sagerfrogs_glasses_02/spamrakuen_sagerfrogs_glasses_02.mhclo",
+      "roughness": 0.3,
+      "licence": "CC0-1.0 (spamrakuen, after Sagerfrog, MakeHuman community asset repository http://www.makehumancommunity.org/node/3332; glasses01_cc0.zip from files2.makehumancommunity.org/asset_packs, marked CC0 in its packs manifest)"
+    },
+    {
+      "id": "glasses_spamrakuen_sagerfrogs_glasses_03",
+      "category": "glasses",
+      "label": "Half-rim",
+      "mhclo": "community_packs/glasses01_cc0/clothes/spamrakuen_sagerfrogs_glasses_03/spamrakuen_sagerfrogs_glasses_03.mhclo",
+      "roughness": 0.3,
+      "licence": "CC0-1.0 (spamrakuen, after Sagerfrog, MakeHuman community asset repository http://www.makehumancommunity.org/node/3333; glasses01_cc0.zip from files2.makehumancommunity.org/asset_packs, marked CC0 in its packs manifest)"
+    },
+    {
+      "id": "glasses_kwnet_at_optical_glasses",
+      "category": "glasses",
+      "label": "Light metal",
+      "mhclo": "community_packs/glasses01_cc0/clothes/kwnet_at_optical_glasses/kwnet_at_optical_glasses.mhclo",
+      "roughness": 0.3,
+      "licence": "CC0-1.0 (kwnet_at, MakeHuman community asset repository http://www.makehumancommunity.org/node/928; glasses01_cc0.zip from files2.makehumancommunity.org/asset_packs, marked CC0 in its packs manifest)"
+    },
+    {
+      "id": "glasses_frankyaye_glasses_library_male",
+      "category": "glasses",
+      "label": "Black oval",
+      "mhclo": "community_packs/glasses01_cc0/clothes/frankyaye_glasses_library_male/frankyaye_glasses_library_male.mhclo",
+      "roughness": 0.3,
+      "licence": "CC0-1.0 (frankyaye, MakeHuman community asset repository http://www.makehumancommunity.org/node/153; glasses01_cc0.zip from files2.makehumancommunity.org/asset_packs, marked CC0 in its packs manifest)"
     }
   ]
 }
