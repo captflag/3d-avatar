@@ -1175,6 +1175,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair)
     # And the cheeks at the photo's colour once all that is done (delight.match_colour).
     skin_rgb, colour_gains = delight.match_colour(skin_rgb, photo_rgb, landmarks, exclude=facial_hair)
+    # And the lips at the photo's lips' colour (appearance.match_lips).
+    skin_rgb, lip_gains = appearance.match_lips(skin_rgb, photo_rgb, landmarks)
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)

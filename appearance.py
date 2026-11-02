@@ -714,6 +714,33 @@ def lip_tone(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
     return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
 
 
+def match_lips(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks, limits=(0.3, 3.0)):
+    """The lips scaled (linear, a gain per channel, feathered at their edge) so
+    they render the colour the photo shows them, as delight.match_colour does
+    the cheeks. A fixed shift (lip_tone) and the cheeks' gain left them as far
+    off as either way: 9.8 L* dark on p04, 4.7 on p02, 5.1 light on p08.
+    Returns (image, gains)."""
+    from delight import rendered, to_linear, to_srgb
+    h, w = photo_rgb.shape[:2]
+    ring = lambda ids: np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in ids]).round().astype(np.int32)
+    outer, inner = np.zeros((h, w), np.uint8), np.zeros((h, w), np.uint8)
+    cv2.fillPoly(outer, [ring(OUTER_LIPS)], 1)
+    cv2.fillPoly(inner, [ring(INNER_LIPS)], 1)
+    width = float(np.ptp(ring(OUTER_LIPS)[:, 0]))
+    grow = max(int(0.03 * width), 1)
+    lips = (cv2.erode(outer, np.ones((2 * grow + 1,) * 2, np.uint8)) > 0) & ~(cv2.dilate(inner, np.ones((2 * grow + 1,) * 2, np.uint8)) > 0)
+    if lips.sum() < 30:
+        return skin_rgb, np.ones(3)
+    target = to_linear(np.median(photo_rgb[lips], axis=0).round().astype(np.uint8)[None, :])[0]
+    have = to_linear(np.median(skin_rgb[lips], axis=0).round().astype(np.uint8)[None, :])[0]
+    gains = np.ones(3)
+    for _ in range(12):
+        gains = np.clip(gains * target / np.maximum(rendered(have * gains), 1e-4), *limits)
+    weight = cv2.GaussianBlur(outer.astype(np.float64), (0, 0), max(0.03 * width, 0.5))[..., None]
+    linear = to_linear(skin_rgb)
+    return to_srgb(linear * (1.0 + (gains - 1.0) * weight)), np.round(gains, 3)
+
+
 # ------------------------------------------------------------ colour cast -----
 
 # Hue angle of skin in LAB (atan2(b*, a*), degrees): every skin tone falls in a
