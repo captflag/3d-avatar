@@ -192,7 +192,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { setupRealism, applyMaterials, applyPhotoExpression, applyPhotoPose, groundAndShadow, withOcclusion, renderCoverage } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, applyPhotoExpression, applyPhotoPose, groundAndShadow, visibleBox, withOcclusion, renderCoverage } from '/lib/scene-setup.js';
 import { FACE_PX, LEFT, MAX_BLINK, MAX_LIGHT_SPLIT, MAX_ROLL, MAX_SMILE, MAX_TURN, MIN_CHEEK, MIN_EYES, MIN_SHARP, SHARP_PX, SIDE_TURN, STEADY_FRAMES, VISION, assess, brightTenth, brightness, getLandmarker, landmarkers, sampler, sharpness } from '/lib/photo-checks.js';
 
 const $ = (id) => document.getElementById(id);
@@ -710,7 +710,7 @@ async function drawAvatar(url, width, height, focusHead = false, photoPose = fal
   applyPhotoExpression(model);
   if (photoPose) applyPhotoPose(model);
 
-  const box = new THREE.Box3().setFromObject(model);
+  const box = visibleBox(model);
   const size = box.getSize(new THREE.Vector3());
   const centre = box.getCenter(new THREE.Vector3());
   model.position.sub(centre);

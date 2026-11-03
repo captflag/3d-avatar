@@ -314,7 +314,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { setupRealism, applyMaterials, groundAndShadow, chooseHair, chooseGlasses } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, groundAndShadow, visibleBox, chooseHair, chooseGlasses } from '/lib/scene-setup.js';
 import { assess, getLandmarker, STEADY_FRAMES, LEFT } from '/lib/photo-checks.js';
 
 const $ = (id) => document.getElementById(id);
@@ -590,7 +590,7 @@ async function showAvatar(url) {
   ]);
   avatar = gltf.scene;
   applyMaterials(avatar);
-  const box = new THREE.Box3().setFromObject(avatar);
+  const box = visibleBox(avatar);
   const size = box.getSize(new THREE.Vector3()), centre = box.getCenter(new THREE.Vector3());
   avatar.position.sub(centre);
   scene.add(avatar);
