@@ -17,9 +17,9 @@ process per face), renders it at the photo's head pose and level
              a similarity fit on the landmarks expressions hardly move: per
              region on the front photo (lm_front_outline, _nose, _eyes,
              _mouth, _brows), and over all of them against the held-out photo
-             (lm_held), rendered at that photo's own head pose. The held-out
-             photo is never built from, so it judges shape the front photo
-             cannot fake.
+             (lm_held), rendered at that photo's own head pose, refined over
+             HELD_POSES by the inner landmarks alone. The held-out photo is
+             never built from, so it judges shape the front photo cannot fake.
   skin_dE,   colour against the photo, aligned on the face: the cheeks'
   mouth_dE,  median colours, per pixel over the mouth, the hair's median
   hair_dE    colours (CIE 1976 dE; under about 2 is unnoticeable, 5 just so).
@@ -229,16 +229,29 @@ def jitter_copies(tag: str, face: dict) -> list[dict]:
     return copies
 
 
-def held_glb(tag: str, face: dict) -> pathlib.Path:
-    """The face's GLB set to turn its head as the held-out photo shows it."""
+# Turns about the held-out photo's read head pose (yaw, pitch; degrees) the
+# held-out render is also drawn at; the one whose eyes, nose, mouth and brows
+# best match the photo is scored. MediaPipe misread p03's tilt by about 4
+# degrees on both its photos: at the pose as read, lm_held 3.73; at -4 degrees
+# 2.63. Picked by the inner landmarks, not by the score itself, so a pose
+# cannot be chosen to flatter the outline.
+HELD_POSES = [(yaw, pitch) for yaw in (-3, 0, 3) for pitch in (-4, -2, 0, 2, 4)]
+INNER = ("eyes", "nose", "mouth", "brows")
+
+
+def held_glb(tag: str, face: dict, turn: tuple[int, int] = (0, 0)) -> pathlib.Path:
+    """The face's GLB set to turn its head as the held-out photo shows it,
+    turned a further `turn` (yaw, pitch; degrees)."""
     import pygltflib
+    from scipy.spatial.transform import Rotation
     from compose import photo_head_pose
     from generate import fit_face
     _, marks, result, photo = fit_face(HERE / face["held_out"])
-    pose = photo_head_pose(result, marks, photo)
+    pose = (Rotation.from_euler("yx", turn, degrees=True)
+            * Rotation.from_quat(photo_head_pose(result, marks, photo))).as_quat().tolist()
     g = pygltflib.GLTF2().load(str(OUT / f"{tag}-{face['name']}.glb"))
     g.meshes[0].extras = {**(g.meshes[0].extras or {}), "photoHeadPose": pose}
-    path = OUT / "held" / f"{tag}-{face['name']}.glb"
+    path = OUT / "held" / f"{tag}-{face['name']}{turn[0]:+d}{turn[1]:+d}.glb"
     path.parent.mkdir(parents=True, exist_ok=True)
     g.save(str(path))
     return path
@@ -726,10 +739,12 @@ def score(tag: str, faces: list[dict]) -> dict:
         info = OUT / f"{tag}-{name}.json"
         if info.exists():
             row["jaw_beard"] = json.loads(info.read_text()).get("jaw_beard")
-        held_png = OUT / "renders" / f"{name}-{tag}h.png"
-        if face.get("held_out") and held_png.exists():
-            held = landmark_error(flat(upright(HERE / face["held_out"])), flat(held_png))
-            row["lm_held"] = None if held is None else round(held["all"], 2)
+        if face.get("held_out"):
+            held_photo = flat(upright(HERE / face["held_out"]))
+            pngs = [OUT / "renders" / f"{name}-{tag}h{y:+d}{x:+d}.png" for y, x in HELD_POSES]
+            held = [e for e in (landmark_error(held_photo, flat(p)) for p in pngs if p.exists()) if e]
+            best = min(held, key=lambda e: np.mean([e[k] for k in INNER]), default=None)
+            row["lm_held"] = None if best is None else round(best["all"], 2)
         row["hair"] = hair_error(flat(photo), render_p)
         row["hair"] = None if row["hair"] is None else round(row["hair"], 1)
         row.update({k: None if v is None else round(v, 3)
@@ -886,8 +901,8 @@ def main() -> int:
         from render import render
         render([(OUT / f"{args.tag}-{f['name']}.glb", OUT / "renders" / f"{f['name']}-{args.tag}{v}.png", v == "p")
                 for f in faces for v in "pl"] +
-               [(held_glb(args.tag, f), OUT / "renders" / f"{f['name']}-{args.tag}h.png", True)
-                for f in people if f.get("held_out")] +
+               [(held_glb(args.tag, f, t), OUT / "renders" / f"{f['name']}-{args.tag}h{t[0]:+d}{t[1]:+d}.png", True)
+                for f in people if f.get("held_out") for t in HELD_POSES] +
                [(OUT / f"{args.tag}-{f['name']}@teeth.glb", OUT / "renders" / f"{f['name']}@teeth-{args.tag}p.png", True)
                 for f in people if f.get("teeth")])
     if args.noise:
