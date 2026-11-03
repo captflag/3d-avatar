@@ -60,6 +60,12 @@ def check_export():
         out = pathlib.Path(tmp) / "rigged.glb"
         compose(photo, out)
         gltf = gl.GLTF2().load(str(out))
+        import json
+        info = json.loads(out.with_suffix(".json").read_text(encoding="utf-8"))
+        # Built twice, the second aimed by a render of the first (compose's
+        # refine), unless no browser drew it.
+        print(f"ok  refine: lips and jaw read {info.get('refined')} off, aimed against it" if info.get("refined")
+              else "skip refine: no render of the first build")
 
         assert len(gltf.skins) == 1, "no skin in the exported file"
         skin = gltf.skins[0]
@@ -661,7 +667,7 @@ def check_hair_cap():
         return
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "cap.glb"
-        compose(photo, out, "male", hair="hair_short01")   # built bald unless a cut is asked for
+        compose(photo, out, "male", hair="hair_short01", refine=False)   # built bald unless a cut is asked for
         g = gl2.GLTF2().load(str(out)); blob = g.binary_blob()
         names = [m.name for m in g.materials]
         assert "scalp_cap" in names, f"no scalp cap among {names}"
@@ -1061,7 +1067,7 @@ def check_import():
         return
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "vest.glb"
-        compose(photo, out, wear=["shirt_white", "vest_test", "trousers_navy", "shoes_dark"])
+        compose(photo, out, wear=["shirt_white", "vest_test", "trousers_navy", "shoes_dark"], refine=False)
         gltf = gl.GLTF2().load(str(out))
         names = [m.name for m in gltf.materials]
         assert "vest_test" in names, "the imported vest is not in the avatar"
@@ -1254,6 +1260,20 @@ def check_delight():
     assert np.abs(got / want - 1.0).max() < 0.06 and (gains < 1.0).all(), f"cheeks render at {got / want} of the photo's"
     print(f"ok  delight: synthetic lighting removed ({spread:.2%} left), "
           f"overexposed skin capped, dark skin and background untouched, cheeks matched to the photo's colour")
+
+
+def check_shift_marks():
+    """A render's reading moves the targets against it, in the face's frame."""
+    from compose import shift_marks
+    pts = np.zeros((478, 3))
+    pts[263, 0] = 2.0                                  # eye spacing 2
+    moved = shift_marks(pts, [0, 1], [[0.1, 0.0], [0.0, 0.05]])
+    # Read 0.1 spacings right: aimed 0.2 left. Read 0.05 low (y down): aimed 0.1 up (y up).
+    assert np.allclose(moved[0], [-0.2, 0, 0]) and np.allclose(moved[1], [0, 0.1, 0]), moved[:2]
+    turned = shift_marks(pts, [0], [[0.1, 0.0]], np.array([[0.0, -1, 0], [1, 0, 0], [0, 0, 1]]))
+    assert np.allclose(turned[0], [0, 0.2, 0]), turned[0]
+    assert np.allclose(moved[2:], pts[2:]), "only the given ids move"
+    print("ok  shift: render readings aim the lips and jaw against them")
 
 
 def check_meet_rim():
@@ -1494,7 +1514,7 @@ def check_review_fixes():
         return
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "portrait.glb"
-        compose(photo, out)
+        compose(photo, out, refine=False)
         import json
         info = json.loads(out.with_suffix(".json").read_text(encoding="utf-8"))
         mouth = [w for name, w in info["shape"]["strongest"] if name.startswith("mouth/")]
@@ -1881,6 +1901,7 @@ if __name__ == "__main__":
         check_bodies_and_assets()
         check_glasses()
         check_delight()
+        check_shift_marks()
         check_meet_rim()
         check_appearance()
         check_finishing()

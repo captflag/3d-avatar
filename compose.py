@@ -1030,12 +1030,73 @@ def outfit_for(gender: str, chosen: list[str] | None) -> list[dict]:
     return [index[i] for i in ids]
 
 
-def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
-            gender: str = "male", wear: list[str] | None = None,
-            face_patch: bool = False, pose: str = "relaxed",
-            side_photos: list[pathlib.Path] | None = None,
-            hair_hint: str | None = None, hair_colour_hint: str | None = None,
-            hair: str | None = None) -> dict:
+def shift_marks(points: np.ndarray, ids: list[int], offsets, rotation: np.ndarray | None = None) -> np.ndarray:
+    """`points` (the face's landmarks, y up) with `ids` moved against
+    `offsets`: per id, how far a render read it from the photo's (x right, y
+    down, in eye-corner spacings), turned into the face's frame by `rotation`
+    (the photo's view) where given."""
+    offsets = np.asarray(offsets, dtype=np.float64)
+    spacing = float(np.linalg.norm(points[33] - points[263]))
+    move = np.c_[offsets[:, 0], -offsets[:, 1], np.zeros(len(offsets))] * spacing
+    out = points.copy()
+    out[ids] -= move if rotation is None else move @ rotation
+    return out
+
+
+def render_shifts(glb: pathlib.Path, photo_path: pathlib.Path) -> dict | None:
+    """Where MediaPipe reads the built head's lips and jaw, drawn at the
+    photo's pose, against the photo's own (see `compose`'s `refine`), or None
+    if no render could be made or read."""
+    import tempfile
+    from generate import stand_up
+    from render import render
+    from score_run import STABLE, align, flat, landmarks
+    with tempfile.TemporaryDirectory() as tmp:
+        png = pathlib.Path(tmp) / "pose.png"
+        render([(glb, png, True)])
+        drawn = landmarks(flat(png))
+    seen = landmarks(np.asarray(stand_up(photo_path)[0].convert("RGB")))
+    if drawn is None or seen is None:
+        return None
+    fit = align(drawn[STABLE], seen[STABLE])
+    off = (drawn @ fit[:, :2].T + fit[:, 2] - seen) / np.linalg.norm(seen[33] - seen[263])
+    return {"lips": off[morph.LIP_LANDMARKS].tolist(), "jaw": off[morph.JAW_OUTLINE].tolist()}
+
+
+def compose(photo_path: pathlib.Path, out_path: pathlib.Path, *args, refine: bool = True, **kwargs) -> dict:
+    """The avatar (`_compose`), then, with `refine`, built once more with its
+    lips and jaw aimed by what a render of the first shows.
+
+    MediaPipe does not read the built head where the fit put it: drawn at the
+    photo's pose, its lips and jaw came out up to 5% of the eye spacing off
+    the photo's, differently on each face (the jaw's systematic part is
+    morph.JAW_READ_HIGH). Aimed against what it read, over the eight dev
+    faces: mouth 2.20 -> 1.30% (6 -> 8 within 3%), held-out 2.85 -> 2.38%
+    (2 -> 3 of 3), mouth colour 14.1 -> 13.1, outline 2.74 -> 2.58%,
+    likeness level. Twice the build time, and a browser to draw with; where
+    none renders, the first build stands."""
+    info = _compose(photo_path, out_path, *args, **kwargs)
+    if not refine:
+        return info
+    try:
+        shifts = render_shifts(out_path, photo_path)
+    except (RuntimeError, TimeoutError, OSError) as err:
+        print(f"refine skipped: {err}", file=sys.stderr)
+        shifts = None
+    if shifts is None:
+        return info
+    info = _compose(photo_path, out_path, *args, shifts=shifts, **kwargs)
+    info["refined"] = {part: round(float(np.linalg.norm(off, axis=1).mean() * 100), 2) for part, off in shifts.items()}
+    out_path.with_suffix(".json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    return info
+
+
+def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
+             gender: str = "male", wear: list[str] | None = None,
+             face_patch: bool = False, pose: str = "relaxed",
+             side_photos: list[pathlib.Path] | None = None,
+             hair_hint: str | None = None, hair_colour_hint: str | None = None,
+             hair: str | None = None, shifts: dict | None = None) -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
@@ -1114,7 +1175,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     lip_marks[morph.LIP_LANDMARKS] = 1.0
     # Towards the lips closed: the mesh's met 1.4% of the eye spacing apart on
     # a photo whose own were 0.4 apart, and a sliver of teeth showed.
-    vertices = morph.correct(vertices, base, morph.lip_corr(base, corr), morph.close_lips(person), average,
+    lip_target = morph.close_lips(person)
+    if shifts:
+        # Aimed against where a render of the first build read them (compose).
+        lip_target = shift_marks(lip_target, morph.LIP_LANDMARKS, shifts["lips"])
+    vertices = morph.correct(vertices, base, morph.lip_corr(base, corr), lip_target, average,
                              shape_weights, expression, front, lip_marks)
     vertices = morph.seal_lips(vertices, groups["body"])
     # The jaw's edge as the camera saw it, with the photo's expression off.
@@ -1125,6 +1190,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     head_pose = photo_head_pose(result, landmarks, photo)
     render_turn = rotation if head_pose is None else Rotation.from_quat(head_pose).as_matrix()
     head_only = morph.head_only(vertices, groups["body"], load_weights())
+    if shifts:
+        resting = shift_marks(resting, morph.JAW_OUTLINE, shifts["jaw"], rotation)
     vertices = morph.fit_outline(vertices, head_only, resting, rotation)
 
     # The same expression taken off the landmarks the photo is baked through,
@@ -1799,6 +1866,8 @@ def main() -> int:
                              "except for a hard edge across the forehead")
     parser.add_argument("--pose", choices=sorted(POSES), default="relaxed",
                         help="the stance the file opens in (the skeleton is the same)")
+    parser.add_argument("--no-refine", dest="refine", action="store_false",
+                        help="skip the second build that aims the lips and jaw by a render of the first")
     parser.add_argument("--compat", action="store_true",
                         help="write normals and texture coordinates as floats, without "
                              "KHR_mesh_quantization, for old viewers such as Windows' 3D Viewer")
@@ -1807,7 +1876,7 @@ def main() -> int:
     try:
         info = compose(args.photo, args.out, args.gender,
                        args.wear.split(",") if args.wear else None, args.face_patch, args.pose,
-                       side_photos=args.side or None, hair=args.hair)
+                       side_photos=args.side or None, hair=args.hair, refine=args.refine)
     except NoFaceFound:
         print("no face found in the photo", file=sys.stderr)
         return 1
