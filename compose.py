@@ -1043,6 +1043,49 @@ def shift_marks(points: np.ndarray, ids: list[int], offsets, rotation: np.ndarra
     return out
 
 
+# Each lip as a ring of MediaPipe ids, corner to corner along the outer edge
+# and back along the inner.
+UPPER_LIP = [61] + morph.OUTER_UPPER + [291] + morph.INNER_UPPER[::-1]
+LOWER_LIP = [61] + morph.OUTER_LOWER + [291] + morph.INNER_LOWER[::-1]
+
+
+def lip_lightness(rgb: np.ndarray, marks: np.ndarray) -> list[float]:
+    """Median L* (0-100) of the upper and the lower lip in `rgb` at `marks`."""
+    lab = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2LAB)[..., 0].astype(np.float64) * 100 / 255
+    out = []
+    for ring in (UPPER_LIP, LOWER_LIP):
+        mask = np.zeros(rgb.shape[:2], np.uint8)
+        cv2.fillPoly(mask, [np.round(marks[ring]).astype(np.int32)], 1)
+        out.append(float(np.median(lab[mask > 0])) if mask.any() else float("nan"))
+    return out
+
+
+def relight_lips(skin_rgb: np.ndarray, landmarks, light: dict) -> np.ndarray:
+    """Each lip's paint scaled (linear, feathered) by how far a render of the
+    first build drew it from the photo's lightness: `light` is {"upper":
+    [render L*, photo L*], "lower": [...]}. The lower lip faces up into the
+    studio's key light and rendered 6-9 L* lighter than the photo's on five
+    of the eight dev faces, the upper about right. Fed back once, the lower
+    lip's gap went 7.8 -> 2.4 L* on p02, 6.6 -> 3.9 on p06; pushed further
+    (the gain to the power 1.5, half the feather) p02 and p03 came out worse
+    and the smiling photos' teeth with them."""
+    from delight import to_linear, to_srgb
+    h, w = skin_rgb.shape[:2]
+    px = np.array([[lm.x * w, lm.y * h] for lm in landmarks[:468]])
+    linear = to_linear(skin_rgb)
+    width = float(np.ptp(px[UPPER_LIP, 0]))
+    for ring, key in ((UPPER_LIP, "upper"), (LOWER_LIP, "lower")):
+        drawn, seen = light[key]
+        if not (np.isfinite(drawn) and np.isfinite(seen)):
+            continue
+        gain = float(np.clip(((seen + 16.0) / (drawn + 16.0)) ** 3, 0.5, 2.0))
+        mask = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(mask, [np.round(px[ring]).astype(np.int32)], 1)
+        weight = cv2.GaussianBlur(mask.astype(np.float64), (0, 0), max(0.03 * width, 0.5))[..., None]
+        linear = linear * (1.0 + (gain - 1.0) * weight)
+    return to_srgb(linear)
+
+
 def render_shifts(glb: pathlib.Path, photo_path: pathlib.Path) -> dict | None:
     """Where MediaPipe reads the built head's lips and jaw, drawn at the
     photo's pose, against the photo's own (see `compose`'s `refine`), or None
@@ -1054,13 +1097,19 @@ def render_shifts(glb: pathlib.Path, photo_path: pathlib.Path) -> dict | None:
     with tempfile.TemporaryDirectory() as tmp:
         png = pathlib.Path(tmp) / "pose.png"
         render([(glb, png, True)])
-        drawn = landmarks(flat(png))
-    seen = landmarks(np.asarray(stand_up(photo_path)[0].convert("RGB")))
+        drawing = flat(png)
+    drawn = landmarks(drawing)
+    photo = np.asarray(stand_up(photo_path)[0].convert("RGB"))
+    seen = landmarks(photo)
     if drawn is None or seen is None:
         return None
     fit = align(drawn[STABLE], seen[STABLE])
     off = (drawn @ fit[:, :2].T + fit[:, 2] - seen) / np.linalg.norm(seen[33] - seen[263])
-    return {"lips": off[morph.LIP_LANDMARKS].tolist(), "jaw": off[morph.JAW_OUTLINE].tolist()}
+    # The lips' lightness as drawn against the photo's, each on the photo's own outline.
+    warped = cv2.warpAffine(drawing, fit, photo.shape[1::-1], flags=cv2.INTER_AREA, borderValue=(200, 200, 200))
+    light = dict(zip(("upper", "lower"), zip(lip_lightness(warped, seen), lip_lightness(photo, seen))))
+    return {"lips": off[morph.LIP_LANDMARKS].tolist(), "jaw": off[morph.JAW_OUTLINE].tolist(),
+            "lip_light": {k: list(v) for k, v in light.items()}}
 
 
 def compose(photo_path: pathlib.Path, out_path: pathlib.Path, *args, refine: bool = True, **kwargs) -> dict:
@@ -1086,7 +1135,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path, *args, refine: boo
     if shifts is None:
         return info
     info = _compose(photo_path, out_path, *args, shifts=shifts, **kwargs)
-    info["refined"] = {part: round(float(np.linalg.norm(off, axis=1).mean() * 100), 2) for part, off in shifts.items()}
+    info["refined"] = {part: round(float(np.linalg.norm(shifts[part], axis=1).mean() * 100), 2) for part in ("lips", "jaw")}
+    info["refined"]["lip_light"] = {k: [round(x, 1) for x in v] for k, v in shifts["lip_light"].items()}
     out_path.with_suffix(".json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     return info
 
@@ -1244,6 +1294,9 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb, colour_gains = delight.match_colour(skin_rgb, photo_rgb, landmarks, exclude=facial_hair)
     # And the lips at the photo's lips' colour (appearance.match_lips).
     skin_rgb, lip_gains = appearance.match_lips(skin_rgb, photo_rgb, landmarks)
+    if shifts and shifts.get("lip_light"):
+        # Each lip as light as the photo's, by a render of the first build (compose).
+        skin_rgb = relight_lips(skin_rgb, landmarks, shifts["lip_light"])
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)
@@ -1433,7 +1486,14 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     beard_map = facetexture.facial_hair(skin_rgb, landmarks, cheeks)
     # The forehead up to the hairline, which the landmarks stop short of.
     forehead = appearance.forehead_skin(parts, landmarks)
-    sampler = facetexture.FaceSampler(full_face.vertices, landmark_pixels, rim,
+    sheet = full_face.vertices
+    if shifts:
+        # The photo's jaw edge is painted where the sheet's jaw points sit,
+        # wherever the mesh's own jaw is, and MediaPipe reads the jaw off that
+        # paint (drawn in flat skin, p03's outline read 11.5% off, not 4.2):
+        # moved against what a render of the first build read, like the mesh.
+        sheet = shift_marks(sheet, morph.JAW_OUTLINE, shifts["jaw"], rotation)
+    sampler = facetexture.FaceSampler(sheet, landmark_pixels, rim,
                                       keep=beard_map,
                                       lips=([78] + morph.INNER_UPPER + [308],
                                             [78] + morph.INNER_LOWER + [308]),
