@@ -663,6 +663,13 @@ OUTLINE_REACH = 0.25
 OUTLINE_DAMPING = 0.3
 # Silhouettes are drawn at this many pixels per eye-corner spacing.
 OUTLINE_SCALE = 300.0
+# The jaw's targets set this far below the photo's outline (eye-corner
+# spacings): MediaPipe reads the bald render's jaw that much higher than the
+# silhouette it is fitted to. Measured on the eight dev faces' renders (1.8-2.3%
+# at every jaw point); set lower by it, outline 3.02 -> 2.78%, jaw 3.42 ->
+# 2.93%, chin 1.78 -> 1.01%. A per-face loop through a render did better
+# (2.51%, 6 of 8 within 3%) at a second build's cost.
+JAW_READ_HIGH = 0.02
 
 
 def head_only(vertices: np.ndarray, faces: np.ndarray, weights: dict) -> np.ndarray:
@@ -738,6 +745,7 @@ def fit_outline(vertices: np.ndarray, head_faces: np.ndarray, person: np.ndarray
     size = int(4 * OUTLINE_SCALE)
     in_view = lambda q: np.stack([q[:, 0] * scale + size / 2, -q[:, 1] * scale + size / 2], axis=1)
     targets = in_view((person[JAW_OUTLINE] - centre) @ rotation.T)
+    targets[:, 1] += JAW_READ_HIGH * spacing * scale
     nose = in_view((person[[1]] - centre) @ rotation.T)[0]
     rays = (targets - nose) / np.linalg.norm(targets - nose, axis=1, keepdims=True)
     on_head = np.unique(head_faces)
