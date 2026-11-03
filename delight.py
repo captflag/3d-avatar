@@ -95,6 +95,19 @@ def rendered(albedo: np.ndarray, light: float = RENDER_LIGHT) -> np.ndarray:
 CHEEK_PATCHES = ([50, 205, 187, 123, 116, 117, 118, 101], [280, 425, 411, 352, 345, 346, 347, 330])
 
 
+def median_colour(rgb: np.ndarray) -> np.ndarray:
+    """The median colour of some sRGB pixels (N x 3), taken in L*a*b* and
+    given back as sRGB uint8. A median per R, G and B channel picks each from
+    a different pixel: over cheeks half lit and half in shadow (a photo lit
+    from the side) it made up a colour redder and yellower than either half,
+    4.5-7.1 dE from the L*a*b* median on the four side-lit test faces, and
+    the skin was matched to it."""
+    lab = cv2.cvtColor(np.asarray(rgb, np.float32).reshape(-1, 1, 3) / 255.0, cv2.COLOR_RGB2LAB)
+    mid = np.median(lab.reshape(-1, 3), axis=0).astype(np.float32)
+    back = cv2.cvtColor(mid.reshape(1, 1, 3), cv2.COLOR_LAB2RGB).reshape(3)
+    return np.clip(back * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
 def match_colour(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks,
                  exclude: np.ndarray | None = None, limits=(0.3, 2.0)):
     """The finished skin image scaled (linear, a gain per channel) so its
@@ -113,8 +126,8 @@ def match_colour(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks,
     keep = mask > 0 if exclude is None else (mask > 0) & (exclude < 0.2)
     if keep.sum() < 50:
         return skin_rgb, np.ones(3)
-    target = to_linear(np.median(photo_rgb[keep], axis=0).round().astype(np.uint8)[None, :])[0]
-    cheek = to_linear(np.median(skin_rgb[keep], axis=0).round().astype(np.uint8)[None, :])[0]
+    target = to_linear(median_colour(photo_rgb[keep])[None, :])[0]
+    cheek = to_linear(median_colour(skin_rgb[keep])[None, :])[0]
     gains = np.ones(3)
     for _ in range(12):                     # each channel's render rises with its gain
         shown = rendered(cheek * gains)
