@@ -10,8 +10,9 @@ process per face), renders it at the photo's head pose and level
   identity   SFace cosine, render against the photo (identity_score.py), at
              the pose and level; against the person's other photos too where
              the set lists them (others_p), which carries no self-match bias;
-             and as the person would show it (identity_c, dlib_c): the set's
-             `hair_cut` and the studio's glasses, at the pose.
+             as the person would show it (identity_c, dlib_c): the set's
+             `hair_cut` and the studio's glasses, at the pose; and the face
+             alone (identity_f, dlib_f): the photo's hair greyed out (hairless).
   rank1      1 where the render is closer to its own person's photos than to
   margin     anyone else's, and by how much (own - best other); needs two or
              more people in the set.
@@ -307,6 +308,20 @@ def upright(path: pathlib.Path) -> pathlib.Path:
     if not copy.exists() or copy.stat().st_mtime < path.stat().st_mtime:
         copy.parent.mkdir(parents=True, exist_ok=True)
         stand_up(path)[0].save(copy)
+    return copy
+
+
+def hairless(path: pathlib.Path) -> pathlib.Path:
+    """The upright photo with its hair painted the render's backdrop grey
+    (appearance.segment), saved once beside it: the built head is bald, and
+    the photo's hair counted against it in every likeness score."""
+    import appearance
+    from PIL import Image
+    copy = path.with_name(path.stem + "-nohair.png")
+    if not copy.exists() or copy.stat().st_mtime < path.stat().st_mtime:
+        rgb = np.asarray(Image.open(path).convert("RGB")).copy()
+        rgb[appearance.segment(rgb) == appearance.HAIR] = 200
+        Image.fromarray(rgb).save(copy)
     return copy
 
 
@@ -748,6 +763,14 @@ def score(tag: str, faces: list[dict]) -> dict:
                 row[f"dlib_{view}"] = None if a is None or b is None else round(float(np.linalg.norm(a - b)), 4)
             if others:
                 row[f"others_{view}"] = round(float(np.mean([cos(e) for e in others if e is not None])), 4)
+            if view == "p":
+                # The same, the photo's hair taken out (hairless): likeness
+                # of the face alone, as the bald head can show it.
+                bare = hairless(photo)
+                e = ids.embedding(bare)
+                row["identity_f"] = None if e is None else round(cos(e), 4)
+                a, b = ids.dlib_embedding(bare), ids.dlib_embedding(png)
+                row["dlib_f"] = None if a is None or b is None else round(float(np.linalg.norm(a - b)), 4)
         got = ids.embedding(OUT / "renders" / f"{name}-{tag}p.png")
         person = name.split("~")[0]
         if got is not None and gallery[person] and len(gallery) > 1:
@@ -796,7 +819,7 @@ def beard_line(scores: dict) -> str:
 
 
 def table(tag: str, scores: dict, base: str | None, base_scores: dict | None) -> str:
-    cols = [("identity_c", "picked look"), ("identity_p", "identity pose"), ("identity_l", "identity level"), ("others_p", "other photos"),
+    cols = [("identity_f", "face, no hair"), ("identity_c", "picked look"), ("identity_p", "identity pose"), ("identity_l", "identity level"), ("others_p", "other photos"),
             ("margin", "margin"), ("lm_front_outline", "outline %"), ("lm_front_nose", "nose %"),
             ("lm_held", "held-out %"), ("hair", "hair angle")]
     cell = lambda v: "     -" if v is None else f"{v:6.3f}" if abs(v) < 2 else f"{v:6.1f}"
