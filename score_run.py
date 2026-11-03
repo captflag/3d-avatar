@@ -9,7 +9,9 @@ process per face), renders it at the photo's head pose and level
 
   identity   SFace cosine, render against the photo (identity_score.py), at
              the pose and level; against the person's other photos too where
-             the set lists them (others_p), which carries no self-match bias.
+             the set lists them (others_p), which carries no self-match bias;
+             and as the person would show it (identity_c, dlib_c): the set's
+             `hair_cut` and the studio's glasses, at the pose.
   rank1      1 where the render is closer to its own person's photos than to
   margin     anyone else's, and by how much (own - best other); needs two or
              more people in the set.
@@ -65,8 +67,10 @@ JSON list in data/testset/, git-ignored:
     "sides": ["data/testset/p01/left35.jpg", "data/testset/p01/right35.jpg"],
     "held_out": "data/testset/p01/left20.jpg",
     "others": ["data/testset/p01/o1.jpg", "data/testset/p01/o2.jpg"],
-    "teeth": "data/testset/p01/smile.jpg"}, ...]
-`others` and `held_out` are scored against, never built from; `sides` are
+    "teeth": "data/testset/p01/smile.jpg",
+    "hair_cut": "hair_short01"}, ...]
+`hair_cut` is the catalogue cut closest to the photo's hair, picked by eye
+("bald" for none). `others` and `held_out` are scored against, never built from; `sides` are
 turned photos built from (compose.py --side, as guided capture sends them).
 `teeth`, a photo with the teeth showing, is built on its own (TAG-NAME@teeth)
 and gives the face its teeth_dE, which a closed mouth cannot.
@@ -145,7 +149,10 @@ lower_better = lambda metric: metric == "hair" or metric.startswith(LOWER)   # h
 # Robustness (the stress set) and body (full-body photos) are not measured
 # here yet, and show as such.
 RUBRIC = {
-    "likeness": [("identity_p", 0.50), ("others_p", 0.45), ("rank1", 1.0)],
+    # Likeness as the person would show it: their picked haircut and the
+    # studio's glasses (identity_c), not bald, decided by the user on
+    # 2026-11-03 once the shape fit was measured at +0.035 of it.
+    "likeness": [("identity_c", 0.35), ("others_p", 0.45), ("rank1", 1.0)],
     "skin, eyes, teeth": [("skin_dE", 5.0), ("iris_dE", 10.0), ("sclera_dE", 10.0), ("teeth_dE", 10.0)],
     "mouth": [("lm_front_mouth", 3.0), ("mouth_dE", 15.0)],
     "face shape": [("lm_held", 3.0), ("lm_front_outline", 3.0), ("lm_front_nose", 1.5)],
@@ -237,6 +244,20 @@ def jitter_copies(tag: str, face: dict) -> list[dict]:
 # cannot be chosen to flatter the outline.
 HELD_POSES = [(yaw, pitch) for yaw in (-3, 0, 3) for pitch in (-4, -2, 0, 2, 4)]
 INNER = ("eyes", "nose", "mouth", "brows")
+
+
+def picked_glb(tag: str, face: dict) -> pathlib.Path:
+    """The face's GLB as the person would show it: the test set's `hair_cut`
+    (picked by eye from the photo, never by score) in the colour the build
+    read, and the glasses the studio starts on."""
+    from skinned_glb import with_hair
+    info = json.loads((OUT / f"{tag}-{face['name']}.json").read_text(encoding="utf-8"))
+    cut = None if face["hair_cut"] == "bald" else face["hair_cut"]
+    path = OUT / "picked" / f"{tag}-{face['name']}.glb"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(with_hair((OUT / f"{tag}-{face['name']}.glb").read_bytes(), cut, info["hair"]["colour"],
+                               (info.get("glasses") or {}).get("shown")))
+    return path
 
 
 def held_glb(tag: str, face: dict, turn: tuple[int, int] = (0, 0)) -> pathlib.Path:
@@ -711,18 +732,20 @@ def score(tag: str, faces: list[dict]) -> dict:
         row = {}
         reference = ids.embedding(photo)
         others = [ids.embedding(upright(HERE / o)) for o in face.get("others", [])]
-        for view in "pl":
+        for view in "plc":
             png = OUT / "renders" / f"{name}-{tag}{view}.png"
+            if view == "c" and not png.exists():
+                continue
             got = ids.embedding(png)
             if got is None or reference is None:
                 row[f"identity_{view}"] = None
                 continue
             cos = lambda e: float(np.dot(got.ravel(), e.ravel()) / (np.linalg.norm(got) * np.linalg.norm(e)))
             row[f"identity_{view}"] = round(cos(reference), 4)
-            if view == "p":
+            if view in "pc":
                 # The second recogniser's distance, photo to the pose render.
                 a, b = ids.dlib_embedding(photo), ids.dlib_embedding(png)
-                row["dlib_p"] = None if a is None or b is None else round(float(np.linalg.norm(a - b)), 4)
+                row[f"dlib_{view}"] = None if a is None or b is None else round(float(np.linalg.norm(a - b)), 4)
             if others:
                 row[f"others_{view}"] = round(float(np.mean([cos(e) for e in others if e is not None])), 4)
         got = ids.embedding(OUT / "renders" / f"{name}-{tag}p.png")
@@ -773,7 +796,7 @@ def beard_line(scores: dict) -> str:
 
 
 def table(tag: str, scores: dict, base: str | None, base_scores: dict | None) -> str:
-    cols = [("identity_p", "identity pose"), ("identity_l", "identity level"), ("others_p", "other photos"),
+    cols = [("identity_c", "picked look"), ("identity_p", "identity pose"), ("identity_l", "identity level"), ("others_p", "other photos"),
             ("margin", "margin"), ("lm_front_outline", "outline %"), ("lm_front_nose", "nose %"),
             ("lm_held", "held-out %"), ("hair", "hair angle")]
     cell = lambda v: "     -" if v is None else f"{v:6.3f}" if abs(v) < 2 else f"{v:6.1f}"
@@ -901,6 +924,8 @@ def main() -> int:
         from render import render
         render([(OUT / f"{args.tag}-{f['name']}.glb", OUT / "renders" / f"{f['name']}-{args.tag}{v}.png", v == "p")
                 for f in faces for v in "pl"] +
+               [(picked_glb(args.tag, f), OUT / "renders" / f"{f['name']}-{args.tag}c.png", True)
+                for f in faces if f.get("hair_cut")] +
                [(held_glb(args.tag, f, t), OUT / "renders" / f"{f['name']}-{args.tag}h{t[0]:+d}{t[1]:+d}.png", True)
                 for f in people if f.get("held_out") for t in HELD_POSES] +
                [(OUT / f"{args.tag}-{f['name']}@teeth.glb", OUT / "renders" / f"{f['name']}@teeth-{args.tag}p.png", True)

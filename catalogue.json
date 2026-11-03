@@ -495,6 +495,25 @@
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
+      "id": "hair_punkduck_alpha7_curly",
+      "category": "hair",
+      "label": "Curly, shoulder length",
+      "mhclo": "community_packs/hair03_ccby/hair/punkduck_alpha7_curly/punkduck_alpha7_curly.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC-BY 4.0 (punkduck, MakeHuman community asset repository, hair03_ccby.zip from files2.makehumancommunity.org/asset_packs, marked CC-BY in its manifest)",
+      "credit": "punkduck"
+    },
+    {
+      "id": "hair_rehmanpolanski_hair_bun",
+      "category": "hair",
+      "label": "Tied back in a bun",
+      "mhclo": "community_packs/hair01_cc0/hair/rehmanpolanski_hair_bun_brown/rehmanpolanski_hair_bun_brown.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC0 (RehmanPolanski, MakeHuman community asset repository, hair01_cc0.zip from files2.makehumancommunity.org/asset_packs, marked CC0 in its manifest)"
+    },
+    {
       "id": "eyebrows",
       "category": "brows",
       "label": "Eyebrows",
