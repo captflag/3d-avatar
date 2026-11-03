@@ -134,17 +134,19 @@ def sclera_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = No
     return _rgb(np.array([lightness, *(128.0 + hue)])).astype(np.float64)
 
 
-# The lips' inner edge (MediaPipe ids), and a tooth's natural hue as LAB a*,
-# b* offsets from neutral (the catalogue's tooth colour, 232 224 208).
+# The lips' inner edge (MediaPipe ids), and the range of a tooth's natural hue
+# as LAB a*, b* offsets from neutral, the photo's own held within it. One
+# fixed hue (1, 9) left p01's and p08's teeth 7-8 a* more neutral than their
+# photos' (teeth_dE 8.3 and 10.6); the dev photos' teeth read a* 3-9, b* 8-17.
 INNER_LIPS = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95]
-TOOTH_HUE = np.array([1.0, 9.0])
+TOOTH_HUE = (np.array([0.0, 4.0]), np.array([10.0, 20.0]))
 
 
 def teeth_colour(photo_rgb: np.ndarray, landmarks):
     """The teeth as the photo shows them (sRGB), or None where it shows too
     little of them: the brighter half inside the inner lips, at the photo's
-    exposure, its hue held to a natural tooth's and its lightness to
-    SCLERA_L. The catalogue's fixed near-white rendered at L* 88 in a photo
+    exposure, its hue the photo's held to a natural tooth's (TOOTH_HUE) and
+    its lightness to SCLERA_L. The catalogue's fixed near-white rendered at L* 88 in a photo
     whose teeth read 51 (the test set's first face, smiling)."""
     if len(landmarks) <= 477:
         return None
@@ -158,7 +160,8 @@ def teeth_colour(photo_rgb: np.ndarray, landmarks):
     pixels = _lab(photo_rgb[inner > 0])
     bright = pixels[pixels[:, 0] >= np.median(pixels[:, 0])]
     lightness = np.clip(np.median(bright[:, 0]) * 100 / 255, *SCLERA_L) * 255 / 100
-    return _rgb(np.array([lightness, *(128.0 + TOOTH_HUE)])).astype(np.float64)
+    hue = np.clip(np.median(bright[:, 1:], axis=0) - 128.0, *TOOTH_HUE)
+    return _rgb(np.array([lightness, *(128.0 + hue)])).astype(np.float64)
 
 
 def white_balance(rgb: np.ndarray, cast: np.ndarray, strength: float = 0.6) -> np.ndarray:
