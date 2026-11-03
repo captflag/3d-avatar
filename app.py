@@ -204,8 +204,9 @@ def serve_compat(name: str):
 @app.get("/download/<name>")
 def serve_download(name: str):
     """An avatar for download wearing the haircut the studio's picker chose:
-    ?hair=<catalogue id or bald>&colour=r,g,b (skinned_glb.with_hair), the
-    other cuts the file carries taken out; ?compat=1 also as serve_compat."""
+    ?hair=<catalogue id or bald>&colour=r,g,b&glasses=<catalogue id or none>
+    (skinned_glb.with_hair), the other cuts and glasses the file carries
+    taken out; ?compat=1 also as serve_compat."""
     path = OUT / name
     if not name.endswith(".glb") or path.resolve().parent != OUT.resolve() or not path.exists():
         abort(404)
@@ -216,7 +217,7 @@ def serve_download(name: str):
             colour = [int(c) for c in request.args["colour"].split(",") if c.strip().isdigit()]
             if len(colour) != 3 or max(colour) > 255:
                 abort(400)
-        data = skinned_glb.with_hair(data, request.args["hair"], colour)
+        data = skinned_glb.with_hair(data, request.args["hair"], colour, request.args.get("glasses"))
     if request.args.get("compat"):
         data = skinned_glb.dequantised(data)
     return app.response_class(data, mimetype="model/gltf-binary",

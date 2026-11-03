@@ -1172,7 +1172,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # Smooth, even skin: no freckles, pores, spots or light's patches
     # (appearance.smooth_skin); eyes, brows, lips and beard as the photo has them.
     parts = appearance.segment(photo_rgb)
-    skin_rgb = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair)
+    skin_rgb, photo_glasses = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair)
     # And the cheeks at the photo's colour once all that is done (delight.match_colour).
     skin_rgb, colour_gains = delight.match_colour(skin_rgb, photo_rgb, landmarks, exclude=facial_hair)
     # And the lips at the photo's lips' colour (appearance.match_lips).
@@ -1670,6 +1670,22 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         parts[-1].anisotropy = HAIR_ANISOTROPY
         parts[-1].base_colour = skinned_glb.hair_factor(tint)
 
+    # Glasses, every pair fitted to this head and hidden, as the haircuts: the
+    # studio wears the first when the photo shows glasses (smooth_skin's
+    # reading), and the person can take them off. The viewer hides every pair
+    # unless asked (chooseGlasses), so likeness renders stay bare-faced, and
+    # the download keeps only the one picked. Bound to the head bone alone:
+    # rigid, they do not bend with the brows. Frames only (glasses_frames).
+    glasses_options = [item for item in items_by_id().values() if item["category"] == "glasses"]
+    eye_centres = np.array([vertices[np.unique(groups[g])].mean(axis=0) for g in ("helper-l-eye", "helper-r-eye")])
+    skin_surface = trimesh.Trimesh(vertices, body_faces, process=False)
+    for item in glasses_options:
+        mesh = garments.glasses_frames(build_item(item, None, vertices), eye_centres, skin_surface)
+        parts.append(rigged_part(item["id"], mesh, item.get("roughness", 0.3), vertices, groups,
+                                 joints, weights, len(skeleton)))
+        parts[-1].joints, parts[-1].weights = rigid_binding(len(mesh.vertices), skeleton.index.get("head", 0))
+    glasses_shown = glasses_options[0]["id"] if photo_glasses and glasses_options else None
+
     eye_base = eyes.metadata["base_index"]
     parts.append(skinned_glb.Part(
         "eyes", eyes.vertices, eyes.faces, joints[eye_base], weights[eye_base],
@@ -1705,6 +1721,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                        expression=photo_face,
                        head_pose=head_pose,
                        extras={"hair": shown, "hairOptions": [item["id"] for item in hair_options],
+                               "glassesOptions": [item["id"] for item in glasses_options],
                                # The chin's height and the eye spacing, for the viewer's neck shadow.
                                "jawLine": [float(vertices[corr[152], 1]),
                                            float(np.linalg.norm(vertices[corr[33]] - vertices[corr[263]]))]})
@@ -1714,6 +1731,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "hair": {"shown": shown, "colour": [int(c) for c in tint],
                  "options": [{"id": i["id"], "label": i["label"]}
                              for i in ([items_by_id()[shown]] if shown else []) + hair_options]},
+        # The studio's glasses picker: `shown` is what it starts on, a pair
+        # where the photo shows glasses (`photo`), none otherwise.
+        "glasses": {"photo": bool(photo_glasses), "shown": glasses_shown,
+                    "options": [{"id": i["id"], "label": i["label"]} for i in glasses_options]},
         "source_photo": photo_path.name,
         "photo_size": list(photo.size),
         "kind": "full-body",
