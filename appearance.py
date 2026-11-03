@@ -1564,12 +1564,20 @@ def warm_ears(rgb: np.ndarray, ear: np.ndarray) -> np.ndarray:
 # freckles, and likeness at the photo's pose over the eight test faces fell
 # 0.273 -> 0.178 against the photo's own skin; at 1.2% it is 0.247, the
 # blemishes still gone (2026-10-30, asked for after the first version).
+# Then on the colour only (SMOOTH_LIGHT_GRAIN, all the lightness's detail
+# kept): pasting the photo's fine detail onto the render was worth +0.135
+# likeness on all eight faces, another person's -0.073, and the smoothing took
+# a third of it. Over the eight: outline 3.35 -> 3.02% (3 -> 5 of 8 within
+# 3%), mouth 2.78 -> 2.34%, held-out 3.68 -> 3.37%, likeness 0.232 -> 0.244
+# (p02 -0.027, its acne scars harsher than the photo's; dlib 0.657 -> 0.665).
+# Chosen by eye against style B by the user (2026-11-03).
 SMOOTH_MARKS = 0.012
 SMOOTH_BROAD = 0.035
 SMOOTH_EVEN = 1.0
 SMOOTH_FEATHER = 0.012
 SMOOTH_KEEP = 0.025
 SMOOTH_GRAIN = 0.12
+SMOOTH_LIGHT_GRAIN = 1.0
 # How far round the photo's hair above the brows its shade reaches, as a share
 # of the face's width: filled with the hair as bald skin (smooth_skin).
 HAIR_SHADE = 0.06
@@ -1618,15 +1626,16 @@ def _skin_blur(rgb: np.ndarray, source: np.ndarray, sigma: float) -> np.ndarray:
 
 def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: np.ndarray | None,
                 beard: np.ndarray | None = None) -> tuple[np.ndarray, bool]:
-    """The face's skin smooth and even: no freckles, spots, pores or the
-    blotches a photo's light leaves; its form (the nose, the cheekbones), the
-    eyes, brows, lips and any beard kept as the photo has them. And whether
-    the photo shows glasses (a frame's rim under each eye), which the
-    studio's glasses picker starts from.
+    """The face's skin even in colour: no red or brown blotches or the patches
+    a photo's light leaves; its lightness's detail (creases, lid lines,
+    texture), its form (the nose, the cheekbones), the eyes, brows, lips and
+    any beard kept as the photo has them. And whether the photo shows glasses
+    (a frame's rim under each eye), which the studio's glasses picker starts
+    from.
 
-    Asked for: smooth, flawless skin, no marks of any kind. Frequency
-    separation: the skin's detail under SMOOTH_MARKS of the face's width is
-    taken out but for SMOOTH_GRAIN of it, and its colour evened SMOOTH_EVEN of
+    Frequency separation: the skin's detail under SMOOTH_MARKS of the face's
+    width is taken out of its colour but for SMOOTH_GRAIN of it, and out of
+    its lightness but for SMOOTH_LIGHT_GRAIN, and its colour evened SMOOTH_EVEN of
     the way to the median at SMOOTH_BROAD, features included. Smoothed at the
     broad scale alone (the first version) the face went soft: the nose and
     cheekbones flattened with the freckles. Hair over the face above the brows
@@ -1788,7 +1797,12 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     alpha = cv2.GaussianBlur(region.astype(np.float64), (0, 0), feather)
     alpha = (np.maximum(alpha, region) if glasses else alpha)[..., None]
     # Hair filled from the skin round it: its own detail is hair's, not grain.
-    grain = SMOOTH_GRAIN * (rgb - fine) * (~hair)[..., None]
+    # The lightness part of that detail kept SMOOTH_LIGHT_GRAIN of the way:
+    # the creases, lid lines and texture a face is recognised by are in it,
+    # the blotches mostly in the colour.
+    detail = rgb - fine
+    light = detail @ np.array([0.299, 0.587, 0.114])
+    grain = (SMOOTH_GRAIN * detail + (SMOOTH_LIGHT_GRAIN - SMOOTH_GRAIN) * light[..., None]) * (~hair)[..., None]
     skin = fine + grain + shift
     # Where the photo had hair, the face's own median skin, softened in: filled
     # from the skin round it, the darker skin at the hairline came with it and
