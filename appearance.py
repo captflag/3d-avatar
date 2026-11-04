@@ -550,55 +550,173 @@ TOON_LIP_LINE = 0.006
 TOON_BLUSH = (0.09, 0.22)
 TOON_LASH_RGB = (38, 28, 26)
 TOON_CHEEKS = (205, 425)                    # MediaPipe ids at the middle of each cheek
+# A beard is drawn where it covers this share of the jaw, a moustache this
+# share of the zone between nose and upper lip (beard_cover): real ones read
+# 0.62 / 0.96 (p01), 0.61 jaw (p08), 0.80 moustache (p05); a shadowed jaw on a
+# clean-shaven face 0.18 / 0.24, p03's light stubble 0.20 / 0.26.
+TOON_BEARD_AT = (0.30, 0.50)
+TOON_MOUSTACHE_ZONE = [98, 97, 2, 326, 327, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185, 61]
+# The lid crease: how far above the lid line, and how much darker.
+TOON_CREASE = (0.03, 0.22)
+TOON_BROW_GROW = 0.004                      # brows thickened by this share of the face's width
+TOON_LIP_INSET = 0.03                       # lips drawn this far inside the landmarks' outline
+TOON_UPPER_LIP = [291, 409, 270, 269, 267, 0, 37, 39, 40, 185, 61, 78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308]
 
 
-def cartoon_face(photo_rgb: np.ndarray, landmarks, skin, beard: np.ndarray | None = None) -> np.ndarray:
+def stylized_skin(skin_rgb: np.ndarray, photo_rgb: np.ndarray, bare: np.ndarray, landmarks) -> tuple[np.ndarray, np.ndarray]:
+    """The skin as a stylized 3D character paints it: the photo's own tones and
+    broad shading, with pores, blemishes and fine wrinkles gone, by an
+    edge-preserving filter (OpenCV's, recursive), so the nose's and cheeks'
+    shading keep their edges. Scaled (linear, per channel) by the photo's skin
+    over the whole face (`bare`) against its cheek patches: the skin is matched
+    to render as the cheeks do (delight.match_colour), and where they carry
+    a highlight (the example photo's at 230 193 170) the whole face rendered
+    that light. Returns (image, gain): the gain (linear RGB) tints the rest of
+    the skin, scalp, ears and body, the same way."""
+    from delight import CHEEK_PATCHES, median_colour, to_linear, to_srgb
+    h, w = photo_rgb.shape[:2]
+    cheeks = np.zeros((h, w), np.uint8)
+    for ring in CHEEK_PATCHES:
+        pts = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in ring])
+        cv2.fillPoly(cheeks, [cv2.convexHull(pts.round().astype(np.int32))], 1)
+    gain = to_linear(median_colour(photo_rgb[bare])[None, :])[0] / np.maximum(
+        to_linear(median_colour(photo_rgb[(cheeks > 0) & bare])[None, :])[0], 1e-4)
+    gain = np.clip(gain, 0.4, 1.5)
+    smooth = to_srgb(to_linear(np.ascontiguousarray(skin_rgb[..., :3])) * gain).astype(np.uint8)
+    for _ in range(2):
+        smooth = cv2.edgePreservingFilter(smooth, flags=cv2.RECURS_FILTER, sigma_s=60, sigma_r=0.35)
+    return smooth, gain
+
+
+def beard_cover(beard: np.ndarray, px: np.ndarray) -> tuple[float, float]:
+    """How much of the jaw and of the moustache zone (nose to upper lip) a
+    facial_hair map calls beard (> 0.5), 0-1 each, at landmarks `px`."""
+    h, w = beard.shape
+    face_w = float(np.ptp(px[:, 0]))
+    jaw = [172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397]
+    taken = [beard[int(np.clip(px[i, 1] - k, 0, h - 1)), int(np.clip(px[i, 0], 0, w - 1))]
+             for i in jaw for k in np.arange(0, 0.25 * face_w, max(0.03 * face_w, 1))]
+    zone = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(zone, [np.round(px[TOON_MOUSTACHE_ZONE]).astype(np.int32)], 1)
+    return float(np.mean(np.array(taken) > 0.5)), float(np.mean(beard[zone > 0] > 0.5)) if zone.any() else 0.0
+
+
+def cartoon_face(photo_rgb: np.ndarray, landmarks, skin, beard: np.ndarray | None = None,
+                 base: np.ndarray | None = None) -> np.ndarray:
     """The face as a cartoon draws it, in the photo's pixels: one flat skin
-    tone (`skin`, sRGB) with a soft blush, and on it the person's own brows
-    and lips as clean filled shapes in their photo colours, a lip line and an
-    upper lash line, and any beard (`beard`, facetexture.facial_hair's map)
-    as one soft shape in its own colour. Baked onto the head like the photo
-    (the cartoon style's head texture): every part sits where the photo's does."""
+    tone (`skin`, sRGB) with a soft blush, and on it the person's own brows,
+    lips and lash line as clean shapes in their photo colours, a soft lid
+    crease, and a beard or moustache (`beard`, facetexture.facial_hair's map)
+    where the photo clearly has one (TOON_BEARD_AT). With `base`
+    (stylized_skin) the shapes are drawn on that instead of the flat tone.
+    Baked onto the head like the photo (the cartoon and stylized styles' head
+    textures): every part sits where the photo's does."""
     h, w = photo_rgb.shape[:2]
     px = np.array([[lm.x * w, lm.y * h] for lm in landmarks[:468]])
     face_w = float(np.ptp(px[:, 0]))
+    ring = lambda ids: np.round(px[list(ids)]).astype(np.int32)
+
+    def poly(ids):
+        mask = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(mask, [ring(ids)], 1, cv2.LINE_AA)
+        return mask > 0
+
+    soft = lambda mask, k=0.004: cv2.GaussianBlur(mask.astype(np.float32), (0, 0), max(k * face_w, 0.7))[..., None]
+    from delight import median_colour, to_linear, to_srgb
+    hull = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(hull, cv2.convexHull(ring(range(468))), 1)
+    # The photo's colours drawn as dark against `skin` as they were against
+    # the photo's skin (linear, per channel): on the example, a skin tone
+    # darkened by stylized_skin's gain left its lips as light as the skin.
+    ratio = to_linear(np.asarray(skin, np.float64)) / np.maximum(to_linear(median_colour(photo_rgb[hull > 0])), 1e-4)
+    paint = lambda rgb: to_srgb(to_linear(rgb) * ratio).astype(np.float64)
     out = np.empty((h, w, 3), np.float64)
-    out[:] = skin
-    # A soft blush on each cheek.
+    out[:] = skin if base is None else base
+    # A soft blush on each cheek, each skin's own colour warmer and redder:
+    # a fixed pink lightened dark skin.
     blush = np.zeros((h, w), np.float32)
     for i in TOON_CHEEKS:
         cv2.circle(blush, tuple(int(v) for v in px[i]), max(int(TOON_BLUSH[0] * face_w), 1), 1.0, -1)
     blush = cv2.GaussianBlur(blush, (0, 0), max(TOON_BLUSH[0] * face_w / 2, 1.0))[..., None] * TOON_BLUSH[1]
-    out = out * (1 - blush) + np.array([214.0, 120.0, 110.0]) * blush
-    if beard is not None and (beard > 0.5).sum() > 0.002 * face_w ** 2:
-        # Drawn over in flat skin, p01's beard and moustache were gone.
-        shape = cv2.GaussianBlur((beard > 0.35).astype(np.float32), (0, 0), max(0.01 * face_w, 1.0))[..., None]
-        # Its hairs' colour, the darker half: the skin between them made the median a light brown.
-        hairs = photo_rgb[beard > 0.5].astype(np.float64)
-        light = hairs.mean(axis=1)
-        out = out * (1 - 0.9 * shape) + np.median(hairs[light <= np.median(light)], axis=0) * 0.9 * shape
-    canvas = np.clip(out, 0, 255).astype(np.uint8)
-    ring = lambda ids: np.round(px[list(ids)]).astype(np.int32)
-    # Brows and lips in the photo's own colours.
-    from facetexture import brow_colour
-    brow = tuple(int(c) for c in brow_colour(photo_rgb, landmarks))
-    for side in BROWS:
-        cv2.fillPoly(canvas, [ring(side)], brow, cv2.LINE_AA)
-    lips_mask = np.zeros((h, w), np.uint8)
-    cv2.fillPoly(lips_mask, [ring(OUTER_LIPS)], 1)
-    lip = np.median(photo_rgb[lips_mask > 0], axis=0) if lips_mask.any() else np.array([170.0, 90.0, 90.0])
-    cv2.fillPoly(canvas, [ring(OUTER_LIPS)], tuple(int(c) for c in lip), cv2.LINE_AA)
-    line = tuple(int(c * 0.55) for c in lip)
-    cv2.polylines(canvas, [ring(INNER_LIPS)], True, line, max(int(TOON_LIP_LINE * face_w), 1), cv2.LINE_AA)
-    # The upper lash line: each eye's contour above its corners.
+    out = out * (1 - blush) + out * np.array([1.08, 0.82, 0.80]) * blush
+    # A beard or moustache only where the photo clearly has one, inside the
+    # face: a shadowed jaw's leftover reading was drawn as a smudge round the mouth.
+    if beard is not None:
+        jaw, moustache = beard_cover(beard, px)
+        lip_top = float(px[[0, 37, 267], 1].min())
+        rows = np.arange(h)[:, None]
+        where = (beard > 0.35) & (hull > 0) & ((jaw >= TOON_BEARD_AT[0]) | (
+            (moustache >= TOON_BEARD_AT[1]) & (rows < lip_top + 0.02 * face_w)))
+        hairs = photo_rgb[(beard > 0.5) & where].astype(np.float64)
+        if len(hairs):
+            shape = cv2.GaussianBlur(where.astype(np.float32), (0, 0), max(0.01 * face_w, 1.0))[..., None]
+            # Its hairs' colour, the darker half: the skin between them made the median a light brown.
+            light = hairs.mean(axis=1)
+            out = out * (1 - 0.9 * shape) + paint(np.median(hairs[light <= np.median(light)], axis=0)) * 0.9 * shape
+    # A soft crease above each upper lid.
+    crease = np.zeros((h, w), np.uint8)
     for contour in EYE_CONTOURS:
-        pts = px[list(contour)]
-        corners = pts[[0, 8]]
-        upper = [p for p in pts if p[1] <= np.interp(p[0], sorted(corners[:, 0]), corners[np.argsort(corners[:, 0]), 1])]
-        upper = np.array(sorted(upper, key=lambda p: p[0])).round().astype(np.int32)
+        upper = _upper_lid(px, contour)
         if len(upper) > 1:
-            cv2.polylines(canvas, [upper], False, TOON_LASH_RGB, max(int(TOON_LASH * face_w), 1), cv2.LINE_AA)
+            cv2.polylines(crease, [np.round(upper - [0, TOON_CREASE[0] * face_w]).astype(np.int32)], False, 1,
+                          max(int(0.012 * face_w), 1), cv2.LINE_AA)
+    out = out * (1 - TOON_CREASE[1] * soft(crease, 0.008))
+    # Brows: the darker quarter of the photo's brow pixels (their median read
+    # skin as well and came out light brown), a little thicker, feathered.
+    brows = poly(BROWS[0]) | poly(BROWS[1])
+    if brows.any():
+        dark = photo_rgb[brows].astype(np.float64)
+        light = dark.mean(axis=1)
+        brow = paint(np.median(dark[light <= np.percentile(light, 25)], axis=0))
+        grow = max(int(TOON_BROW_GROW * face_w), 1)
+        grown = cv2.dilate(brows.astype(np.uint8), np.ones((2 * grow + 1, 2 * grow + 1), np.uint8))
+        a = soft(grown)
+        out = out * (1 - a) + brow * a
+    # Lips: the darker half of the photo's lip pixels (the median took in the
+    # lower lip's highlight and came out pink), inset a little from the
+    # landmarks; the upper lip darker, a soft highlight on the lower.
+    lips = poly(OUTER_LIPS)
+    if lips.any():
+        px_l = photo_rgb[lips].astype(np.float64)
+        light = px_l.mean(axis=1)
+        lip = paint(np.median(px_l[light <= np.median(light)], axis=0))
+        centre = px[OUTER_LIPS].mean(axis=0)
+        inset = np.round(centre + (px[OUTER_LIPS] - centre) * (1 - TOON_LIP_INSET)).astype(np.int32)
+        inner = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(inner, [inset], 1, cv2.LINE_AA)
+        upper = poly(TOON_UPPER_LIP) & (inner > 0)
+        a = soft(inner > 0, 0.003)
+        out = out * (1 - a) + lip * a
+        out = out * (1 - 0.18 * soft(upper, 0.003))
+        shine = np.zeros((h, w), np.float32)
+        lower_mid = (px[17] + px[14]) / 2
+        cv2.ellipse(shine, tuple(int(v) for v in lower_mid), (max(int(0.06 * face_w), 1), max(int(0.015 * face_w), 1)),
+                    0, 0, 360, 1.0, -1)
+        shine = cv2.GaussianBlur(shine, (0, 0), max(0.012 * face_w, 1.0))[..., None] * 0.18
+        out = out * (1 - shine) + np.minimum(out * 1.35, 255) * shine
+        line = np.zeros((h, w), np.uint8)
+        cv2.polylines(line, [ring(INNER_LIPS)], True, 1, max(int(TOON_LIP_LINE * face_w), 1), cv2.LINE_AA)
+        out = out * (1 - 0.45 * soft(line, 0.002))
+    canvas = np.clip(out, 0, 255).astype(np.uint8)
+    # The upper lash line, thicker towards the outer corner.
+    for contour in EYE_CONTOURS:
+        upper = _upper_lid(px, contour)
+        if len(upper) > 1:
+            outer = upper if px[contour[0], 0] > px[1, 0] else upper[::-1]
+            cv2.polylines(canvas, [np.round(upper).astype(np.int32)], False, TOON_LASH_RGB,
+                          max(int(TOON_LASH * face_w), 1), cv2.LINE_AA)
+            cv2.polylines(canvas, [np.round(outer[len(outer) // 2:]).astype(np.int32)], False, TOON_LASH_RGB,
+                          max(int(1.6 * TOON_LASH * face_w), 1), cv2.LINE_AA)
     return canvas
+
+
+def _upper_lid(px: np.ndarray, contour) -> np.ndarray:
+    """An eye contour's points above the line between its corners, left to right."""
+    pts = px[list(contour)]
+    corners = pts[[0, 8]]
+    order = np.argsort(corners[:, 0])
+    upper = [p for p in pts if p[1] <= np.interp(p[0], corners[order, 0], corners[order, 1])]
+    return np.array(sorted(upper, key=lambda p: p[0]))
 
 
 def paint_lashes(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks) -> np.ndarray:

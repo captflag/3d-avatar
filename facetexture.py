@@ -269,7 +269,7 @@ class FaceSampler:
 BEARD_GRAIN = 0.006
 
 
-def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> np.ndarray:
+def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray, grey: bool = False) -> np.ndarray:
     """Where the photo shows a beard or moustache, 0-1, in photo pixels.
 
     The bake fades the photo into generated skin across the outer band of the
@@ -318,6 +318,17 @@ def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> n
     # grain 7 against its cheeks' 14) but far darker than any shadow: 50 L*
     # (of 255) under the same-side cheek counts as beard grain or none.
     dense = np.clip((skin_l - lightness - 50.0) / 30.0, 0.0, 1.0)
+    if grey:
+        # With `grey` (the cartoon's drawn beard), also greyer than the cheeks,
+        # as hair is: an upscaled photo lit from above had its lower face, neck
+        # and background taken for a dense beard (0.88 of the jaw, 0.18 with
+        # this; p01's 0.70 -> 0.62, p08's 0.61 kept). Not for the realistic
+        # build: the map also leaves pixels out of the lighting fit, and there
+        # it cost 0.013 likeness over 8 faces.
+        lab = cv2.cvtColor(photo_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
+        chroma = np.hypot(lab[..., 1] - 128.0, lab[..., 2] - 128.0)
+        cheek_chroma = max(float(np.median(chroma[ys, xs])), 1.0)
+        dense = dense * np.clip((cheek_chroma - chroma) / (0.35 * cheek_chroma), 0.0, 1.0)
     darker = darker * np.maximum(textured, dense)
 
     nose_y = landmarks[1].y * h

@@ -1563,9 +1563,21 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The cartoon style's head (the viewer's applyToon): the face drawn flat
     # (appearance.cartoon_face) and baked the same way, on one skin tone.
     toon_skin = delight.median_colour(skin_rgb[bare_skin]).astype(np.float64)
+    # And the stylized style's: the same shapes on the photo's skin smoothed
+    # to paint (appearance.stylized_skin), lit like the realistic style.
+    style_rgb, style_gain = appearance.stylized_skin(skin_rgb, photo_rgb, bare_skin, landmarks)
+    drawn_beard = facetexture.facial_hair(photo_rgb, landmarks, cheeks, grey=True)
+    # Scalp and ears tinted as the face is: untinted they stayed the lighter
+    # calibrated tone round a darker face.
+    style_base = delight.to_srgb(delight.to_linear(toon_skin.astype(np.uint8)[None, :]) * style_gain)[0].astype(np.float64)
+    style_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces, sampler, face_centre,
+                                     face_radius, appearance.cartoon_face(photo_rgb, landmarks, style_base, drawn_beard,
+                                                                          base=style_rgb),
+                                     style_base, size=TOON_SIZE, blend="none")
+    # The cartoon's flat tone the same corrected one.
     toon_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces, sampler, face_centre,
-                                    face_radius, appearance.cartoon_face(photo_rgb, landmarks, toon_skin, facial_hair),
-                                    toon_skin, size=TOON_SIZE, blend="none")
+                                    face_radius, appearance.cartoon_face(photo_rgb, landmarks, style_base, drawn_beard),
+                                    style_base, size=TOON_SIZE, blend="none")
     # A beard's hairs are finer than the photo's pixels: grain where it was.
     head_texture = appearance.stubble(head_texture, vertices, head_faces, head_uv_all, head_uv_faces,
                                       sampler, skin_rgb, cheeks, jaw_beard, landmarks)
@@ -1724,7 +1736,10 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         ))
         parts[-1].morphs = expression_morphs(mesh, face_shapes)
         if name == "head":
-            parts[-1].toon_texture = toon_texture
+            parts[-1].extra_textures = {"toonTexture": toon_texture, "styleTexture": style_texture}
+        else:
+            # The stylized style tints the body's skin by the face's gain (appearance.stylized_skin).
+            parts[-1].material_extras = {"styleTint": [round(float(g), 4) for g in style_gain]}
         # Skin reflects less than the glTF default (IOR 1.5): with it the
         # face wore a pale sheen of reflected room that read as grey.
         parts[-1].ior = SKIN_IOR

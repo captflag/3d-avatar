@@ -321,7 +321,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { setupRealism, applyMaterials, applyToon, idleMotion, gestureMotion, groundAndShadow, visibleBox, chooseHair, chooseGlasses } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, applyToon, applyStylized, STYLIZED, idleMotion, gestureMotion, groundAndShadow, visibleBox, chooseHair, chooseGlasses } from '/lib/scene-setup.js';
 import { assess, getLandmarker, STEADY_FRAMES, LEFT } from '/lib/photo-checks.js';
 
 const $ = (id) => document.getElementById(id);
@@ -596,9 +596,14 @@ async function showAvatar(url) {
     fetch(url.replace(/\.glb$/, '.json')).then((r) => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   avatar = gltf.scene;
-  if (new URLSearchParams(location.search).get('style') === 'toon') {
+  const style = new URLSearchParams(location.search).get('style');
+  if (style === 'toon') {
     await applyToon(avatar, gltf.parser);
     idle = idleMotion(avatar);
+    moves = gestureMotion(avatar);
+  } else if (style === 'stylized') {
+    await applyStylized(avatar, gltf.parser);
+    idle = idleMotion(avatar, STYLIZED.shapes);
     moves = gestureMotion(avatar);
   } else {
     applyMaterials(avatar);
