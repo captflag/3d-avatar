@@ -534,23 +534,26 @@ def _pack(doc: dict, blob: bytearray) -> bytes:
     return struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body
 
 
-def with_hair(glb: bytes, cut: str | None, colour=None) -> bytes:
+def with_hair(glb: bytes, cut: str | None, colour=None, glasses: str | None = None) -> bytes:
     """The avatar wearing one haircut: the others the file carries for the
     studio's picker (its mesh's `hairOptions`) taken out, so another engine
     does not draw them all at once, and the hair recoloured to `colour`
-    (sRGB) if given. `cut` None or "bald" leaves no haircut."""
+    (sRGB) if given. `cut` None or "bald" leaves no haircut. The same for
+    the glasses (`glassesOptions`): `glasses` the pair kept, None none."""
     doc, blob = _unpack(glb)
     mesh = doc["meshes"][0]
     extras = mesh.get("extras", {})
     cuts = set(extras.get("hairOptions", [])) | ({extras["hair"]} if extras.get("hair") else set())
+    pairs = set(extras.get("glassesOptions", []))
     name = lambda primitive: doc["materials"][primitive["material"]].get("name")
-    mesh["primitives"] = [pr for pr in mesh["primitives"] if name(pr) not in cuts or name(pr) == cut]
+    mesh["primitives"] = [pr for pr in mesh["primitives"]
+                          if (name(pr) not in cuts or name(pr) == cut) and (name(pr) not in pairs or name(pr) == glasses)]
     if colour is not None:
         for primitive in mesh["primitives"]:
             if name(primitive) == cut:
                 doc["materials"][primitive["material"]]["pbrMetallicRoughness"]["baseColorFactor"] = \
                     [*hair_factor(colour), 1.0]
-    mesh["extras"] = {**extras, "hair": cut if cut in cuts else None, "hairOptions": []}
+    mesh["extras"] = {**extras, "hair": cut if cut in cuts else None, "hairOptions": [], "glassesOptions": []}
     return _pack(*_compact(doc, blob))
 
 

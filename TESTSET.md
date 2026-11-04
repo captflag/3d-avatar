@@ -34,8 +34,24 @@ eyes or brows.
 | `smile.jpg` | optional, a smile showing teeth | teeth checks |
 
 The studio's guided capture takes `front`, `left35` and `right35` with its
-checks; take the rest by hand. Put each person's photos in
-`data/testset/pNN/`.
+checks; take the rest by hand. Name them as above in one folder, and once the
+signed form is on file:
+
+```
+python add_person.py FOLDER --signed 2026-10-29 --gender female
+```
+
+It checks every photo (a face, at least 250 pixels across, the head turned as
+its name says: a "35" photo 25-45 degrees, the sides opposite ways) and only
+then files them as the next `pNN` in `data/testset/`, with the register row
+and the set entry below. One person in five goes to the lockbox.
+
+A generated, fictional person (an image model's, no real person pictured) is
+filed with `--synthetic` in place of `--signed`: no consent row, and the entry
+says `"synthetic": true`. Use them to fill the set out, never in place of real
+people for sign-off: the generator invents what a turned head looks like, so
+they say little about face shape, and keeping one face the same across its
+photos is the generator's guess too.
 
 ## The register: `data/testset/consent.csv`
 

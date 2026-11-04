@@ -265,6 +265,10 @@ class FaceSampler:
         return pixels, strength
 
 
+# A beard's grain, as a share of the face's width (facial_hair).
+BEARD_GRAIN = 0.006
+
+
 def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> np.ndarray:
     """Where the photo shows a beard or moustache, 0-1, in photo pixels.
 
@@ -275,6 +279,13 @@ def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> n
     nose tip. Sideburns and stubble lighter than that threshold are left to the
     fade.
 
+    Darker than the cheek on the same side: lit from one side, the shadowed
+    half of a clean-shaven face sat 40 L* under the median of both cheeks and
+    read as beard (jaw_beard 0.42 on three generated women, cheeks 50-70%
+    apart), was kept out of the skin's smoothing and darkened as beard: brown
+    patches. The reference runs across the face from one cheek's lightness to
+    the other's.
+
     ponytail: darkness only, so a hard jaw shadow on a clean-shaven face also
     survives the fade. Add a texture (local variance) test if that shows.
     """
@@ -282,10 +293,32 @@ def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> n
     lightness = cv2.cvtColor(photo_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB)[..., 0].astype(np.float64)
     xs = np.clip(cheek_pixels[:, 0].astype(int), 0, w - 1)
     ys = np.clip(cheek_pixels[:, 1].astype(int), 0, h - 1)
-    skin_l = float(np.median(lightness[ys, xs]))
+    nose_x = landmarks[1].x * w
+    sides = [(xs < nose_x), (xs >= nose_x)]
+    if all(s.any() for s in sides):
+        (xl, ll), (xr, lr) = ((float(xs[s].mean()), float(np.median(lightness[ys[s], xs[s]]))) for s in sides)
+        across = np.clip((np.arange(w)[None, :] - xl) / max(xr - xl, 1.0), 0.0, 1.0)
+        skin_l = ll + (lr - ll) * across
+    else:
+        skin_l = float(np.median(lightness[ys, xs]))
 
     darker = np.clip((skin_l - lightness - 25.0) / 30.0, 0.0, 1.0)
     darker = darker * darker * (3.0 - 2.0 * darker)
+    # And grainy, as hair is and a shadow is not: the fine-scale variation
+    # (BEARD_GRAIN of the face's width) against the cheeks'. Darkness alone
+    # took a side-lit woman's whole lower face for beard, and the skin's
+    # smoothing kept it as dark patches.
+    face_w = abs(landmarks[454].x - landmarks[234].x) * w
+    fine = max(BEARD_GRAIN * face_w, 0.8)
+    local = lightness - cv2.GaussianBlur(lightness, (0, 0), fine)
+    grain = np.sqrt(cv2.GaussianBlur(local * local, (0, 0), 3 * fine))
+    cheek_grain = float(np.median(grain[ys, xs]))
+    textured = np.clip((grain - 1.5 * cheek_grain) / max(1.5 * cheek_grain, 1.0), 0.0, 1.0)
+    # A full, dense beard is too even to be grainy (a black beard on dark skin:
+    # grain 7 against its cheeks' 14) but far darker than any shadow: 50 L*
+    # (of 255) under the same-side cheek counts as beard grain or none.
+    dense = np.clip((skin_l - lightness - 50.0) / 30.0, 0.0, 1.0)
+    darker = darker * np.maximum(textured, dense)
 
     nose_y = landmarks[1].y * h
     chin_y = landmarks[152].y * h
@@ -296,6 +329,38 @@ def facial_hair(photo_rgb: np.ndarray, landmarks, cheek_pixels: np.ndarray) -> n
 
 
 # ------------------------------------------------------------------ bake -----
+
+# How far round the photo's edge the generated skin is brought to the photo's
+# colour (meet_rim), as a share of the texture's width, and how dark a rim
+# texel may be, below the rim's median L*, and still count as skin.
+RIM_REACH = 0.04
+RIM_DARKER = 12.0
+
+
+def meet_rim(base: np.ndarray, painted: np.ndarray, weight: np.ndarray) -> np.ndarray:
+    """The generated skin brought to the photo's colour where they meet,
+    fading back to its own over RIM_REACH.
+
+    The generated skin is one colour, the face's median; the photo's skin at
+    its edge is whatever the light and the person made it: on the test set's
+    first face its forehead baked 2.8 L* lighter than the skin above it and
+    the temples 5 a* less red, so the face sat on the head as a lighter patch
+    with a box round it. The difference along the photo's edge (skin only:
+    brows, lashes and beard, darker than the rim's median by RIM_DARKER, left
+    out) is spread outward by normalised convolution and added to the skin."""
+    rim = (weight > 0.25) & (weight < 0.95)
+    if rim.sum() < 50:
+        return base
+    lightness = painted @ np.array([0.299, 0.587, 0.114])
+    rim &= lightness > np.median(lightness[rim]) - RIM_DARKER * 2.55
+    sigma = max(RIM_REACH * base.shape[1], 2.0)
+    m = rim.astype(np.float32)
+    spread = cv2.GaussianBlur(m, (0, 0), sigma)
+    field = cv2.GaussianBlur(((painted - base) * m[..., None]).astype(np.float32), (0, 0), sigma)
+    field = field / np.maximum(spread, 1e-6)[..., None]
+    fade = np.clip(spread / max(float(spread.max()) * 0.3, 1e-6), 0.0, 1.0)[..., None]
+    return base + field * fade
+
 
 def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.ndarray,
          sampler: "FaceSampler", face_centre: np.ndarray, face_radius: float,
@@ -361,12 +426,31 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
         # Bilinear, not the nearest pixel: a small photo's face is a few
         # dozen pixels wide, spread over hundreds of texels, and nearest
         # lookups painted it as visible squares.
-        painted[ty, tx] = cv2.remap(photo32, (pixels[:, :1] - 0.5).astype(np.float32),
-                                    (pixels[:, 1:] - 0.5).astype(np.float32),
-                                    cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)[:, 0]
+        # As a 1-wide map in runs: OpenCV's remap takes at most 32767 rows, and
+        # a large triangle at a big texture size covers more texels than that.
+        maps = (pixels - 0.5).astype(np.float32)
+        painted[ty, tx] = np.concatenate([
+            cv2.remap(photo32, maps[i:i + 32000, :1], maps[i:i + 32000, 1:],
+                      cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)[:, 0]
+            for i in range(0, len(maps), 32000)])
         weight[ty, tx] = np.maximum(weight[ty, tx], strength)
 
+    # A thin unpainted strip inside the painted face (a UV seam's edge, slivers
+    # the triangles miss) takes the painted texels round it: left as the skin
+    # beneath, it showed as a light line along the nose's sill. Only texels the
+    # photo gave nothing to, with painted ones on a quarter of the texels round
+    # them (a seam has them on one side only): the face's own
+    # fade at its edge is left alone.
+    solid = (weight > 0.5).astype(np.float32)
+    reach = (2 * max(size // 512, 1)) * 2 + 1
+    around = cv2.blur(solid, (reach, reach))
+    gap = (weight == 0) & (around > 0.25)
+    if gap.any():
+        near = cv2.blur((painted * solid[..., None]).astype(np.float32), (reach, reach))
+        painted[gap] = near[gap] / around[gap][:, None]
+        weight[gap] = 1.0
     base = skin if textured_base else np.tile(skin, (size, size, 1))
+    base = meet_rim(base, painted, weight)
     linear = painted * weight[..., None] + base * (1.0 - weight[..., None])
     linear_u8 = np.clip(linear, 0, 255).astype(np.uint8)
     base_u8 = np.clip(base, 0, 255).astype(np.uint8)

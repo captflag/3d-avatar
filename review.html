@@ -69,7 +69,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { setupRealism, applyMaterials, groundAndShadow, withOcclusion, chooseHair } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, groundAndShadow, visibleBox, withOcclusion, chooseHair } from '/lib/scene-setup.js';
 
 const params = new URLSearchParams(location.search);
 // With no model named, show the newest avatar rather than a hardcoded file:
@@ -116,7 +116,7 @@ new GLTFLoader().load(modelUrl, (gltf) => {
   applyMaterials(model);
 
   // Frame the avatar regardless of how big it came out.
-  const box = new THREE.Box3().setFromObject(model);
+  const box = visibleBox(model);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   model.position.sub(center);

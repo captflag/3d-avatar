@@ -9,7 +9,10 @@ process per face), renders it at the photo's head pose and level
 
   identity   SFace cosine, render against the photo (identity_score.py), at
              the pose and level; against the person's other photos too where
-             the set lists them (others_p), which carries no self-match bias.
+             the set lists them (others_p), which carries no self-match bias;
+             as the person would show it (identity_c, dlib_c): the set's
+             `hair_cut` and the studio's glasses, at the pose; and the face
+             alone (identity_f, dlib_f): the photo's hair greyed out (hairless).
   rank1      1 where the render is closer to its own person's photos than to
   margin     anyone else's, and by how much (own - best other); needs two or
              more people in the set.
@@ -17,9 +20,9 @@ process per face), renders it at the photo's head pose and level
              a similarity fit on the landmarks expressions hardly move: per
              region on the front photo (lm_front_outline, _nose, _eyes,
              _mouth, _brows), and over all of them against the held-out photo
-             (lm_held), rendered at that photo's own head pose. The held-out
-             photo is never built from, so it judges shape the front photo
-             cannot fake.
+             (lm_held), rendered at that photo's own head pose, refined over
+             HELD_POSES by the inner landmarks alone. The held-out photo is
+             never built from, so it judges shape the front photo cannot fake.
   skin_dE,   colour against the photo, aligned on the face: the cheeks'
   mouth_dE,  median colours, per pixel over the mouth, the hair's median
   hair_dE    colours (CIE 1976 dE; under about 2 is unnoticeable, 5 just so).
@@ -65,8 +68,10 @@ JSON list in data/testset/, git-ignored:
     "sides": ["data/testset/p01/left35.jpg", "data/testset/p01/right35.jpg"],
     "held_out": "data/testset/p01/left20.jpg",
     "others": ["data/testset/p01/o1.jpg", "data/testset/p01/o2.jpg"],
-    "teeth": "data/testset/p01/smile.jpg"}, ...]
-`others` and `held_out` are scored against, never built from; `sides` are
+    "teeth": "data/testset/p01/smile.jpg",
+    "hair_cut": "hair_short01"}, ...]
+`hair_cut` is the catalogue cut closest to the photo's hair, picked by eye
+("bald" for none). `others` and `held_out` are scored against, never built from; `sides` are
 turned photos built from (compose.py --side, as guided capture sends them).
 `teeth`, a photo with the teeth showing, is built on its own (TAG-NAME@teeth)
 and gives the face its teeth_dE, which a closed mouth cannot.
@@ -96,8 +101,14 @@ import numpy as np
 HERE = pathlib.Path(__file__).resolve().parent
 OUT = HERE / "out"
 TESTSET = HERE / "data" / "testset"
-# Landmarks that move least with expression, to align a render onto its photo.
-STABLE = [168, 6, 1, 2, 10, 152, 234, 454, 33, 263]
+# Landmarks that move least with expression, to align a render onto its photo:
+# the eye corners and the nose's bridge and tip. Rigid, and none of what is
+# scored against them. Until 2026-11-02 this took 168, 6, 1, 2, 10, 152, 234, 454,
+# 33, 263 through OpenCV's RANSAC, which kept 3-5 of the ten by a 3-pixel test
+# and four of them lay on the outline: on builds with the same geometry the
+# mouth moved up to 2.2% of the eye spacing, and a short chin passed as 0.0
+# (p07's is -5.5) where the fit had aligned on the chin. The bars are unchanged.
+STABLE = [33, 133, 362, 263, 168, 6, 197, 195, 5, 4, 1]
 # MediaPipe's own landmark regions, for the per-region shape error.
 REGIONS = {"outline": ["FACE_OVAL"], "nose": ["NOSE"], "eyes": ["LEFT_EYE", "RIGHT_EYE"],
            "mouth": ["LIPS"], "brows": ["LEFT_EYEBROW", "RIGHT_EYEBROW"]}
@@ -113,8 +124,13 @@ IRISES = [(468, [469, 470, 471, 472]), (473, [474, 475, 476, 477])]
 # Skin detail: the cheeks' lightness band-passed between these shares of the
 # eye spacing (wrinkle and pore-cluster scale, coarser than a render pixel).
 DETAIL_BAND = (1 / 60, 1 / 15)
+# The jaw outline below the ears, chin included (MediaPipe ids; morph.JAW_OUTLINE).
+JAW = [132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361]
+# A build's jaw_beard reading from which its face counts as bearded (the jaw
+# and chin compared bearded against not).
+BEARDED = 0.15
 # Scores where lower is better; the rest are better higher.
-LOWER = ("lm_", "skin_dE", "mouth_dE", "hair_dE", "iris_dE", "sclera_dE", "teeth_dE", "skin_detail")
+LOWER = ("lm_", "dlib_", "skin_dE", "mouth_dE", "hair_dE", "iris_dE", "sclera_dE", "teeth_dE", "skin_detail")
 lower_better = lambda metric: metric == "hair" or metric.startswith(LOWER)   # hair: the strand angle; not hair_iou
 # What an 8 is, per area: each score's bar, and the share of faces that must
 # clear every bar of the area. Fixed before the baseline (2026-10-28) so a
@@ -122,21 +138,24 @@ lower_better = lambda metric: metric == "hair" or metric.startswith(LOWER)   # h
 #   likeness: as close as another photo of the person (real same-person pairs
 #     scored 0.48-0.67 on this repo's photos), and closer to them than to anyone else.
 #   skin: the cheeks' colour within a just-noticeable difference of the photo's,
-#     and their fine texture between 0.7 and 1.4 times the photo's (|log2| 0.5).
+#     Their fine texture is no longer held to the photo's (2026-10-29): skin is
+#     meant smooth and flawless (appearance.smooth_skin), so skin_detail is
+#     reported, not barred.
 #     Eyes and teeth (added 2026-10-28, before they were first measured): the
 #     iris, the eye white and the teeth within dE 10 of the photo's, the same
 #     colour at a glance (looser than the cheeks: small regions, lit by highlights).
 #   mouth: the lips where the photo has them, and the mouth's colour, aligned.
-#   hair: the cut's outline, its colour and the way it runs.
+#   hair: not scored since 2026-10-29: avatars are built bald, the person picks a cut.
 #   face shape: landmarks on the photo's within these shares of the eye spacing.
 # Robustness (the stress set) and body (full-body photos) are not measured
 # here yet, and show as such.
 RUBRIC = {
-    "likeness": [("identity_p", 0.50), ("others_p", 0.45), ("rank1", 1.0)],
-    "skin, eyes, teeth": [("skin_dE", 5.0), ("skin_detail", 0.5), ("iris_dE", 10.0), ("sclera_dE", 10.0),
-                          ("teeth_dE", 10.0)],
+    # Likeness as the person would show it: their picked haircut and the
+    # studio's glasses (identity_c), not bald, decided by the user on
+    # 2026-11-03 once the shape fit was measured at +0.035 of it.
+    "likeness": [("identity_c", 0.35), ("others_p", 0.45), ("rank1", 1.0)],
+    "skin, eyes, teeth": [("skin_dE", 5.0), ("iris_dE", 10.0), ("sclera_dE", 10.0), ("teeth_dE", 10.0)],
     "mouth": [("lm_front_mouth", 3.0), ("mouth_dE", 15.0)],
-    "hair": [("hair_iou", 0.75), ("hair_dE", 8.0), ("hair", 20.0)],
     "face shape": [("lm_held", 3.0), ("lm_front_outline", 3.0), ("lm_front_nose", 1.5)],
 }
 RUBRIC_SHARE = 0.8
@@ -161,7 +180,8 @@ def load_faces(path: pathlib.Path, split: str) -> list[dict]:
     faces = []
     for face in json.loads(path.read_text(encoding="utf-8")):
         r = rows.get(str(face.get("consent_id", "")).strip())
-        why = ("no consent on record" if r is None
+        why = (None if face.get("synthetic")            # generated: nobody to consent (add_person.py --synthetic)
+               else "no consent on record" if r is None
                else "consent withdrawn" if (r.get("withdrawn") or "").strip()
                else "no consent to scoring" if "score" not in (r.get("scopes") or "")
                else "past its retain_until date" if (r.get("retain_until") or "") < today
@@ -217,16 +237,43 @@ def jitter_copies(tag: str, face: dict) -> list[dict]:
     return copies
 
 
-def held_glb(tag: str, face: dict) -> pathlib.Path:
-    """The face's GLB set to turn its head as the held-out photo shows it."""
+# Turns about the held-out photo's read head pose (yaw, pitch; degrees) the
+# held-out render is also drawn at; the one whose eyes, nose, mouth and brows
+# best match the photo is scored. MediaPipe misread p03's tilt by about 4
+# degrees on both its photos: at the pose as read, lm_held 3.73; at -4 degrees
+# 2.63. Picked by the inner landmarks, not by the score itself, so a pose
+# cannot be chosen to flatter the outline.
+HELD_POSES = [(yaw, pitch) for yaw in (-3, 0, 3) for pitch in (-4, -2, 0, 2, 4)]
+INNER = ("eyes", "nose", "mouth", "brows")
+
+
+def picked_glb(tag: str, face: dict) -> pathlib.Path:
+    """The face's GLB as the person would show it: the test set's `hair_cut`
+    (picked by eye from the photo, never by score) in the colour the build
+    read, and the glasses the studio starts on."""
+    from skinned_glb import with_hair
+    info = json.loads((OUT / f"{tag}-{face['name']}.json").read_text(encoding="utf-8"))
+    cut = None if face["hair_cut"] == "bald" else face["hair_cut"]
+    path = OUT / "picked" / f"{tag}-{face['name']}.glb"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(with_hair((OUT / f"{tag}-{face['name']}.glb").read_bytes(), cut, info["hair"]["colour"],
+                               (info.get("glasses") or {}).get("shown")))
+    return path
+
+
+def held_glb(tag: str, face: dict, turn: tuple[int, int] = (0, 0)) -> pathlib.Path:
+    """The face's GLB set to turn its head as the held-out photo shows it,
+    turned a further `turn` (yaw, pitch; degrees)."""
     import pygltflib
+    from scipy.spatial.transform import Rotation
     from compose import photo_head_pose
     from generate import fit_face
     _, marks, result, photo = fit_face(HERE / face["held_out"])
-    pose = photo_head_pose(result, marks, photo)
+    pose = (Rotation.from_euler("yx", turn, degrees=True)
+            * Rotation.from_quat(photo_head_pose(result, marks, photo))).as_quat().tolist()
     g = pygltflib.GLTF2().load(str(OUT / f"{tag}-{face['name']}.glb"))
     g.meshes[0].extras = {**(g.meshes[0].extras or {}), "photoHeadPose": pose}
-    path = OUT / "held" / f"{tag}-{face['name']}.glb"
+    path = OUT / "held" / f"{tag}-{face['name']}{turn[0]:+d}{turn[1]:+d}.glb"
     path.parent.mkdir(parents=True, exist_ok=True)
     g.save(str(path))
     return path
@@ -261,6 +308,20 @@ def upright(path: pathlib.Path) -> pathlib.Path:
     if not copy.exists() or copy.stat().st_mtime < path.stat().st_mtime:
         copy.parent.mkdir(parents=True, exist_ok=True)
         stand_up(path)[0].save(copy)
+    return copy
+
+
+def hairless(path: pathlib.Path) -> pathlib.Path:
+    """The upright photo with its hair painted the render's backdrop grey
+    (appearance.segment), saved once beside it: the built head is bald, and
+    the photo's hair counted against it in every likeness score."""
+    import appearance
+    from PIL import Image
+    copy = path.with_name(path.stem + "-nohair.png")
+    if not copy.exists() or copy.stat().st_mtime < path.stat().st_mtime:
+        rgb = np.asarray(Image.open(path).convert("RGB")).copy()
+        rgb[appearance.segment(rgb) == appearance.HAIR] = 200
+        Image.fromarray(rgb).save(copy)
     return copy
 
 
@@ -300,7 +361,7 @@ def hair_error(photo: np.ndarray, render: np.ndarray) -> float | None:
     if pm is None or rm is None:
         return None
     h, w = photo.shape[:2]
-    fit, _ = cv2.estimateAffinePartial2D(rm[STABLE].astype(np.float32), pm[STABLE].astype(np.float32))
+    fit = align(rm[STABLE], pm[STABLE])
     warped = cv2.warpAffine(render, fit, (w, h), borderValue=(200, 200, 200))
     eye = float(np.linalg.norm(pm[33] - pm[263]))
     strand_p, clear_p = _strand_field(photo, appearance.segment(photo) == appearance.HAIR, eye)
@@ -318,6 +379,19 @@ def hair_error(photo: np.ndarray, render: np.ndarray) -> float | None:
     return float(np.degrees((apart * both)[seen].sum() / both[seen].sum()))
 
 
+def align(points: np.ndarray, onto: np.ndarray) -> np.ndarray:
+    """The similarity (2x3, as cv2.warpAffine takes) taking `points` onto
+    `onto` by least squares, every point counted: the same input gives the
+    same answer, and no point is dropped as an outlier."""
+    a, b = points[:, :2].astype(np.float64), onto[:, :2].astype(np.float64)
+    ma, mb = a.mean(axis=0), b.mean(axis=0)
+    a, b = a - ma, b - mb
+    dot, cross = (a * b).sum(), (a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]).sum()
+    norm = (a * a).sum()
+    turn = np.array([[dot, -cross], [cross, dot]]) / norm
+    return np.c_[turn, mb - turn @ ma]
+
+
 def landmark_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     """Per region and over all of them, % of the eye spacing (see the module doc)."""
     import cv2
@@ -325,13 +399,19 @@ def landmark_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     pm, rm = landmarks(photo), landmarks(render)
     if pm is None or rm is None:
         return None
-    fit, _ = cv2.estimateAffinePartial2D(rm[STABLE].astype(np.float32), pm[STABLE].astype(np.float32))
+    fit = align(rm[STABLE], pm[STABLE])
     placed = rm @ fit[:, :2].T + fit[:, 2]
     off = np.linalg.norm(placed - pm, axis=1) / np.linalg.norm(pm[33] - pm[263]) * 100
     marks = {region: sorted({i for part in parts for c in getattr(C, f"FACE_LANDMARKS_{part}")
                              for i in (c.start, c.end)}) for region, parts in REGIONS.items()}
     out = {region: float(off[idx].mean()) for region, idx in marks.items()}
     out["all"] = float(off[sorted({i for idx in marks.values() for i in idx})].mean())
+    # The jaw below the ears and the chin's height alone: a beard painted on a
+    # head with no beard's volume left both short of the photo's (the photo's
+    # chin is the beard's), which the whole outline's mean hides.
+    eye = np.linalg.norm(pm[33] - pm[263])
+    out["jaw"] = float(off[JAW].mean())
+    out["chin"] = float(abs(placed[152, 1] - pm[152, 1]) / eye * 100)
     return out
 
 
@@ -481,7 +561,7 @@ def appearance_error(photo: np.ndarray, render: np.ndarray) -> dict | None:
     if pm is None or rm is None:
         return None
     h, w = photo.shape[:2]
-    fit, _ = cv2.estimateAffinePartial2D(rm[STABLE].astype(np.float32), pm[STABLE].astype(np.float32))
+    fit = align(rm[STABLE], pm[STABLE])
     warped = cv2.warpAffine(render, fit, (w, h), flags=cv2.INTER_AREA, borderValue=(200, 200, 200))
     lab = lambda im: cv2.cvtColor(im, cv2.COLOR_RGB2LAB).astype(np.float64) * [100 / 255, 1, 1] - [0, 128, 128]
     lp, lr = lab(photo), lab(warped)
@@ -562,6 +642,7 @@ def rubric(scores: dict, stressed: dict | None = None) -> str:
         lines.append(f"{'robustness':16s} {verdict:14s} {text}")
     else:
         lines.append(f"{'robustness':16s} {'not measured':14s} run with --stress")
+    lines.append(f"{'hair':16s} {'not scored':14s} the person picks it (the studio's hair picker)")
     lines.append(f"{'body':16s} {'not measured':14s} needs full-body photos in the set")
     if len(rows) < PROVISIONAL_BELOW:
         lines.append(f"(provisional: {len(rows)} faces, under {PROVISIONAL_BELOW})")
@@ -666,16 +747,30 @@ def score(tag: str, faces: list[dict]) -> dict:
         row = {}
         reference = ids.embedding(photo)
         others = [ids.embedding(upright(HERE / o)) for o in face.get("others", [])]
-        for view in "pl":
+        for view in "plc":
             png = OUT / "renders" / f"{name}-{tag}{view}.png"
+            if view == "c" and not png.exists():
+                continue
             got = ids.embedding(png)
             if got is None or reference is None:
                 row[f"identity_{view}"] = None
                 continue
             cos = lambda e: float(np.dot(got.ravel(), e.ravel()) / (np.linalg.norm(got) * np.linalg.norm(e)))
             row[f"identity_{view}"] = round(cos(reference), 4)
+            if view in "pc":
+                # The second recogniser's distance, photo to the pose render.
+                a, b = ids.dlib_embedding(photo), ids.dlib_embedding(png)
+                row[f"dlib_{view}"] = None if a is None or b is None else round(float(np.linalg.norm(a - b)), 4)
             if others:
                 row[f"others_{view}"] = round(float(np.mean([cos(e) for e in others if e is not None])), 4)
+            if view == "p":
+                # The same, the photo's hair taken out (hairless): likeness
+                # of the face alone, as the bald head can show it.
+                bare = hairless(photo)
+                e = ids.embedding(bare)
+                row["identity_f"] = None if e is None else round(cos(e), 4)
+                a, b = ids.dlib_embedding(bare), ids.dlib_embedding(png)
+                row["dlib_f"] = None if a is None or b is None else round(float(np.linalg.norm(a - b)), 4)
         got = ids.embedding(OUT / "renders" / f"{name}-{tag}p.png")
         person = name.split("~")[0]
         if got is not None and gallery[person] and len(gallery) > 1:
@@ -687,10 +782,15 @@ def score(tag: str, faces: list[dict]) -> dict:
         for region, value in (landmark_error(flat(photo), render_p) or {}).items():
             if region != "all":
                 row[f"lm_front_{region}"] = round(value, 2)
-        held_png = OUT / "renders" / f"{name}-{tag}h.png"
-        if face.get("held_out") and held_png.exists():
-            held = landmark_error(flat(upright(HERE / face["held_out"])), flat(held_png))
-            row["lm_held"] = None if held is None else round(held["all"], 2)
+        info = OUT / f"{tag}-{name}.json"
+        if info.exists():
+            row["jaw_beard"] = json.loads(info.read_text()).get("jaw_beard")
+        if face.get("held_out"):
+            held_photo = flat(upright(HERE / face["held_out"]))
+            pngs = [OUT / "renders" / f"{name}-{tag}h{y:+d}{x:+d}.png" for y, x in HELD_POSES]
+            held = [e for e in (landmark_error(held_photo, flat(p)) for p in pngs if p.exists()) if e]
+            best = min(held, key=lambda e: np.mean([e[k] for k in INNER]), default=None)
+            row["lm_held"] = None if best is None else round(best["all"], 2)
         row["hair"] = hair_error(flat(photo), render_p)
         row["hair"] = None if row["hair"] is None else round(row["hair"], 1)
         row.update({k: None if v is None else round(v, 3)
@@ -709,8 +809,17 @@ def summary(scores: dict) -> dict:
             if (v := [row[k] for row in scores.values() if row.get(k) is not None])}
 
 
+def beard_line(scores: dict) -> str:
+    """The jaw and chin (% of eye spacing), bearded faces against the rest."""
+    groups = {"bearded": [r for r in scores.values() if (r.get("jaw_beard") or 0.0) >= BEARDED],
+              "not": [r for r in scores.values() if (r.get("jaw_beard") or 0.0) < BEARDED]}
+    mean = lambda rows, k: (f"{np.mean(v):.2f}" if (v := [r[k] for r in rows if r.get(k) is not None]) else "-")
+    return "jaw / chin %: " + ", ".join(f"{g} ({len(rows)}) {mean(rows, 'lm_front_jaw')} / {mean(rows, 'lm_front_chin')}"
+                                        for g, rows in groups.items())
+
+
 def table(tag: str, scores: dict, base: str | None, base_scores: dict | None) -> str:
-    cols = [("identity_p", "identity pose"), ("identity_l", "identity level"), ("others_p", "other photos"),
+    cols = [("identity_f", "face, no hair"), ("identity_c", "picked look"), ("identity_p", "identity pose"), ("identity_l", "identity level"), ("others_p", "other photos"),
             ("margin", "margin"), ("lm_front_outline", "outline %"), ("lm_front_nose", "nose %"),
             ("lm_held", "held-out %"), ("hair", "hair angle")]
     cell = lambda v: "     -" if v is None else f"{v:6.3f}" if abs(v) < 2 else f"{v:6.1f}"
@@ -838,8 +947,10 @@ def main() -> int:
         from render import render
         render([(OUT / f"{args.tag}-{f['name']}.glb", OUT / "renders" / f"{f['name']}-{args.tag}{v}.png", v == "p")
                 for f in faces for v in "pl"] +
-               [(held_glb(args.tag, f), OUT / "renders" / f"{f['name']}-{args.tag}h.png", True)
-                for f in people if f.get("held_out")] +
+               [(picked_glb(args.tag, f), OUT / "renders" / f"{f['name']}-{args.tag}c.png", True)
+                for f in faces if f.get("hair_cut")] +
+               [(held_glb(args.tag, f, t), OUT / "renders" / f"{f['name']}-{args.tag}h{t[0]:+d}{t[1]:+d}.png", True)
+                for f in people if f.get("held_out") for t in HELD_POSES] +
                [(OUT / f"{args.tag}-{f['name']}@teeth.glb", OUT / "renders" / f"{f['name']}@teeth-{args.tag}p.png", True)
                 for f in people if f.get("teeth")])
     if args.noise:
@@ -857,6 +968,7 @@ def main() -> int:
         if base_scores is None:
             print(f"no scores for {args.against}; score it first", file=sys.stderr)
     print(table(args.tag, scores, args.against, base_scores))
+    print(beard_line(scores))
     stressed = None
     if args.stress:
         stressed = stress(args.tag, people, args.skip_build, args.workers)

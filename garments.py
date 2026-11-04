@@ -542,6 +542,31 @@ def recolour(texture, mesh: trimesh.Trimesh, faces_mask: np.ndarray, colour,
     return Image.fromarray(out, "RGB")
 
 
+# How far behind a garment the skin under it is kept (tuck_skin), in mesh units
+# (about 10 cm each): 4 mm.
+SKIN_GAP = 0.04
+
+
+def tuck_skin(body: trimesh.Trimesh, covers: list, below: float, reach: float = 0.33) -> np.ndarray:
+    """The body's vertices with any skin under a garment moved in along its
+    normals to SKIN_GAP behind the garment. The pieces are fitted to the base
+    body; on a fuller figure the blouse's bust lay inside the skin, and the
+    skin there, darkened as covered, showed as dark brown blots on four of the
+    five test women's blouses. Pushing the cloth out instead brought a skirt's
+    waistband through the blouse's hem above it. Only below `below` (the
+    collarbones): a collar sits close round a neck that always shows."""
+    from scipy.spatial import cKDTree
+    v = np.asarray(body.vertices, dtype=np.float64).copy()
+    if not covers:
+        return v
+    cloth = np.vstack([c.vertices for c in covers])
+    distance, nearest = cKDTree(cloth).query(v)
+    normals = body.vertex_normals
+    clear = np.einsum("ij,ij->i", cloth[nearest] - v, normals)
+    sink = np.where((distance < reach) & (v[:, 1] < below), np.clip(SKIN_GAP - clear, 0.0, None), 0.0)
+    return v - normals * sink[:, None]
+
+
 def drop_socks(shoes: trimesh.Trimesh, ankle_y: float) -> int:
     """Remove the sock from a MakeHuman shoe when trousers cover the ankle.
 
@@ -1395,6 +1420,54 @@ def shorten_lower_lashes(lashes: trimesh.Trimesh, keep: float = 0.45) -> None:
         nearest = root[cKDTree(root).query(p)[1]]
         v[rows] = nearest + (p - nearest) * keep
     lashes.vertices = v
+
+
+# Glasses' frames this far off the skin at least (glasses_frames), in mesh
+# units (about 1 mm): pads that rest on the nose, not in it.
+GLASSES_CLEAR = 0.01
+
+
+def glasses_frames(glasses: trimesh.Trimesh, eyes: np.ndarray, skin: trimesh.Trimesh,
+                   clear: float = GLASSES_CLEAR) -> trimesh.Trimesh:
+    """A pair of glasses with its lenses taken out, and moved forward until its
+    front (the rims, bridge and pads, in front of the eyes' centres) is
+    `clear` off `skin`.
+
+    The lenses: the pieces (welded where the asset splits them at UV seams)
+    with a triangle over an eye's centre, seen from the front. The assets
+    paint them opaque grey, which hid the eyes; the frames alone read as
+    glasses. Fitted from the base head, the pads sank up to 0.027 (3 mm) into
+    a man's nose."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    _, weld = np.unique(np.round(glasses.vertices, 5), axis=0, return_inverse=True)
+    faces = weld.ravel()[glasses.faces]
+    n = int(weld.max()) + 1
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]]])
+    _, label = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])),
+                                               shape=(n, n)), directed=False)
+    a, b, c = (glasses.vertices[glasses.faces[:, k], :2] for k in range(3))
+    over = np.zeros(len(faces), bool)
+    for p in np.asarray(eyes)[:, :2]:
+        # Inside the triangle: p on the same side of all three edges.
+        side = [(q - o)[:, 0] * (p - o)[:, 1] - (q - o)[:, 1] * (p - o)[:, 0] for o, q in ((a, b), (b, c), (c, a))]
+        over |= ((side[0] >= 0) & (side[1] >= 0) & (side[2] >= 0)) | ((side[0] <= 0) & (side[1] <= 0) & (side[2] <= 0))
+    lens = np.isin(label[faces[:, 0]], label[faces[over, 0]])
+    frames = glasses.copy()
+    frames.update_faces(~lens)
+    used = np.unique(frames.faces)
+    front = used[frames.vertices[used, 2] > np.asarray(eyes)[:, 2].mean()]
+    skin_points = np.unique(skin.faces)
+    near = skin_points[cKDTree(skin.vertices[skin_points]).query(frames.vertices[front])[1]]
+    normals = skin.vertex_normals[near]
+    gap = ((frames.vertices[front] - skin.vertices[near]) * normals).sum(axis=1)
+    # Forward, so the gap grows by the normal's forward part only: on the
+    # nose's sides, a third or so.
+    push = (clear - gap) / np.maximum(normals[:, 2], 0.3)
+    frames.vertices = frames.vertices + [0.0, 0.0, max(float(push.max(initial=0.0)), 0.0)]
+    return frames
 
 
 def strand_normals(rgb: np.ndarray, depth: float = 2.0):

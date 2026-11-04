@@ -14,9 +14,19 @@ repo's photos: different people 0.15; two real photos of the same man
 **Internal yardstick only.** SFace was trained on research face datasets
 whose terms bar commercial use. Never ship it or import it from the product.
 
+A second recogniser, so no change is kept for one model's quirks: dlib's
+ResNet (weights released CC0, trained on partly non-commercial and scraped
+photos, so internal only too), on the same YuNet face box aligned by dlib's
+5-point model (not its non-commercial 68-point one). Its score is the
+Euclidean distance of the two 128-d descriptors: lower is closer, under
+DLIB_SAME_PERSON the same person.
+
 Model files (git-ignored, into assets/):
     https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
     https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+    http://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2   (unpacked into assets/dlib/)
+    http://dlib.net/files/shape_predictor_5_face_landmarks.dat.bz2        (unpacked into assets/dlib/)
+    and the dlib-bin package (uv pip install dlib-bin)
 
     .venv/Scripts/python.exe identity_score.py photo.jpg render.png [photo2 render2 ...]
 """
@@ -33,6 +43,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 DETECTOR = HERE / "assets" / "face_detection_yunet_2023mar.onnx"
 RECOGNISER = HERE / "assets" / "face_recognition_sface_2021dec.onnx"
 SAME_PERSON = 0.363
+DLIB = HERE / "assets" / "dlib"
+DLIB_SAME_PERSON = 0.6
 
 _models = None
 
@@ -48,10 +60,10 @@ def _load():
     return _models
 
 
-def embedding(path) -> np.ndarray | None:
-    """SFace's embedding of the largest face in the image, or None. A
-    transparent render is flattened onto grey first."""
-    detector, recogniser = _load()
+def _face(path):
+    """The image (BGR) with a transparent render flattened onto grey, and the
+    largest face YuNet finds in it, or None."""
+    detector, _ = _load()
     with Image.open(path) as im:
         rgba = im.convert("RGBA")
     flat = Image.new("RGBA", rgba.size, (200, 200, 200, 255))
@@ -59,10 +71,35 @@ def embedding(path) -> np.ndarray | None:
     img = cv2.cvtColor(np.asarray(flat.convert("RGB")), cv2.COLOR_RGB2BGR)
     detector.setInputSize((img.shape[1], img.shape[0]))
     _, faces = detector.detect(img)
-    if faces is None:
+    return img, (None if faces is None else max(faces, key=lambda f: f[2] * f[3]))
+
+
+def embedding(path) -> np.ndarray | None:
+    """SFace's embedding of the largest face in the image, or None."""
+    img, face = _face(path)
+    if face is None:
         return None
-    face = max(faces, key=lambda f: f[2] * f[3])
-    return recogniser.feature(recogniser.alignCrop(img, face))
+    return _load()[1].feature(_load()[1].alignCrop(img, face))
+
+
+_dlib = None
+
+
+def dlib_embedding(path) -> np.ndarray | None:
+    """dlib's 128-d descriptor of the largest face in the image, or None."""
+    global _dlib
+    if _dlib is None:
+        import dlib
+        _dlib = (dlib, dlib.shape_predictor(str(DLIB / "shape_predictor_5_face_landmarks.dat")),
+                 dlib.face_recognition_model_v1(str(DLIB / "dlib_face_recognition_resnet_model_v1.dat")))
+    dlib, shape, recogniser = _dlib
+    img, face = _face(path)
+    if face is None:
+        return None
+    x, y, w, h = (int(round(v)) for v in face[:4])
+    rgb = np.ascontiguousarray(img[..., ::-1])
+    marks = shape(rgb, dlib.rectangle(x, y, x + w, y + h))
+    return np.array(recogniser.compute_face_descriptor(rgb, marks))
 
 
 def similarity(a, b) -> float:

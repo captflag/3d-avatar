@@ -91,6 +91,50 @@ def rendered(albedo: np.ndarray, light: float = RENDER_LIGHT) -> np.ndarray:
     return np.where(peak < start, c, squeezed)
 
 
+# The bare cheeks under the eyes (MediaPipe ids), where a skin's tone reads.
+CHEEK_PATCHES = ([50, 205, 187, 123, 116, 117, 118, 101], [280, 425, 411, 352, 345, 346, 347, 330])
+
+
+def median_colour(rgb: np.ndarray) -> np.ndarray:
+    """The median colour of some sRGB pixels (N x 3), taken in L*a*b* and
+    given back as sRGB uint8. A median per R, G and B channel picks each from
+    a different pixel: over cheeks half lit and half in shadow (a photo lit
+    from the side) it made up a colour redder and yellower than either half,
+    4.5-7.1 dE from the L*a*b* median on the four side-lit test faces, and
+    the skin was matched to it."""
+    lab = cv2.cvtColor(np.asarray(rgb, np.float32).reshape(-1, 1, 3) / 255.0, cv2.COLOR_RGB2LAB)
+    mid = np.median(lab.reshape(-1, 3), axis=0).astype(np.float32)
+    back = cv2.cvtColor(mid.reshape(1, 1, 3), cv2.COLOR_LAB2RGB).reshape(3)
+    return np.clip(back * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
+def match_colour(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks,
+                 exclude: np.ndarray | None = None, limits=(0.3, 2.0)):
+    """The finished skin image scaled (linear, a gain per channel) so its
+    cheeks render the colour the photo shows them. delight() sets the
+    exposure on a few cheek points before its shadows are lifted, and the
+    steps after it move the skin again (the cast pulled back, smooth_skin
+    evening the face to its median): the cheeks rendered 7-15 L* lighter
+    than the photos on six of the eight test faces, and redder and yellower
+    on several. Matched in lightness alone they still sat 6.1 dE off.
+    Returns (image, gains)."""
+    h, w = photo_rgb.shape[:2]
+    mask = np.zeros((h, w), np.uint8)
+    for ring in CHEEK_PATCHES:
+        points = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in ring])
+        cv2.fillPoly(mask, [cv2.convexHull(points.round().astype(np.int32))], 1)
+    keep = mask > 0 if exclude is None else (mask > 0) & (exclude < 0.2)
+    if keep.sum() < 50:
+        return skin_rgb, np.ones(3)
+    target = to_linear(median_colour(photo_rgb[keep])[None, :])[0]
+    cheek = to_linear(median_colour(skin_rgb[keep])[None, :])[0]
+    gains = np.ones(3)
+    for _ in range(12):                     # each channel's render rises with its gain
+        shown = rendered(cheek * gains)
+        gains = np.clip(gains * target / np.maximum(shown, 1e-4), *limits)
+    return to_srgb(to_linear(skin_rgb) * gains), np.round(gains, 3)
+
+
 def albedo_for(rgb) -> np.ndarray:
     """The sRGB albedo the studio renders as `rgb` (sRGB, as a photo shows it),
     same hue: the inverse of `rendered`, by its brightness.
@@ -281,6 +325,12 @@ def lift_crevices(srgb: np.ndarray, landmarks, size: tuple[int, int], strength: 
     deficit = np.clip(local - lab[..., 0], 0.0, None)
     lift = strength * deficit * soft
     lab[..., 0] += lift
+    # Its colour towards the skin's round it by as much: a black nostril has
+    # next to none, and lifted in lightness alone it came out a cool grey,
+    # which read on the avatar as a blue-grey blot under the nose.
+    toward = (strength * soft * (deficit > 0))[..., None]
+    skin_ab = np.dstack([cv2.medianBlur(lab[..., c].astype(np.uint8), min(k, 255)) for c in (1, 2)]).astype(np.float64)
+    lab[..., 1:] += toward * (skin_ab - lab[..., 1:])
     # Write back only what was lifted: an 8-bit LAB round trip nudges every
     # pixel, and nothing outside the crevices should change at all.
     out = srgb.copy()

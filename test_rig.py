@@ -60,6 +60,12 @@ def check_export():
         out = pathlib.Path(tmp) / "rigged.glb"
         compose(photo, out)
         gltf = gl.GLTF2().load(str(out))
+        import json
+        info = json.loads(out.with_suffix(".json").read_text(encoding="utf-8"))
+        # Built twice, the second aimed by a render of the first (compose's
+        # refine), unless no browser drew it.
+        print(f"ok  refine: lips and jaw read {info.get('refined')} off, aimed against it" if info.get("refined")
+              else "skip refine: no render of the first build")
 
         assert len(gltf.skins) == 1, "no skin in the exported file"
         skin = gltf.skins[0]
@@ -84,6 +90,19 @@ def check_export():
 
         print(f"ok  export: {len(skin.joints)} joints, "
               f"{len(gltf.meshes[0].primitives)} primitives, all skinned, the cornea's coat in the file")
+
+        # Every pair of glasses in the file, for the studio's picker; the
+        # download keeps the one picked, or none.
+        pairs = [i["id"] for i in items_by_id().values() if i["category"] == "glasses"]
+        assert pairs and gltf.meshes[0].extras.get("glassesOptions") == pairs, "the file does not carry the glasses"
+        names = lambda doc: {doc.materials[p.material].name for p in doc.meshes[0].primitives}
+        assert set(pairs) <= names(gltf), "a pair of glasses is missing from the file's primitives"
+        for keep in (pairs[-1], None):
+            kept = pathlib.Path(tmp) / "kept.glb"
+            kept.write_bytes(skinned_glb.with_hair(out.read_bytes(), "bald", glasses=keep))
+            left = names(gl.GLTF2().load(str(kept))) & set(pairs)
+            assert left == ({keep} if keep else set()), f"the download kept glasses {left}, not {keep}"
+        print(f"ok  glasses in the file: {len(pairs)} pairs, the download keeps only the one picked")
 
         # The compat copy for old viewers: no quantisation left, same geometry.
         compat = pathlib.Path(tmp) / "compat.glb"
@@ -648,7 +667,7 @@ def check_hair_cap():
         return
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "cap.glb"
-        compose(photo, out, "male")
+        compose(photo, out, "male", hair="hair_short01", refine=False)   # built bald unless a cut is asked for
         g = gl2.GLTF2().load(str(out)); blob = g.binary_blob()
         names = [m.name for m in g.materials]
         assert "scalp_cap" in names, f"no scalp cap among {names}"
@@ -1048,7 +1067,7 @@ def check_import():
         return
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "vest.glb"
-        compose(photo, out, wear=["shirt_white", "vest_test", "trousers_navy", "shoes_dark"])
+        compose(photo, out, wear=["shirt_white", "vest_test", "trousers_navy", "shoes_dark"], refine=False)
         gltf = gl.GLTF2().load(str(out))
         names = [m.name for m in gltf.materials]
         assert "vest_test" in names, "the imported vest is not in the avatar"
@@ -1077,12 +1096,20 @@ def check_photo_reading():
     skin, beard, hair = (230, 190, 170), (120, 70, 50), (110, 75, 55)
     face = np.full((200, 200, 3), skin, dtype=np.uint8)
     face[150:190] = beard                       # below the nose
+    face[150:190:2, ::2] = (90, 50, 35)         # with a hair's grain
     face[40:55] = beard                         # brows: dark, but above the nose
     marks = _landmarks({1: (0.5, 0.6), 152: (0.5, 0.95)})
     keep = facial_hair(face, marks, np.array([[100.0, 110.0]]))
     assert keep[170, 100] > 0.9, f"beard not kept ({keep[170, 100]:.2f})"
     assert keep[130, 100] < 0.1, "plain skin below the nose was kept as beard"
     assert keep[47, 100] < 0.05, "brows above the nose were taken for a beard"
+    # Lit from one side: the shadowed half of a clean-shaven face is no beard.
+    lit = np.full((200, 200, 3), skin, dtype=np.float64) * np.linspace(1.0, 0.45, 200)[None, :, None]
+    side = facial_hair(lit.astype(np.uint8), marks, np.array([[50.0, 110.0], [150.0, 110.0]]))
+    assert side[150:190].max() < 0.1, f"a side-lit cheek read as beard ({side[150:190].max():.2f})"
+    shadowed = face.copy(); shadowed[:, 100:] = (shadowed[:, 100:] * 0.6).astype(np.uint8)
+    keep = facial_hair(shadowed, marks, np.array([[50.0, 110.0], [150.0, 110.0]]))
+    assert keep[170, 50] > 0.9, f"a beard on the lit side lost ({keep[170, 50]:.2f})"
 
     photo = np.full((200, 200, 3), 255, dtype=np.uint8)   # white backdrop
     photo[10:60, 40:160] = hair
@@ -1092,6 +1119,47 @@ def check_photo_reading():
     got = hair_colour(Image.fromarray(photo), marks, np.array([[100.0, 120.0]])).astype(int)
     assert np.abs(got - hair).max() < 30, f"hair read as {got.tolist()}, expected about {hair}"
     print(f"ok  photo: beard kept through the fade, hair read as {got.tolist()}")
+
+
+def check_glasses():
+    """Every pair of glasses loads with its texture, has its lenses out (the
+    eyes show through), sits in front of the eyes at their height, and clears
+    the face on both bodies (garments.glasses_frames)."""
+    import morph
+    from garments import GLASSES_CLEAR, glasses_frames
+    from scipy.spatial import cKDTree
+
+    base, groups = load_base()
+    pairs = [i for i in items_by_id().values() if i["category"] == "glasses"]
+    assert pairs, "no glasses in the catalogue"
+    missing = [i["id"] for i in pairs if not (HERE / "assets" / i["mhclo"]).exists()]
+    if missing:
+        print(f"skip glasses check: {missing} missing (python fetch_assets.py)")
+        return
+    for figure in ("male", "female"):
+        vertices = morph.body_for(base, figure)
+        eyes = np.array([vertices[np.unique(groups[g])] for g in ("helper-l-eye", "helper-r-eye")])
+        centres = eyes.mean(axis=1)
+        skin = trimesh.Trimesh(vertices, groups["body"], process=False)
+        skin_points = np.unique(groups["body"])
+        tree = cKDTree(vertices[skin_points])
+        for item in pairs:
+            mesh = build_item(item, None, vertices)
+            assert mesh.metadata.get("texture") is not None, f"{item['id']}: its texture did not load"
+            frames = glasses_frames(mesh, centres, skin)
+            assert 0 < len(frames.faces) <= len(mesh.faces), f"{item['id']}: no frames left"
+            again = glasses_frames(frames, centres, skin)
+            assert len(again.faces) == len(frames.faces), f"{item['id']}: a lens is left over an eye"
+            points = frames.vertices[np.unique(frames.faces)]
+            front = points[points[:, 2] > centres[:, 2].mean()]
+            assert front[:, 2].max() > eyes[..., 2].max(), f"{item['id']}: not in front of the eyes on the {figure}"
+            assert front[:, 1].min() < centres[:, 1].min() and front[:, 1].max() > centres[:, 1].max(), \
+                f"{item['id']}: the rims are not at the eyes' height on the {figure}"
+            near = skin_points[tree.query(front)[1]]
+            gap = ((front - vertices[near]) * skin.vertex_normals[near]).sum(axis=1)
+            assert gap.min() > GLASSES_CLEAR / 2, \
+                f"{item['id']}: {(gap < 0).sum()} points inside the {figure} face, {gap.min() * 100:.1f} mm off it"
+    print(f"ok  glasses: {len(pairs)} pairs load, lenses out, in front of the eyes and clear of both faces")
 
 
 def check_bodies_and_assets():
@@ -1179,8 +1247,49 @@ def check_delight():
     lum = delight.to_linear(out[cheeks[:, 1].astype(int), cheeks[:, 0].astype(int)]) @ [0.2126, 0.7152, 0.0722]
     assert report["exposure"] < 1.0 and abs(np.median(lum) - delight.SKIN_CEILING) < 0.05, \
         f"overexposed skin not capped: cheeks at {np.median(lum):.2f}"
+
+    # The final colour match: a skin rendered too light and too red comes out
+    # rendering the photo's cheek colour (delight.match_colour).
+    pale = np.clip(rgb.astype(int) + [15, 8, 4], 0, 255).astype(np.uint8)
+    matched, gains = delight.match_colour(pale, rgb, marks)
+    patch = np.zeros((h, w), np.uint8)
+    for ring in delight.CHEEK_PATCHES:
+        cv2.fillPoly(patch, [cv2.convexHull(np.array([[marks[i].x * w, marks[i].y * h] for i in ring]).astype(np.int32))], 1)
+    want = delight.to_linear(np.median(rgb[patch > 0], axis=0).round().astype(np.uint8)[None])[0]
+    got = delight.rendered(delight.to_linear(np.median(matched[patch > 0], axis=0).round().astype(np.uint8)[None])[0])
+    assert np.abs(got / want - 1.0).max() < 0.06 and (gains < 1.0).all(), f"cheeks render at {got / want} of the photo's"
     print(f"ok  delight: synthetic lighting removed ({spread:.2%} left), "
-          f"overexposed skin capped, dark skin and background untouched")
+          f"overexposed skin capped, dark skin and background untouched, cheeks matched to the photo's colour")
+
+
+def check_shift_marks():
+    """A render's reading moves the targets against it, in the face's frame."""
+    from compose import shift_marks
+    pts = np.zeros((478, 3))
+    pts[263, 0] = 2.0                                  # eye spacing 2
+    moved = shift_marks(pts, [0, 1], [[0.1, 0.0], [0.0, 0.05]])
+    # Read 0.1 spacings right: aimed 0.2 left. Read 0.05 low (y down): aimed 0.1 up (y up).
+    assert np.allclose(moved[0], [-0.2, 0, 0]) and np.allclose(moved[1], [0, 0.1, 0]), moved[:2]
+    turned = shift_marks(pts, [0], [[0.1, 0.0]], np.array([[0.0, -1, 0], [1, 0, 0], [0, 0, 1]]))
+    assert np.allclose(turned[0], [0, 0.2, 0]), turned[0]
+    assert np.allclose(moved[2:], pts[2:]), "only the given ids move"
+    print("ok  shift: render readings aim the lips and jaw against them")
+
+
+def check_meet_rim():
+    """The generated skin meets the photo's colour at the photo's edge and
+    keeps its own far from it."""
+    from facetexture import meet_rim
+    size = 256
+    base = np.full((size, size, 3), 150.0)
+    painted = np.full((size, size, 3), 170.0)
+    weight = np.zeros((size, size))
+    weight[:, :100] = 1.0
+    weight[:, 100:110] = np.linspace(0.9, 0.3, 10)[None, :]
+    out = meet_rim(base, painted, weight)
+    assert out[128, 112, 0] > 162, f"skin at the edge {out[128, 112, 0]:.0f}, the photo's 170"
+    assert abs(out[128, 250, 0] - 150.0) < 3, f"skin far off {out[128, 250, 0]:.0f}, its own 150"
+    print("ok  rim: generated skin meets the photo's colour at its edge, its own far off")
 
 
 def check_appearance():
@@ -1195,7 +1304,8 @@ def check_appearance():
     assert pick({**reading, "sides": 0.14}, "x") == "hair_culturalibre_hair_05"
     assert pick({**reading, "sides": 0.06}, "x") == "hair_short01", "a close crop was given the tall cut"
     assert pick({**reading, "fringe": 0.6}, "x") == "hair_short03"
-    assert pick({**reading, "bottom": 0.0}, "x") == "hair_bob01"
+    assert pick({**reading, "bottom": 0.0}, "x") == "hair_toigo_blunt_bob"
+    assert pick({**reading, "bottom": 0.0, "fringe": 0.6}, "x") == "hair_toigo_blunt_bob"
     assert pick({**reading, "bottom": 0.4}, "x") == "hair_long01"
     assert pick({**reading, "amount": 0.02}, "x") is None, "a bald head was given hair"
     assert pick(None, "hair_short02") == "hair_short02", "no segmenter should keep the default"
@@ -1231,6 +1341,13 @@ def check_appearance():
         assert max(hair["colour"]) < 140, f"dark grey hair read as {hair['colour'].tolist()}"
         _, family = appearance.iris_colour(rgb, marks)
         assert family in ("dark brown", "brown"), f"brown eyes read as {family}"
+        # A light iris, though in the lids' shade: grey, not dark brown.
+        h, w = rgb.shape[:2]
+        eye, iris = appearance._eye_masks(marks, (w, h))
+        grey = rgb.copy()
+        grey[eye & iris] = (78, 82, 82)
+        _, family = appearance.iris_colour(grey, marks)
+        assert family in appearance.LIGHT_FAMILIES, f"a grey eye read as {family}"
         # The whites follow the photo's exposure, within a natural white's range.
         lit, dim = appearance.sclera_colour(rgb, marks), appearance.sclera_colour((rgb * 0.5).astype(np.uint8), marks)
         assert dim.mean() < lit.mean() - 20 and dim.min() > 90, f"whites read {lit} lit, {dim} at half exposure"
@@ -1397,7 +1514,7 @@ def check_review_fixes():
         return
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "portrait.glb"
-        compose(photo, out)
+        compose(photo, out, refine=False)
         import json
         info = json.loads(out.with_suffix(".json").read_text(encoding="utf-8"))
         mouth = [w for name, w in info["shape"]["strongest"] if name.startswith("mouth/")]
@@ -1440,6 +1557,8 @@ def check_review_fixes():
         # ARKit's 52, then the photo's own mouth (morph.photo_mouth), shown with its expression.
         assert gltf.meshes[0].extras.get("targetNames") == morph.ARKIT_NAMES + ["photoMouth"], "ARKit blendshapes missing"
         assert gltf.meshes[0].extras["photoExpression"].get("photoMouth") == 1.0, "the photo's mouth not shown"
+        chin, spacing = gltf.meshes[0].extras["jawLine"]    # for the viewer's neck shadow
+        assert spacing > 0 and chin > 0, f"jaw line in the file: {chin}, {spacing}"
         assert all(len(p.targets) == 53 for p in gltf.meshes[0].primitives), "a part lacks blendshapes"
         assert {"teeth", "tongue"} <= set(info["wearing"]), "no teeth or tongue in the mouth"
         skin_mat = gltf.materials[names.index("head")]
@@ -1780,7 +1899,10 @@ if __name__ == "__main__":
         check_import()
         check_photo_reading()
         check_bodies_and_assets()
+        check_glasses()
         check_delight()
+        check_shift_marks()
+        check_meet_rim()
         check_appearance()
         check_finishing()
         check_review_fixes()
