@@ -277,6 +277,13 @@
         <div class="swatches" id="swatches" role="group" aria-label="Hair colour"></div>
         <h2>Glasses</h2>
         <div class="cuts" id="glasses" role="group" aria-label="Glasses"></div>
+        <h2 id="moves-title" hidden>Animate</h2>
+        <div class="seg" id="moves" role="group" aria-label="Animate" hidden>
+          <button type="button" data-move="wave">Wave</button>
+          <button type="button" data-move="nod">Nod</button>
+          <button type="button" data-move="shrug">Shrug</button>
+          <button type="button" data-move="dance">Dance</button>
+        </div>
       </div>
     </div>
     <div class="foot">
@@ -314,7 +321,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { setupRealism, applyMaterials, applyToon, idleMotion, groundAndShadow, visibleBox, chooseHair, chooseGlasses } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, applyToon, idleMotion, gestureMotion, groundAndShadow, visibleBox, chooseHair, chooseGlasses } from '/lib/scene-setup.js';
 import { assess, getLandmarker, STEADY_FRAMES, LEFT } from '/lib/photo-checks.js';
 
 const $ = (id) => document.getElementById(id);
@@ -592,10 +599,12 @@ async function showAvatar(url) {
   if (new URLSearchParams(location.search).get('style') === 'toon') {
     await applyToon(avatar, gltf.parser);
     idle = idleMotion(avatar);
+    moves = gestureMotion(avatar);
   } else {
     applyMaterials(avatar);
-    idle = null;
+    idle = moves = null;
   }
+  $('moves').hidden = $('moves-title').hidden = !moves;
   const box = visibleBox(avatar);
   const size = box.getSize(new THREE.Vector3()), centre = box.getCenter(new THREE.Vector3());
   avatar.position.sub(centre);
@@ -701,13 +710,19 @@ function wearGlasses(pair) {
   for (const b of $('glasses').children) b.setAttribute('aria-pressed', String(b.dataset.pair === pair));
 }
 
-// The cartoon style's idle life (blinks, breathing, head turns); none for the realistic style.
-let idle = null;
+// The cartoon style's idle life (blinks, breathing, head turns) and its
+// gestures (the Animate buttons); none for the realistic style.
+let idle = null, moves = null;
+$('moves').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-move]');
+  if (b && moves) moves.play(b.dataset.move);
+});
 (function loopRender(ms) {
   requestAnimationFrame(loopRender);
   if (!$('view').offsetParent) return;
   resize();
   if (idle) idle((ms || 0) / 1000);
+  if (moves) moves.update((ms || 0) / 1000);
   controls.update();
   renderer.render(scene, camera);
 })();
