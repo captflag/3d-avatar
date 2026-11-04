@@ -680,6 +680,26 @@ def check_curl_cap():
     print(f"ok  curl cap: crown {top:.2f} dm, sides {side.max():.3f} dm, edge on the skin, uv in 0-1")
 
 
+def check_jacket():
+    """The jacket outfit: its shirt's four pieces told from the jacket
+    (garments.inner_pieces), and its top glossier than its jeans in the
+    leather roughness texture."""
+    from catalogue import build_item, items_by_id, load_base
+    from garments import LEATHER_ROUGHNESS, garment_regions, inner_pieces, leather_roughness
+    item = items_by_id()["outfit_jacket_jeans"]
+    if not (HERE / "assets" / item["mhclo"]).exists():
+        print("skip jacket check: the jacket asset is not fetched")
+        return
+    mesh = build_item({k: v for k, v in item.items() if k != "recolour"})
+    vertices, groups = load_base()
+    top = garment_regions(mesh, vertices, groups)
+    inner = inner_pieces(mesh.metadata["texture"], mesh, top)
+    assert 400 < inner.sum() < 0.3 * top.sum(), f"shirt faces {inner.sum()} of {top.sum()}"
+    green = np.asarray(leather_roughness(mesh, vertices, groups))[..., 1] / 255.0
+    assert np.isclose(green.min(), LEATHER_ROUGHNESS[0], atol=0.01) and np.isclose(green.max(), LEATHER_ROUGHNESS[1], atol=0.01)
+    print(f"ok  jacket: shirt {inner.sum()} faces under it, leather {LEATHER_ROUGHNESS[0]} against cloth {LEATHER_ROUGHNESS[1]}")
+
+
 def check_hair_cap():
     """A haircut's avatar carries a blended cap under the cards: in the
     hair's root shade, above the brows only, its alpha smooth (not a
@@ -1941,6 +1961,7 @@ if __name__ == "__main__":
         check_details()
         check_stubble()
         check_curl_cap()
+        check_jacket()
     except AssertionError as err:
         print(f"FAIL  {err}", file=sys.stderr)
         raise SystemExit(1)

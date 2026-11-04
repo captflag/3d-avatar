@@ -481,6 +481,34 @@ def whiten_teeth(texture, colour) -> "Image.Image":
     return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
 
 
+# The shirt under a jacket (inner_pieces): the top's pieces of cloth darker
+# than this share of the top's median lightness. Measured on the jacket outfit
+# (male_casualsuit05): its striped shirt's four pieces 5-33 mean level, the
+# jacket's 38-53 (median 47); by colour they did not part, black stripes
+# outweighing red.
+INNER_DARKER = 0.75
+
+
+def inner_pieces(texture, mesh: trimesh.Trimesh, top: np.ndarray) -> np.ndarray:
+    """Per face, True on a piece of the top (a connected UV island) much
+    darker than the rest of the top: the shirt showing under a jacket."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    grey = np.asarray(texture.convert("L"), dtype=np.float64)
+    size = grey.shape[0]
+    centre = mesh.metadata["uv"][mesh.faces].mean(axis=1)
+    level = grey[np.clip(((1.0 - centre[:, 1]) * (size - 1)).astype(int), 0, size - 1),
+                 np.clip((centre[:, 0] * (size - 1)).astype(int), 0, size - 1)]
+    n = len(mesh.vertices)
+    edges = np.vstack([mesh.faces[:, [0, 1]], mesh.faces[:, [1, 2]]])
+    _, label = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n)),
+                                    directed=False)
+    piece = label[mesh.faces[:, 0]]
+    mean = np.bincount(piece, weights=level, minlength=label.max() + 1) / np.maximum(
+        np.bincount(piece, minlength=label.max() + 1), 1)
+    return top & (mean[piece] < INNER_DARKER * float(np.median(level[top])))
+
+
 def recolour(texture, mesh: trimesh.Trimesh, faces_mask: np.ndarray, colour,
              plain: bool = False) -> "Image.Image":
     """`texture` with the cloth under `faces_mask` dyed `colour` (sRGB).
@@ -1600,4 +1628,24 @@ def curl_cap(cap: trimesh.Trimesh) -> trimesh.Trimesh:
         Image.fromarray(np.tile(np.asarray(image), (tiles, tiles, 1))) for image in curl_texture())
     out.metadata["thickness"] = thick
     return out
+
+
+# Leather (the jacket outfit's top): shinier than cloth, which an outfit's
+# one material cannot be alone, as the jeans share it. Roughness in a texture,
+# the top's pieces at LEATHER_ROUGHNESS[0], the rest at [1].
+LEATHER_ROUGHNESS = (0.4, 0.85)
+
+
+def leather_roughness(mesh: trimesh.Trimesh, vertices: np.ndarray, groups: dict, size: int = 1024):
+    """A roughness texture (glTF's: green) for an outfit whose top is leather
+    (garment_regions), laid out on the outfit's own texture coordinates."""
+    import cv2
+    from PIL import Image
+    from facetexture import rasterize
+    top = garment_regions(mesh, vertices, groups)
+    uv = mesh.metadata["uv"]
+    region = rasterize(np.ones(len(mesh.vertices)), mesh.faces[top], uv, mesh.faces[top], size, fill=0.0) > 0.5
+    region = cv2.dilate(region.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    green = np.where(region, LEATHER_ROUGHNESS[0], LEATHER_ROUGHNESS[1])
+    return Image.merge("RGB", [Image.fromarray(np.uint8(c)) for c in (np.zeros_like(green), green * 255, np.zeros_like(green))])
 

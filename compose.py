@@ -1332,13 +1332,13 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         if top_rgb is not None:
             dye = delight.albedo_for(top_rgb)
             outfit = [{**i, "recolour": {**i["recolour"], "top": [int(c) for c in dye]}}
-                      if i.get("recolour") else i for i in outfit]
+                      if i.get("recolour") and not i.get("keep_colour") else i for i in outfit]
         # And the trousers, where the photo shows them (appearance.trousers_colour).
         bottom_rgb = appearance.trousers_colour(photo_rgb, landmarks, parts)
         if bottom_rgb is not None:
             dye = delight.albedo_for(bottom_rgb)
             outfit = [{**i, "recolour": {**i["recolour"], "bottom": [int(c) for c in dye]}}
-                      if i.get("recolour", {}).get("bottom") else i for i in outfit]
+                      if i.get("recolour", {}).get("bottom") and not i.get("keep_colour") else i for i in outfit]
 
     # Teeth and tongue go in every mouth, whatever is worn: hidden at rest,
     # and what an opened jaw shows.
@@ -1801,6 +1801,10 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # Cloth scatters light at grazing angles: a soft rim along folds
             # and edges that plain roughness does not give (KHR_materials_sheen).
             parts[-1].sheen = CLOTH_SHEEN
+        if item.get("leather"):
+            # Leather has a gloss, not cloth's grazing sheen (garments.leather_roughness).
+            parts[-1].sheen = None
+            parts[-1].roughness_texture = garments.leather_roughness(mesh, vertices, groups)
         if item["category"] == "hair" and "mhclo" in item:
             # Hair's highlight runs across the strands, a band rather than a
             # spot; the strands lie along the texture's v axis.

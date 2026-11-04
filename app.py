@@ -22,7 +22,10 @@ from PIL import Image
 
 import photo_check
 import skinned_glb
+from catalogue import catalogue, items_by_id
 from compose import compose
+
+JACKET = "outfit_jacket_jeans"
 from generate import NoFaceFound, generate_avatar, get_landmarker
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -129,13 +132,19 @@ def generate():
 
     full_body = request.form.get("mode") == "body"
     gender = "female" if request.form.get("gender") == "female" else "male"
+    # The outfit picked on the photo step: the default, or the jacket in its
+    # place. Built in, as the body under clothes is cut to fit them.
+    wear = None
+    if request.form.get("outfit") == "jacket":
+        defaults = catalogue()["defaults"][gender]
+        wear = [JACKET if items_by_id()[i]["category"] == "outfit" else i for i in defaults]
     # The haircut the photo check saw (/check), if the page ran one: only a
     # catalogue id or "bald" gets through.
     hair_hint = photo_check.hair_hint({"hair_cut": request.form.get("hair_hint")})
     hair_colour = photo_check.hair_colour_hint({"hair_colour": request.form.get("hair_colour")})
     try:
         if full_body:
-            info = compose(photo_path, OUT / f"{entry_id}.glb", gender, side_photos=side_photos or None,
+            info = compose(photo_path, OUT / f"{entry_id}.glb", gender, wear=wear, side_photos=side_photos or None,
                            hair_hint=hair_hint, hair_colour_hint=hair_colour)
         else:
             info = generate_avatar(photo_path, OUT / f"{entry_id}.glb", side_photos)

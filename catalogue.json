@@ -281,6 +281,32 @@
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
+      "id": "outfit_jacket_jeans",
+      "category": "outfit",
+      "label": "Jacket and jeans",
+      "_why": "A collared, zipped jacket over a shirt (the reference cartoon avatar's leather jacket); dressed as leather by `leather`.",
+      "mhclo": "mh_system/clothes/male_casualsuit05/male_casualsuit05.mhclo",
+      "recolour": {
+        "top": [
+          34,
+          31,
+          30
+        ],
+        "inner": [
+          44,
+          48,
+          32
+        ]
+      },
+      "plain": [
+        "inner"
+      ],
+      "keep_colour": true,
+      "leather": true,
+      "roughness": 0.85,
+      "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
+    },
+    {
       "id": "outfit_blouse_skirt",
       "category": "outfit",
       "label": "Striped blouse and skirt",

@@ -223,6 +223,11 @@
             <button type="button" data-gender="male" aria-pressed="true">Masculine</button>
             <button type="button" data-gender="female" aria-pressed="false">Feminine</button>
           </div>
+          <h2>Outfit</h2>
+          <div class="seg" role="group" aria-label="Outfit">
+            <button type="button" data-outfit="shirt" aria-pressed="true">Shirt</button>
+            <button type="button" data-outfit="jacket" aria-pressed="false">Jacket</button>
+          </div>
         </div>
 
         <div class="card">
@@ -325,7 +330,7 @@ import { setupRealism, applyMaterials, applyToon, applyStylized, STYLIZED, portr
 import { assess, getLandmarker, STEADY_FRAMES, LEFT } from '/lib/photo-checks.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { front: null, sides: [], gender: 'male', model: null, id: null, hair: null, glasses: 'none' };
+const state = { front: null, sides: [], gender: 'male', outfit: 'shirt', model: null, id: null, hair: null, glasses: 'none' };
 
 // ---- Steps -------------------------------------------------------------------
 const ORDER = ['photo', 'create', 'style', 'save'];
@@ -412,6 +417,10 @@ $('file').addEventListener('change', () => {
 document.querySelectorAll('[data-gender]').forEach((b) => b.addEventListener('click', () => {
   state.gender = b.dataset.gender;
   document.querySelectorAll('[data-gender]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+}));
+document.querySelectorAll('[data-outfit]').forEach((b) => b.addEventListener('click', () => {
+  state.outfit = b.dataset.outfit;
+  document.querySelectorAll('[data-outfit]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
 }));
 
 // The selfie: front, then turned each way (optional), each taken by itself
@@ -532,6 +541,7 @@ $('create').addEventListener('click', async () => {
   state.sides.forEach((f) => body.append('side', f));
   body.append('mode', 'body');
   body.append('gender', state.gender);
+  body.append('outfit', state.outfit);
   try {
     const res = await fetch('/generate', { method: 'POST', body });
     const data = await res.json().catch(() => ({}));
