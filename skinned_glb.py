@@ -75,6 +75,7 @@ class Part:
         self.anisotropy = None          # (strength, rotation in radians): KHR_materials_anisotropy
         self.clearcoat = None           # (strength, roughness): KHR_materials_clearcoat
         self.base_colour = None         # linear RGB the texture is multiplied by (hair_factor)
+        self.toon_texture = None        # the cartoon style's base colour (PIL), in the material's extras
 
 
 class _Buffer:
@@ -386,6 +387,9 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
             material.pbrMetallicRoughness.baseColorTexture = gl.TextureInfo(
                 index=_add_texture(gltf, buf, part.texture, _seen=embedded, smooth_alpha=part.alpha_blend)
             )
+        if part.toon_texture is not None:
+            # Not a glTF slot: the studio's cartoon style swaps it in.
+            material.extras = {"toonTexture": _add_texture(gltf, buf, part.toon_texture, _seen=embedded)}
         if part.alpha_mask:
             material.alphaMode = "MASK"
             material.alphaCutoff = 0.5

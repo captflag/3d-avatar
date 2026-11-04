@@ -58,8 +58,10 @@ EYE_RECESS = 0.06
 # toe, a texel is millimetres across, and the same grain at full strength read
 # as bark on the neck.
 PORE_STRENGTH = {"head": 0.5, "body": 0.25}
-# Head and body skin textures, texels a side.
+# Head and body skin textures, texels a side; the cartoon style's head, flat
+# colour and a few shapes, needs less.
 SKIN_SIZE = 2048
+TOON_SIZE = 1024
 # Cards blended by their texture's alpha, not cut at half. The lashes are a
 # few pixels on screen, so they are drawn from the texture's smallest mip
 # levels, where a strand's alpha is averaged far below half: cut, the fine
@@ -1558,6 +1560,12 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     head_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces,
                                     sampler, face_centre, face_radius, skin_rgb, head_base,
                                     size=head_size, blend="none")
+    # The cartoon style's head (the viewer's applyToon): the face drawn flat
+    # (appearance.cartoon_face) and baked the same way, on one skin tone.
+    toon_skin = delight.median_colour(skin_rgb[bare_skin]).astype(np.float64)
+    toon_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces, sampler, face_centre,
+                                    face_radius, appearance.cartoon_face(photo_rgb, landmarks, toon_skin, facial_hair),
+                                    toon_skin, size=TOON_SIZE, blend="none")
     # A beard's hairs are finer than the photo's pixels: grain where it was.
     head_texture = appearance.stubble(head_texture, vertices, head_faces, head_uv_all, head_uv_faces,
                                       sampler, skin_rgb, cheeks, jaw_beard, landmarks)
@@ -1715,6 +1723,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             roughness=appearance.SKIN_ROUGHNESS["skin"], normal_scale=PORE_STRENGTH[name],
         ))
         parts[-1].morphs = expression_morphs(mesh, face_shapes)
+        if name == "head":
+            parts[-1].toon_texture = toon_texture
         # Skin reflects less than the glTF default (IOR 1.5): with it the
         # face wore a pale sheen of reflected room that read as grey.
         parts[-1].ior = SKIN_IOR

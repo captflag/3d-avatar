@@ -66,6 +66,11 @@ def check_export():
         # refine), unless no browser drew it.
         print(f"ok  refine: lips and jaw read {info.get('refined')} off, aimed against it" if info.get("refined")
               else "skip refine: no render of the first build")
+        # The cartoon style's head paint (compose's cartoon_face) rides in the head's material.
+        head_mat = next(m for m in gltf.materials if m.name == "head")
+        paint = (head_mat.extras or {}).get("toonTexture")
+        assert paint is not None and 0 <= paint < len(gltf.textures), "the head carries no cartoon paint"
+        print("ok  cartoon: the head carries its flat-colour paint for the cartoon style")
 
         assert len(gltf.skins) == 1, "no skin in the exported file"
         skin = gltf.skins[0]
