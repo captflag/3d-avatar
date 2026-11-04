@@ -1713,7 +1713,7 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         photo_mouth = morph.photo_mouth(vertices, face_shapes, photo_face, morph.lip_corr(base, corr), person,
                                         on_skin, laughing_teeth)
         photo_face["photoMouth"] = 1.0
-    face_shapes = np.concatenate([face_shapes, photo_mouth[None]])
+    face_shapes = np.concatenate([face_shapes, photo_mouth[None], morph.stylize_shape(len(vertices))[None]])
     # Normals from the whole skin, not from each part's own triangles: split
     # at the neck, each side averaged only its own, and light broke along the
     # seam in angular patches under the ear.
@@ -1885,7 +1885,7 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # swung out until the hands clear the hips.
     body_part = next(p for p in parts if p.name == "body")
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
-                       morph_names=morph.ARKIT_NAMES + ["photoMouth"],
+                       morph_names=morph.ARKIT_NAMES + ["photoMouth", "stylize"],
                        expression=photo_face,
                        head_pose=head_pose,
                        extras={"hair": shown, "hairOptions": [item["id"] for item in hair_options],

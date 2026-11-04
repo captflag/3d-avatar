@@ -147,6 +147,28 @@ def read_target(path: pathlib.Path) -> tuple[np.ndarray, np.ndarray]:
     return np.array(idx, dtype=np.int64), np.array(delta, dtype=np.float64).reshape(-1, 3)
 
 
+# The stylized style's head (the reference cartoon avatar: a tapering jaw,
+# defined cheekbones, smaller ears), MakeHuman's own targets at these weights,
+# carried in every file as the "stylize" blendshape at 0 and turned on only
+# by the studio's stylized style (STYLIZED.shapes). On the base head, at
+# weight 1: the inverted triangle narrows the jaw 14 mm, head-fat-decr the
+# cheeks 9, each cheekbone target widens the cheekbones 7; this mix, the jaw
+# 5-7 mm narrower (91 -> 86 mm), the cheekbones 5-6 mm wider (116 -> 121).
+STYLIZE = {"head/head-invertedtriangular": 0.5, "head/head-fat-decr": 0.3, "chin/chin-width-decr": 0.5,
+           "cheek/l-cheek-bones-incr": 0.5, "cheek/r-cheek-bones-incr": 0.5,
+           "ears/l-ear-scale-decr": 0.4, "ears/r-ear-scale-decr": 0.4}
+
+
+def stylize_shape(count: int) -> np.ndarray:
+    """The "stylize" blendshape over `count` base-mesh vertices (STYLIZE)."""
+    out = np.zeros((count, 3), dtype=np.float32)
+    for name, weight in STYLIZE.items():
+        idx, delta = read_target(TARGET_DIR / f"{name}.target")
+        keep = idx < count
+        out[idx[keep]] += weight * delta[keep]
+    return out
+
+
 def load_targets():
     """Every face target as (name, vertex indices, offsets)."""
     global _targets
