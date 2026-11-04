@@ -550,6 +550,16 @@ TOON_LIP_LINE = 0.006
 TOON_BLUSH = (0.09, 0.22)
 TOON_LASH_RGB = (38, 28, 26)
 TOON_CHEEKS = (205, 425)                    # MediaPipe ids at the middle of each cheek
+# The painted styles' skin this much more saturated than the photo's (L*a*b*
+# chroma): the reference cartoon avatar's cheeks read a*/b* 19-24 / 28-29
+# against its photo's 12 / 16, and ours, at the photo's, rendered grey.
+STYLE_CHROMA = 1.9
+# The stylized paint keeps this share of the photo's large-scale tone (blurred
+# over this share of the face's width): the example photo, lit from above,
+# painted a pale forehead over a dark orange chin, where the reference is one
+# tone and the studio's light gives the volume.
+STYLE_FLATTEN = (0.12, 0.3)
+STYLE_LOWER_LIP = 0.15                      # the stylized paint's lower lip this much darker
 # A beard is drawn where it covers this share of the jaw, a moustache this
 # share of the zone between nose and upper lip (beard_cover): real ones read
 # 0.62 / 0.96 (p01), 0.61 jaw (p08), 0.80 moustache (p05); a shadowed jaw on a
@@ -583,9 +593,39 @@ def stylized_skin(skin_rgb: np.ndarray, photo_rgb: np.ndarray, bare: np.ndarray,
         to_linear(median_colour(photo_rgb[(cheeks > 0) & bare])[None, :])[0], 1e-4)
     gain = np.clip(gain, 0.4, 1.5)
     smooth = to_srgb(to_linear(np.ascontiguousarray(skin_rgb[..., :3])) * gain).astype(np.uint8)
+    px = np.array([[lm.x * w, lm.y * h] for lm in landmarks[:468]])
+    face_w = float(np.ptp(px[:, 0]))
+    blur = lambda x: cv2.GaussianBlur(x, (0, 0), max(STYLE_FLATTEN[0] * face_w, 1.0))
+    # Over the whole face, not `bare`: a beard reading (the example's shadowed
+    # jaw) left the lower face out and its darkness in. Eyes, brows and lips
+    # out, which would leave a light halo round each.
+    weight = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(weight, cv2.convexHull(np.round(px).astype(np.int32)), 1)
+    for ids in (*EYE_CONTOURS, *BROWS, OUTER_LIPS):
+        cv2.fillPoly(weight, [cv2.convexHull(np.round(px[list(ids)]).astype(np.int32))], 0)
+    weight = weight.astype(np.float32)
+    large = blur(smooth.astype(np.float32) * weight[..., None]) / np.maximum(blur(weight), 1e-3)[..., None]
+    tone = median_colour(smooth[bare]).astype(np.float32)
+    smooth = smooth - (1.0 - STYLE_FLATTEN[1]) * (large - tone)
+    # Outside the face's outline the one tone: the photo sheet reaches past
+    # the chin, and painted the example's hoodie and headphones on the neck.
+    inside = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(inside, cv2.convexHull(np.round(px).astype(np.int32)), 1)
+    inside = cv2.GaussianBlur(cv2.erode(inside, np.ones((3, 3), np.uint8), iterations=max(int(0.02 * face_w), 1)).astype(np.float32),
+                              (0, 0), max(0.03 * face_w, 1.0))[..., None]
+    smooth = np.clip(smooth * inside + tone * (1.0 - inside), 0, 255).astype(np.uint8)
     for _ in range(2):
         smooth = cv2.edgePreservingFilter(smooth, flags=cv2.RECURS_FILTER, sigma_s=60, sigma_r=0.35)
     return smooth, gain
+
+
+def richer(rgb: np.ndarray, chroma: float = STYLE_CHROMA) -> np.ndarray:
+    """sRGB colours (any shape, ... x 3) with their L*a*b* chroma scaled by `chroma`, lightness kept."""
+    rgb = np.asarray(rgb)
+    lab = cv2.cvtColor(np.clip(rgb, 0, 255).astype(np.uint8).reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).astype(np.float64)
+    lab[..., 1:] = 128.0 + (lab[..., 1:] - 128.0) * chroma
+    out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    return out.reshape(rgb.shape).astype(rgb.dtype)
 
 
 def beard_cover(beard: np.ndarray, px: np.ndarray) -> tuple[float, float]:
@@ -688,12 +728,19 @@ def cartoon_face(photo_rgb: np.ndarray, landmarks, skin, beard: np.ndarray | Non
         a = soft(inner > 0, 0.003)
         out = out * (1 - a) + lip * a
         out = out * (1 - 0.18 * soft(upper, 0.003))
+        if base is not None:
+            # Lit (the stylized style), the lower lip faces into the key and
+            # rendered as light as the cheeks (175 against 190; the upper 130):
+            # darker paint and no painted shine, the light gives that.
+            out = out * (1 - STYLE_LOWER_LIP * soft((inner > 0) & ~upper, 0.003))
+    if lips.any() and base is None:
         shine = np.zeros((h, w), np.float32)
         lower_mid = (px[17] + px[14]) / 2
         cv2.ellipse(shine, tuple(int(v) for v in lower_mid), (max(int(0.06 * face_w), 1), max(int(0.015 * face_w), 1)),
                     0, 0, 360, 1.0, -1)
         shine = cv2.GaussianBlur(shine, (0, 0), max(0.012 * face_w, 1.0))[..., None] * 0.18
         out = out * (1 - shine) + np.minimum(out * 1.35, 255) * shine
+    if lips.any():
         line = np.zeros((h, w), np.uint8)
         cv2.polylines(line, [ring(INNER_LIPS)], True, 1, max(int(TOON_LIP_LINE * face_w), 1), cv2.LINE_AA)
         out = out * (1 - 0.45 * soft(line, 0.002))

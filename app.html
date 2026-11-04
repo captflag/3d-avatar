@@ -321,7 +321,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { setupRealism, applyMaterials, applyToon, applyStylized, STYLIZED, idleMotion, gestureMotion, groundAndShadow, visibleBox, chooseHair, chooseGlasses } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, applyToon, applyStylized, STYLIZED, portraitLights, idleMotion, gestureMotion, groundAndShadow, visibleBox, chooseHair, chooseGlasses } from '/lib/scene-setup.js';
 import { assess, getLandmarker, STEADY_FRAMES, LEFT } from '/lib/photo-checks.js';
 
 const $ = (id) => document.getElementById(id);
@@ -615,6 +615,7 @@ async function showAvatar(url) {
   avatar.position.sub(centre);
   scene.add(avatar);
   groundAndShadow(scene, avatar, lights.key);
+  if (style === 'stylized') portraitLights(scene, lights, avatar);
   // What each view must show (width, height), fitted to the screen's shape
   // in frame(): a phone is narrower than it is tall.
   const eye = size.y / 2 - size.y * 0.085;
@@ -622,6 +623,18 @@ async function showAvatar(url) {
     body: { span: [size.x * 1.1, size.y * 1.12], target: new THREE.Vector3(0, 0, 0) },
     face: { span: [size.y * 0.22, size.y * 0.2], target: new THREE.Vector3(0, eye, 0) },
   };
+  // The stylized portrait: head and shoulders, the head about 55% of the
+  // height, the eyes 40% from the top (the reference cartoon avatar), from
+  // the eyes' and the head's own heights (eyes to crown is half the head).
+  if (style === 'stylized') {
+    avatar.updateMatrixWorld(true);
+    const boxOf = (name) => { let b = null; avatar.traverse((o) => { if (!b && o.isMesh && o.material?.name === name) b = new THREE.Box3().setFromObject(o); }); return b; };
+    const eyes = boxOf('eyes'), head = boxOf('head');
+    if (eyes && head) {
+      const eyeY = eyes.getCenter(new THREE.Vector3()).y, high = (2 * (head.max.y - eyeY)) / 0.55;
+      frames.face = { span: [high * 0.75, high], target: new THREE.Vector3(0, eyeY - 0.1 * high, 0) };
+    }
+  }
   resize();
   frame('face');
   hairInfo = info?.hair || null;
@@ -735,14 +748,20 @@ $('moves').addEventListener('click', (e) => {
 $('again1').addEventListener('click', () => go('photo'));
 
 // ---- Step 4: save --------------------------------------------------------------
-/** The avatar as a picture: the whole figure, transparent behind. */
+/** The avatar as a picture: the whole figure, transparent behind (the
+ * stylized style: its portrait, on its backdrop). Drawn at twice the size
+ * and halved, smoother edges than the canvas's own antialiasing. */
 function picture(width = 1200, height = 1600) {
   const keep = { w: canvas.width, h: canvas.height, pos: camera.position.clone(), target: controls.target.clone(), aspect: camera.aspect };
-  renderer.setSize(width, height, false);
+  renderer.setSize((2 * width) / renderer.getPixelRatio(), (2 * height) / renderer.getPixelRatio(), false);
   camera.aspect = width / height; camera.updateProjectionMatrix();
-  frame('body', false);
+  frame(new URLSearchParams(location.search).get('style') === 'stylized' ? 'face' : 'body', false);
   renderer.render(scene, camera);
-  const url = canvas.toDataURL('image/png');
+  const out = Object.assign(document.createElement('canvas'), { width, height });
+  const pen = out.getContext('2d');
+  pen.imageSmoothingQuality = 'high';
+  pen.drawImage(canvas, 0, 0, width, height);
+  const url = out.toDataURL('image/png');
   renderer.setSize(keep.w / renderer.getPixelRatio(), keep.h / renderer.getPixelRatio(), false);
   camera.aspect = keep.aspect; camera.updateProjectionMatrix();
   camera.position.copy(keep.pos); controls.target.copy(keep.target); controls.update();
