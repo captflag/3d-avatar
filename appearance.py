@@ -550,15 +550,23 @@ TOON_LIP_LINE = 0.006
 TOON_BLUSH = (0.09, 0.22)
 TOON_LASH_RGB = (38, 28, 26)
 TOON_CHEEKS = (205, 425)                    # MediaPipe ids at the middle of each cheek
-# The painted styles' skin this much more saturated than the photo's (L*a*b*
-# chroma): the reference cartoon avatar's cheeks read a*/b* 19-24 / 28-29
-# against its photo's 12 / 16, and ours, at the photo's, rendered grey.
+# The painted styles' skin up to this much more saturated than the photo's
+# (L*a*b* chroma): the reference cartoon avatar's cheeks read a*/b* 19-24 /
+# 28-29 against its photo's 12 / 16, and ours, at the photo's, rendered grey.
+# But the paint no more saturated than STYLE_CHROMA_MAX (style_chroma): 1.9x
+# for all rendered the warmer-skinned dev faces orange, cheeks C* 46-50 (p01,
+# p07, p09) against the reference's 36 and the example's 38. The studio
+# renders skin about 1.45x the paint's chroma (example paint 25 -> 38, p01
+# 34 -> 49, p09 29 -> 45).
 STYLE_CHROMA = 1.9
-# The stylized paint keeps this share of the photo's large-scale tone (blurred
-# over this share of the face's width): the example photo, lit from above,
+STYLE_CHROMA_MAX = 26.0
+# The stylized paint keeps a share of the photo's large-scale tone (blurred
+# over [0] of the face's width), [1]: the example photo, lit from above,
 # painted a pale forehead over a dark orange chin, where the reference is one
-# tone and the studio's light gives the volume.
-STYLE_FLATTEN = (0.12, 0.3)
+# tone and the studio's light gives the volume. And [2] of the finer detail
+# under that: all of it kept p02's dark cheek patch, orange spots on p06 and
+# p09 and p03's stubble, none of which the reference has.
+STYLE_FLATTEN = (0.12, 0.3, 0.5)
 STYLE_LOWER_LIP = 0.15                      # the stylized paint's lower lip this much darker
 # A beard is drawn where it covers this share of the jaw, a moustache this
 # share of the zone between nose and upper lip (beard_cover): real ones read
@@ -606,7 +614,7 @@ def stylized_skin(skin_rgb: np.ndarray, photo_rgb: np.ndarray, bare: np.ndarray,
     weight = weight.astype(np.float32)
     large = blur(smooth.astype(np.float32) * weight[..., None]) / np.maximum(blur(weight), 1e-3)[..., None]
     tone = median_colour(smooth[bare]).astype(np.float32)
-    smooth = smooth - (1.0 - STYLE_FLATTEN[1]) * (large - tone)
+    smooth = tone + STYLE_FLATTEN[1] * (large - tone) + STYLE_FLATTEN[2] * (smooth - large)
     # Outside the face's outline the one tone: the photo sheet reaches past
     # the chin, and painted the example's hoodie and headphones on the neck.
     inside = np.zeros((h, w), np.uint8)
@@ -617,6 +625,14 @@ def stylized_skin(skin_rgb: np.ndarray, photo_rgb: np.ndarray, bare: np.ndarray,
     for _ in range(2):
         smooth = cv2.edgePreservingFilter(smooth, flags=cv2.RECURS_FILTER, sigma_s=60, sigma_r=0.35)
     return smooth, gain
+
+
+def style_chroma(skin) -> float:
+    """How much richer() saturates this person's paint (sRGB skin tone
+    `skin`): STYLE_CHROMA, or less if that would take it past STYLE_CHROMA_MAX,
+    but never less saturated than the photo."""
+    lab = cv2.cvtColor(np.uint8(np.clip(skin, 0, 255)).reshape(1, 1, 3), cv2.COLOR_RGB2LAB)[0, 0].astype(np.float64)
+    return float(np.clip(STYLE_CHROMA_MAX / max(np.hypot(lab[1] - 128.0, lab[2] - 128.0), 1.0), 1.0, STYLE_CHROMA))
 
 
 def richer(rgb: np.ndarray, chroma: float = STYLE_CHROMA) -> np.ndarray:

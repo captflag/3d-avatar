@@ -680,6 +680,39 @@ def check_curl_cap():
     print(f"ok  curl cap: crown {top:.2f} dm, sides {side.max():.3f} dm, edge on the skin, uv in 0-1")
 
 
+def check_style_paint():
+    """The cartoon and stylized paint (appearance.cartoon_face) on a photo: a
+    beard map under the gate (TOON_BEARD_AT) draws nothing and a full one is
+    drawn; lips and brows come out darker than the skin; and the stylized
+    skin's saturation stops at STYLE_CHROMA_MAX."""
+    import cv2
+    import appearance as ap
+    from generate import stand_up
+    photo = HERE / "samples" / "portrait.jpg"
+    if not photo.exists():
+        print("skip style paint check: samples/portrait.jpg is missing")
+        return
+    image, found = stand_up(photo)
+    rgb, lm = np.asarray(image), found.face_landmarks[0]
+    h, w = rgb.shape[:2]
+    px = np.array([[l.x * w, l.y * h] for l in lm[:468]])
+    skin = np.array([150.0, 110.0, 90.0])
+    bare = ap.cartoon_face(rgb, lm, skin)
+    faint = ap.cartoon_face(rgb, lm, skin, np.full((h, w), 0.2, np.float32))
+    assert np.array_equal(bare, faint), "a beard map under the gate was drawn"
+    full = ap.cartoon_face(rgb, lm, skin, np.ones((h, w), np.float32))
+    chin = tuple(np.round(px[152] - [0, 0.04 * np.ptp(px[:, 1])]).astype(int))[::-1]
+    assert full[chin].mean() < bare[chin].mean() - 10, "a full beard was not drawn"
+    region = lambda ids: cv2.fillPoly(np.zeros((h, w), np.uint8), [np.round(px[list(ids)]).astype(np.int32)], 1) > 0
+    lips, brows = region(ap.OUTER_LIPS), region(ap.BROWS[0]) | region(ap.BROWS[1])
+    assert bare[lips].mean() < skin.mean() - 10 and bare[brows].mean() < skin.mean() - 10, "lips or brows as light as the skin"
+    warm = np.array([160.0, 120.0, 100.0])
+    k = ap.style_chroma(warm)
+    lab = cv2.cvtColor(np.uint8(ap.richer(warm, k)).reshape(1, 1, 3), cv2.COLOR_RGB2LAB)[0, 0].astype(float)
+    assert 1 < k < ap.STYLE_CHROMA and ap.style_chroma([210, 120, 70]) == 1.0 and abs(np.hypot(lab[1] - 128, lab[2] - 128) - ap.STYLE_CHROMA_MAX) < 3, f"chroma x{k:.2f}"
+    print(f"ok  style paint: beard gated, lips and brows darker than skin, warm skin saturated x{k:.2f} not x{ap.STYLE_CHROMA}")
+
+
 def check_jacket():
     """The jacket outfit: its shirt's four pieces told from the jacket
     (garments.inner_pieces), and its top glossier than its jeans in the
@@ -1962,6 +1995,7 @@ if __name__ == "__main__":
         check_stubble()
         check_curl_cap()
         check_jacket()
+        check_style_paint()
     except AssertionError as err:
         print(f"FAIL  {err}", file=sys.stderr)
         raise SystemExit(1)

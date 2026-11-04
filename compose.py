@@ -1572,7 +1572,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     style_base = delight.to_srgb(delight.to_linear(toon_skin.astype(np.uint8)[None, :]) * style_gain)[0].astype(np.float64)
     # Painted warmer than the photo (appearance.STYLE_CHROMA); the body's tint
     # the same change, so face, ears and neck still match.
-    style_rgb, style_base = appearance.richer(style_rgb), appearance.richer(style_base)
+    chroma = appearance.style_chroma(style_base)
+    style_rgb, style_base = appearance.richer(style_rgb, chroma), appearance.richer(style_base, chroma)
     style_gain = delight.to_linear(style_base) / np.maximum(delight.to_linear(toon_skin), 1e-4)
     style_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces, sampler, face_centre,
                                      face_radius, appearance.cartoon_face(photo_rgb, landmarks, style_base, drawn_beard,
