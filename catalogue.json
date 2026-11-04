@@ -128,6 +128,20 @@
       "licence": "CC0-1.0"
     },
     {
+      "id": "hair_short_curly",
+      "category": "hair",
+      "label": "Short curly",
+      "_why": "A short curly cut (high-top) that no licence-clean pack has: the skull cap thickened on top and given coils (garments.curl_cap), made here.",
+      "group": "body",
+      "y_min": 7.45,
+      "offset": 0.055,
+      "curl": true,
+      "roughness": 0.9,
+      "hairline_lift": 0.15,
+      "colour": "from_photo",
+      "licence": "CC0-1.0 (made in this repository)"
+    },
+    {
       "id": "hair_underlayer",
       "category": "hair",
       "label": "Hair underlayer (worn under a haircut)",

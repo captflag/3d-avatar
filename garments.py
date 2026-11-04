@@ -1515,3 +1515,89 @@ def open_rim(mesh: trimesh.Trimesh, weld: float = 0.03) -> np.ndarray:
         others = [j for j in tree.query_ball_point(mesh.vertices[v], weld) if piece[rim[j]] != piece[v]]
         keep[i] = not others
     return rim[keep]
+
+
+# A short curly cut (a high-top): no licence-clean one exists in the community
+# packs (2026-11, three hair packs; the "afro" is two round buns), so it is the
+# skull cap made thick and given coils. Thickness in dm: CURL_TOP on the crown
+# down to CURL_SIDE by the ears, rising over CURL_RISE (share of the cap's
+# height from its lowest point), and falling to the skin within CURL_EDGE of
+# its hairline, so its edge is a rounded slope and not a hollow wall.
+CURL_TOP = 0.4
+CURL_SIDE = 0.015
+CURL_RISE = (0.5, 0.95)
+CURL_EDGE = 0.22
+CURL_TILE = 1.2         # dm of head per texture tile
+CURL_SIZE = 256         # texture tile, pixels (three across the cap: 768)
+CURL_COILS = 1400       # coils per tile
+
+
+def curl_texture(size: int = CURL_SIZE, coils: int = CURL_COILS, seed: int = 5):
+    """A tileable texture of tight coils: (grey RGB as PIL, normal map as PIL).
+
+    Each coil a short arc at a random place and angle, drawn on all nine
+    tiled copies so the tile repeats without a seam. Grey averaging about
+    skinned_glb.HAIR_GREY, so the hair colour (its material factor) tints it;
+    the coils' tops a little warmer, the hair's highlight.
+    """
+    import cv2
+    from PIL import Image
+    rng = np.random.default_rng(seed)
+    height = np.zeros((size, size), np.float32)
+    for _ in range(coils):
+        x, y = rng.uniform(0, size, 2)
+        r = rng.uniform(0.012, 0.022) * size
+        start = rng.uniform(0, 360)
+        for dx in (-size, 0, size):
+            for dy in (-size, 0, size):
+                cv2.ellipse(height, (int(x + dx), int(y + dy)), (int(r), int(r * 0.8)), start, 0, 250,
+                            float(rng.uniform(0.6, 1.0)), max(int(0.006 * size), 1), cv2.LINE_AA)
+    # In clumps, as coils grow: a tileable low-frequency field (blurred noise, wrapped).
+    clump = cv2.GaussianBlur(np.tile(rng.random((size, size)).astype(np.float32), (3, 3)), (0, 0), 0.03 * size)
+    clump = clump[size:2 * size, size:2 * size]
+    clump = (clump - clump.min()) / max(float(np.ptp(clump)), 1e-6)
+    height = cv2.GaussianBlur(height, (0, 0), 0.8) * (0.55 + 0.45 * clump)
+    height = np.clip(height / max(float(np.percentile(height, 99)), 1e-3), 0, 1)
+    shade = (0.55 + 0.75 * height)[..., None]
+    warm = np.array([1.0, 0.97, 0.9]) ** height[..., None]      # warmer towards the tops
+    rgb = np.clip(200.0 * shade / shade.mean() * warm, 0, 255).astype(np.uint8)
+    return Image.fromarray(rgb, "RGB"), strand_normals(rgb, depth=3.0)
+
+
+def curl_cap(cap: trimesh.Trimesh) -> trimesh.Trimesh:
+    """The skull cap (catalogue's hair_short, cut to its hairline) made a short
+    curly cut: thickened along its normals (CURL_*), with texture coordinates
+    projected from the crown (no seam, no pole) over curl_texture's tile."""
+    from PIL import Image
+    from scipy.spatial import cKDTree
+    v = np.asarray(cap.vertices, dtype=np.float64)
+    normals = np.asarray(cap.vertex_normals, dtype=np.float64)
+    low, top = v[:, 1].min(), v[:, 1].max()
+    rise = np.clip((((v[:, 1] - low) / max(top - low, 1e-6)) - CURL_RISE[0]) / (CURL_RISE[1] - CURL_RISE[0]), 0, 1)
+    thick = CURL_SIDE + (CURL_TOP - CURL_SIDE) * rise * rise * (3 - 2 * rise)
+    unique, counts = np.unique(cap.edges_sorted, axis=0, return_counts=True)
+    rim = np.unique(unique[counts == 1])
+    if len(rim):
+        edge = np.clip(cKDTree(v[rim]).query(v)[0] / CURL_EDGE, 0, 1)
+        thick = thick * edge * edge * (3 - 2 * edge)
+    out = trimesh.Trimesh(vertices=v + normals * thick[:, None], faces=cap.faces, process=False)
+    out.metadata.update(cap.metadata)
+    # Azimuthal equidistant about the crown: angle from straight up times the
+    # head's radius, in the direction round it.
+    centre = np.array([v[:, 0].mean(), low, v[:, 2].mean()])
+    d = v - centre
+    radius = float(np.linalg.norm(d, axis=1).mean())
+    d /= np.linalg.norm(d, axis=1, keepdims=True)
+    polar = np.arccos(np.clip(d[:, 1], -1, 1)) * radius / CURL_TILE
+    around = np.arctan2(d[:, 2], d[:, 0])
+    uv = np.column_stack([polar * np.cos(around), polar * np.sin(around)])
+    # In tiles; the file keeps texture coordinates within 0-1, so the tile
+    # is repeated in the texture itself, as many times as the cap spans.
+    uv -= uv.min(axis=0)
+    tiles = int(np.ceil(uv.max()))
+    out.metadata["uv"] = uv / tiles
+    out.metadata["texture"], out.metadata["normal_texture"] = (
+        Image.fromarray(np.tile(np.asarray(image), (tiles, tiles, 1))) for image in curl_texture())
+    out.metadata["thickness"] = thick
+    return out
+

@@ -1817,13 +1817,21 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     if tint is None:
         tint = dye_colour(hair_rgb if hair_rgb is not None else HAIR_FALLBACK)
     hair_options = [item for item in items_by_id().values()
-                    if item["category"] == "hair" and "mhclo" in item and item["id"] != shown]
+                    if item["category"] == "hair" and ("mhclo" in item or item.get("curl")) and item["id"] != shown]
     for item in hair_options:
-        mesh = build_item(item, np.full(3, skinned_glb.HAIR_GREY), vertices)
+        if item.get("curl"):
+            # Made, not loaded: the skull cap to this head's hairline, thickened and coiled.
+            cut = {**item, "hairline": hairline_for(placed, vertices, groups, float(item.get("hairline_lift", 0.0)))}
+            cut.pop("y_min", None)
+            mesh = garments.curl_cap(build_item(cut, np.full(3, skinned_glb.HAIR_GREY), vertices))
+        else:
+            mesh = build_item(item, np.full(3, skinned_glb.HAIR_GREY), vertices)
         parts.append(rigged_part(item["id"], mesh, item.get("roughness", ROUGHNESS.get("hair", 0.8)), vertices,
                                  groups, joints, weights, len(skeleton)))
         parts[-1].morphs = expression_morphs(mesh, face_shapes)
-        parts[-1].anisotropy = HAIR_ANISOTROPY
+        if not item.get("curl"):
+            # Strands' highlight; coils have none (it drew streaks across them).
+            parts[-1].anisotropy = HAIR_ANISOTROPY
         parts[-1].base_colour = skinned_glb.hair_factor(tint)
 
     # Glasses, every pair fitted to this head and hidden, as the haircuts: the

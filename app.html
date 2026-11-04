@@ -624,15 +624,16 @@ async function showAvatar(url) {
     face: { span: [size.y * 0.22, size.y * 0.2], target: new THREE.Vector3(0, eye, 0) },
   };
   // The stylized portrait: head and shoulders, the head about 55% of the
-  // height, the eyes 40% from the top (the reference cartoon avatar), from
-  // the eyes' and the head's own heights (eyes to crown is half the head).
+  // height, the eyes 45% from the top (the reference cartoon avatar: 40%,
+  // and its hair to the frame's top; ours stands up to 4 cm, garments.CURL_TOP),
+  // from the eyes' and the head's own heights (eyes to crown is half the head).
   if (style === 'stylized') {
     avatar.updateMatrixWorld(true);
     const boxOf = (name) => { let b = null; avatar.traverse((o) => { if (!b && o.isMesh && o.material?.name === name) b = new THREE.Box3().setFromObject(o); }); return b; };
     const eyes = boxOf('eyes'), head = boxOf('head');
     if (eyes && head) {
       const eyeY = eyes.getCenter(new THREE.Vector3()).y, high = (2 * (head.max.y - eyeY)) / 0.55;
-      frames.face = { span: [high * 0.75, high], target: new THREE.Vector3(0, eyeY - 0.1 * high, 0) };
+      frames.face = { span: [high * 0.75, high], target: new THREE.Vector3(0, eyeY - 0.05 * high, 0) };
     }
   }
   resize();

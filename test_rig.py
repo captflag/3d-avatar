@@ -658,6 +658,28 @@ def check_hair_tangents():
           f"{np.percentile(turn, 99):.0f} degrees along a card edge")
 
 
+def check_curl_cap():
+    """The made short curly cut (garments.curl_cap) on a dome: thicker on the
+    crown than at the sides, down to the skin at its edge, its texture
+    coordinates inside 0-1 (the file clamps them) and its texture tiled."""
+    import trimesh
+    from garments import CURL_SIDE, CURL_TOP, curl_cap
+    sphere = trimesh.creation.icosphere(subdivisions=3, radius=0.9)
+    dome = sphere.submesh([np.where(sphere.triangles_center[:, 1] > 0.0)[0]], append=True)
+    dome.metadata["base_index"] = np.arange(len(dome.vertices))
+    cap = curl_cap(dome)
+    thick = cap.metadata["thickness"]
+    v = np.asarray(dome.vertices)
+    top, side = thick[v[:, 1].argmax()], thick[(v[:, 1] < 0.35) & (v[:, 1] > 0.25)]
+    assert top > 0.9 * CURL_TOP, f"crown {top:.3f}"
+    assert side.max() <= CURL_SIDE + 1e-6, f"sides {side.min():.3f}-{side.max():.3f}"
+    assert thick[v[:, 1] < 0.02].max() < 0.01, "edge stands off the skin"
+    uv = cap.metadata["uv"]
+    assert uv.min() >= 0 and uv.max() <= 1 and np.ptp(uv) > 0.5, f"uv {uv.min():.2f}-{uv.max():.2f}"
+    assert cap.metadata["texture"].size[0] > 256 and "base_index" in cap.metadata
+    print(f"ok  curl cap: crown {top:.2f} dm, sides {side.max():.3f} dm, edge on the skin, uv in 0-1")
+
+
 def check_hair_cap():
     """A haircut's avatar carries a blended cap under the cards: in the
     hair's root shade, above the brows only, its alpha smooth (not a
@@ -1577,9 +1599,10 @@ def check_review_fixes():
             assert size == (2048, 2048), f"{part} skin texture is {size}, not 2048"
         cloth = [m for m in gltf.materials if m.name.startswith("outfit")]
         assert cloth and all("KHR_materials_sheen" in m.extensions for m in cloth), "cloth has no sheen"
+        # Strands catch a band of light; the made curly cut's coils have relief only.
         hair = [m for m in gltf.materials if m.name.startswith("hair_")]
-        assert hair and all("KHR_materials_anisotropy" in m.extensions and m.normalTexture for m in hair), \
-            "hair has no strand highlight or relief"
+        assert hair and all(("KHR_materials_anisotropy" in m.extensions or m.name == "hair_short_curly")
+                            and m.normalTexture for m in hair), "hair has no strand highlight or relief"
     print(f"ok  review fixes: forearm leans {off_vertical:.0f} deg forward, smile not taken as mouth shape, neck kept")
 
 
@@ -1917,6 +1940,7 @@ if __name__ == "__main__":
         check_brows()
         check_details()
         check_stubble()
+        check_curl_cap()
     except AssertionError as err:
         print(f"FAIL  {err}", file=sys.stderr)
         raise SystemExit(1)
