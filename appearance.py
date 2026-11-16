@@ -33,6 +33,10 @@ HAIR, BODY_SKIN, FACE_SKIN, CLOTHES = 1, 2, 3, 4
 
 _segmenter = None
 _segmenter_lock = threading.Lock()
+# SAM 2.1 small (Apache-2.0), from the Hugging Face cache: refine_hair.
+HAIR_REFINER = "facebook/sam2.1-hiera-small"
+_refiner = None
+_refiner_lock = threading.Lock()
 
 # What a healthy sclera measures, as LAB a*, b* offsets from neutral.
 NATURAL_WHITE = np.array([1.0, 4.0])
@@ -225,6 +229,58 @@ def segment(photo_rgb: np.ndarray) -> np.ndarray | None:
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(photo_rgb[..., :3]))
         mask = _segmenter.segment(image).category_mask.numpy_view()
     return np.array(mask).reshape(photo_rgb.shape[:2])
+
+
+def refine_hair(photo_rgb: np.ndarray, parts: np.ndarray | None) -> np.ndarray | None:
+    """`parts` (segment) with its hair redrawn at the photo's own resolution by
+    SAM 2.1 small, prompted from it: points well inside its hair, and inside
+    the face's skin and the background as not hair. MediaPipe's segmenter works
+    at 256 px: on the dev faces it left gaps between a fringe's strands (p09),
+    ran the hair down the temples to the ears where it was skin (the example)
+    and painted a band over bald scalp (p03). It gains hair only where the
+    segmenter saw background (taken from skin too, the ears' and neck's, the
+    skin's smoothing moved and p01's mouth read 0.7% off); hair it drops
+    becomes background. As it is
+    without SAM 2 in the Hugging Face cache, or with no hair to prompt from.
+    About 2 s on the CPU."""
+    global _refiner
+    if parts is None or not (parts == HAIR).any():
+        return parts
+    try:
+        import torch
+        from transformers import Sam2Model, Sam2Processor
+        with _refiner_lock:
+            if _refiner is None:
+                _refiner = (Sam2Processor.from_pretrained(HAIR_REFINER, local_files_only=True),
+                            Sam2Model.from_pretrained(HAIR_REFINER, local_files_only=True).eval())
+    except Exception as err:            # no transformers, torchvision or model: MediaPipe's mask
+        print(f"refine_hair: {HAIR_REFINER} not available ({type(err).__name__}); keeping the segmenter's hair")
+        return parts
+    processor, model = _refiner
+    from PIL import Image
+    h, w = parts.shape
+    rng = np.random.default_rng(0)
+    inset = max(int(0.01 * max(h, w)), 2)
+
+    def inside(mask, n):
+        core = cv2.erode(mask.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=inset) > 0
+        ys, xs = np.nonzero(core)
+        pick = rng.choice(len(ys), size=min(n, len(ys)), replace=False) if len(ys) else []
+        return [[float(xs[i]), float(ys[i])] for i in pick]
+
+    hair, other = inside(parts == HAIR, 8), inside(parts == FACE_SKIN, 4) + inside(parts == 0, 4)
+    if not hair:
+        return parts
+    inputs = processor(images=Image.fromarray(np.ascontiguousarray(photo_rgb[..., :3])), input_points=[[hair + other]],
+                       input_labels=[[[1] * len(hair) + [0] * len(other)]], return_tensors="pt")
+    with torch.no_grad():
+        out = model(**inputs, multimask_output=True)
+    masks = processor.post_process_masks(out.pred_masks.cpu(), inputs["original_sizes"])[0][0]
+    sam = masks[int(out.iou_scores[0, 0].argmax())].numpy() > 0
+    refined = parts.copy()
+    refined[(parts == HAIR) & ~sam] = 0
+    refined[sam & (parts == 0)] = HAIR
+    return refined
 
 
 # Heights above the brows, in eye spacings, at which the hair's width is read

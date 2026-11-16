@@ -1290,7 +1290,7 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     skin_rgb = appearance.darken_beard(skin_rgb, facial_hair, landmarks)
     # Smooth, even skin: no freckles, pores, spots or light's patches
     # (appearance.smooth_skin); eyes, brows, lips and beard as the photo has them.
-    parts = appearance.segment(photo_rgb)
+    parts = appearance.refine_hair(photo_rgb, appearance.segment(photo_rgb))
     skin_rgb, photo_glasses = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair)
     # And the cheeks at the photo's colour once all that is done (delight.match_colour).
     skin_rgb, colour_gains = delight.match_colour(skin_rgb, photo_rgb, landmarks, exclude=facial_hair)
@@ -1819,6 +1819,13 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     shown = next((item["id"] for item, _ in worn if item["category"] == "hair" and "mhclo" in item), None)
     tint = next((m.metadata["tint"] for item, m in worn if item["category"] == "hair"
                  and m.metadata.get("tint") is not None), None)
+    if tint is None and hair_rgb is None and hair_reading and hair_reading.get("colour") is not None:
+        # Built bald (as the studio builds), the picker's cuts still in the
+        # photo's hair colour: they were all the stock brown, grey and white
+        # hair too (read_hair read p06's 183 176 168).
+        hair_rgb = hair_reading["colour"]
+        if hair_colour_hint:
+            hair_rgb = photo_check.within_colour(hair_rgb, hair_colour_hint)
     if tint is None:
         tint = dye_colour(hair_rgb if hair_rgb is not None else HAIR_FALLBACK)
     hair_options = [item for item in items_by_id().values()
