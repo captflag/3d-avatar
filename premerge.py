@@ -29,7 +29,7 @@ PRIVATE_FOLDERS = ("uploads/", "out/", "assets/", "samples/", "data/", "graphify
 PRIVATE_TYPES = re.compile(r"\.(jpe?g|jfif|jpe|png|webp|bmp|gif|heic|tiff?|glb|gltf|obj|mhclo|fbx|onnx|task"
                            r"|tflite|npz|npy|pt|pth|ckpt|safetensors|zip|7z|tar|gz)$", re.I)
 SHARED_FOLDER = "lib/"
-SCORING = {"score_run.py", "shape_model.py", "identity_score.py"}
+SCORING = {"score_run.py", "shape_model.py", "identity_score.py", "style_score.py"}
 ASSET_FREE = ["test_photo_check.py", "test_score_run.py"]
 
 
