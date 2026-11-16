@@ -564,9 +564,13 @@ STYLE_CHROMA_MAX = 26.0
 # over [0] of the face's width), [1]: the example photo, lit from above,
 # painted a pale forehead over a dark orange chin, where the reference is one
 # tone and the studio's light gives the volume. And [2] of the finer detail
-# under that: all of it kept p02's dark cheek patch, orange spots on p06 and
-# p09 and p03's stubble, none of which the reference has.
-STYLE_FLATTEN = (0.12, 0.3, 0.5)
+# under that, in lightness only: the person is in it (style_score.py, dev
+# faces' SFace: 0.122 with half of it, colour too, and an edge-preserving
+# filter; in lightness only 0.148 with half, 0.181 with three quarters, 0.186
+# with all), and in colour it came back as orange blotches (p02's cheek
+# patch, p06's and p09's freckles) once saturated. Three quarters: nearly all
+# the person, a quarter less of the wrinkles and scars.
+STYLE_FLATTEN = (0.12, 0.3, 0.75)
 STYLE_LOWER_LIP = 0.15                      # the stylized paint's lower lip this much darker
 # A beard is drawn where it covers this share of the jaw, a moustache this
 # share of the zone between nose and upper lip (beard_cover): real ones read
@@ -582,10 +586,10 @@ TOON_UPPER_LIP = [291, 409, 270, 269, 267, 0, 37, 39, 40, 185, 61, 78, 191, 80, 
 
 
 def stylized_skin(skin_rgb: np.ndarray, photo_rgb: np.ndarray, bare: np.ndarray, landmarks) -> tuple[np.ndarray, np.ndarray]:
-    """The skin as a stylized 3D character paints it: the photo's own tones and
-    broad shading, with pores, blemishes and fine wrinkles gone, by an
-    edge-preserving filter (OpenCV's, recursive), so the nose's and cheeks'
-    shading keep their edges. Scaled (linear, per channel) by the photo's skin
+    """The skin as a stylized 3D character paints it: one even colour with the
+    photo's broad lighting mostly taken out (STYLE_FLATTEN), and the photo's
+    finer detail kept in lightness only, which is where the person is. Scaled
+    (linear, per channel) by the photo's skin
     over the whole face (`bare`) against its cheek patches: the skin is matched
     to render as the cheeks do (delight.match_colour), and where they carry
     a highlight (the example photo's at 230 193 170) the whole face rendered
@@ -612,19 +616,19 @@ def stylized_skin(skin_rgb: np.ndarray, photo_rgb: np.ndarray, bare: np.ndarray,
     for ids in (*EYE_CONTOURS, *BROWS, OUTER_LIPS):
         cv2.fillPoly(weight, [cv2.convexHull(np.round(px[list(ids)]).astype(np.int32))], 0)
     weight = weight.astype(np.float32)
-    large = blur(smooth.astype(np.float32) * weight[..., None]) / np.maximum(blur(weight), 1e-3)[..., None]
-    tone = median_colour(smooth[bare]).astype(np.float32)
-    smooth = tone + STYLE_FLATTEN[1] * (large - tone) + STYLE_FLATTEN[2] * (smooth - large)
+    lab = cv2.cvtColor(smooth, cv2.COLOR_RGB2LAB).astype(np.float32)
+    large = blur(lab * weight[..., None]) / np.maximum(blur(weight), 1e-3)[..., None]
+    tone = cv2.cvtColor(median_colour(smooth[bare]).reshape(1, 1, 3), cv2.COLOR_RGB2LAB).astype(np.float32)[0, 0]
+    out = tone + STYLE_FLATTEN[1] * (large - tone)
+    out[..., 0] += STYLE_FLATTEN[2] * (lab[..., 0] - large[..., 0])
     # Outside the face's outline the one tone: the photo sheet reaches past
     # the chin, and painted the example's hoodie and headphones on the neck.
     inside = np.zeros((h, w), np.uint8)
     cv2.fillConvexPoly(inside, cv2.convexHull(np.round(px).astype(np.int32)), 1)
     inside = cv2.GaussianBlur(cv2.erode(inside, np.ones((3, 3), np.uint8), iterations=max(int(0.02 * face_w), 1)).astype(np.float32),
                               (0, 0), max(0.03 * face_w, 1.0))[..., None]
-    smooth = np.clip(smooth * inside + tone * (1.0 - inside), 0, 255).astype(np.uint8)
-    for _ in range(2):
-        smooth = cv2.edgePreservingFilter(smooth, flags=cv2.RECURS_FILTER, sigma_s=60, sigma_r=0.35)
-    return smooth, gain
+    out = np.clip(out * inside + tone * (1.0 - inside), 0, 255).astype(np.uint8)
+    return cv2.cvtColor(out, cv2.COLOR_LAB2RGB), gain
 
 
 def style_chroma(skin) -> float:
