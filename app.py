@@ -271,6 +271,52 @@ def index():
     return send_from_directory(HERE, "app.html")
 
 
+# The people lineup test (lineup.py): this PC only, as the test photos' consent requires.
+LINEUP_VARIANT = "st3"      # the stylized portraits it shows (style_score.py's renders)
+
+
+@app.get("/lineup")
+def lineup_page():
+    return send_from_directory(HERE, "lineup.html")
+
+
+@app.get("/lineup/trials")
+def lineup_trials():
+    import random
+    import lineup
+    variant = request.args.get("variant", LINEUP_VARIANT)
+    if not re.fullmatch(r"[\w.-]+", variant):
+        abort(400)
+    seed = int(request.args["seed"]) if request.args.get("seed", "").isdigit() else random.randrange(1 << 30)
+    return jsonify(variant=variant, seed=seed, rounds=lineup.trials(lineup.people(variant), seed))
+
+
+@app.get("/lineup/img/<kind>/<name>")
+def lineup_image(kind: str, name: str):
+    import lineup
+    variant = request.args.get("variant", LINEUP_VARIANT)
+    data = lineup.image(kind, name, variant) if re.fullmatch(r"[\w.-]+", variant) else None
+    if data is None:
+        abort(404)
+    return app.response_class(data, mimetype="image/jpeg")
+
+
+@app.post("/lineup/answer")
+def lineup_answer():
+    import lineup
+    answer = request.get_json(silent=True) or {}
+    if not all(isinstance(answer.get(k), str) for k in ("session", "variant", "person", "picked")):
+        abort(400)
+    lineup.record(answer)
+    return jsonify(ok=True)
+
+
+@app.get("/lineup/results")
+def lineup_results():
+    import lineup
+    return jsonify(lineup.results(request.args.get("variant")))
+
+
 @app.get("/studio")
 def studio():
     """The team's testing studio: every option, the photo checks' numbers,

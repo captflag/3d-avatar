@@ -1996,6 +1996,7 @@ if __name__ == "__main__":
         check_curl_cap()
         check_jacket()
         check_style_paint()
+        __import__("lineup").check()
     except AssertionError as err:
         print(f"FAIL  {err}", file=sys.stderr)
         raise SystemExit(1)

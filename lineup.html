@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avatar lineup</title>
+<style>
+  :root { --bg:#0e1017; --panel:#161a24; --line:#2a3040; --text:#eef1f7; --muted:#9aa3b5; --accent:#7aa7ff; --ok:#4fd18b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  p { color:var(--muted); margin:0 0 16px; }
+  .round { display:grid; grid-template-columns:minmax(200px, 280px) 1fr; gap:24px; align-items:start; }
+  .avatar, .choice { background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+  .avatar img, .choice img { display:block; width:100%; aspect-ratio:3/4; object-fit:cover; background:#000; }
+  .label { padding:8px 12px; font-weight:600; }
+  .choices { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; }
+  .choice { cursor:pointer; color:inherit; padding:0; text-align:left; font:inherit; }
+  .choice:hover, .choice:focus-visible { border-color:var(--accent); outline:none; }
+  .progress { height:6px; background:var(--panel); border-radius:99px; margin:0 0 20px; overflow:hidden; }
+  .progress div { height:100%; background:var(--accent); width:0; transition:width .3s; }
+  .done { text-align:center; padding:48px 16px; }
+  .score { font-size:40px; font-weight:700; color:var(--ok); }
+  button.primary { background:var(--accent); color:#0b0d12; border:0; border-radius:99px; padding:10px 20px; font:inherit; font-weight:600; cursor:pointer; }
+  [hidden] { display:none !important; }
+  @media (max-width:720px) { .round { grid-template-columns:1fr; } .choices { grid-template-columns:repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Who is this?</h1>
+  <p>Each picture is a stylized avatar of one of the four people beside it. Pick the person it was made from: click, or press 1 to 4. Go with your first impression.</p>
+  <div class="progress" aria-hidden="true"><div id="bar"></div></div>
+  <section id="round" class="round" hidden>
+    <div class="avatar"><img id="avatar" alt="The avatar to match"><div class="label" id="count"></div></div>
+    <div class="choices" id="choices" role="group" aria-label="The four people"></div>
+  </section>
+  <section id="done" class="done" hidden>
+    <div>You picked the right person</div>
+    <div class="score" id="score"></div>
+    <p id="chance"></p>
+    <button class="primary" id="again" type="button">Another round</button>
+  </section>
+</main>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const session = Math.random().toString(36).slice(2, 10);
+let data, k = 0, right = 0, shown = 0;
+
+async function start() {
+  const variant = new URLSearchParams(location.search).get('variant');
+  data = await (await fetch('/lineup/trials' + (variant ? `?variant=${encodeURIComponent(variant)}` : ''))).json();
+  k = right = 0;
+  $('done').hidden = true; $('round').hidden = false;
+  show();
+}
+
+function img(kind, name) { return `/lineup/img/${kind}/${encodeURIComponent(name)}?variant=${encodeURIComponent(data.variant)}`; }
+
+function show() {
+  const round = data.rounds[k];
+  $('bar').style.width = `${(100 * k) / data.rounds.length}%`;
+  $('count').textContent = `${k + 1} of ${data.rounds.length}`;
+  $('avatar').src = img('avatar', round.person);
+  $('choices').replaceChildren(...round.options.map((name, i) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'choice'; b.dataset.name = name;
+    b.setAttribute('aria-label', `Person ${i + 1}`);
+    b.append(Object.assign(document.createElement('img'), { src: img('photo', name), alt: '' }),
+             Object.assign(document.createElement('div'), { className: 'label', textContent: `${i + 1}` }));
+    b.addEventListener('click', () => pick(name));
+    return b;
+  }));
+  shown = performance.now();
+}
+
+async function pick(name) {
+  const round = data.rounds[k];
+  if (name === round.person) right += 1;
+  await fetch('/lineup/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session, variant: data.variant, person: round.person, picked: name,
+                           ms: Math.round(performance.now() - shown) }) });
+  k += 1;
+  if (k < data.rounds.length) return show();
+  $('bar').style.width = '100%';
+  $('round').hidden = true; $('done').hidden = false;
+  $('score').textContent = `${right} of ${data.rounds.length}`;
+  $('chance').textContent = `Guessing would get about ${(data.rounds.length / 4).toFixed(1)} right.`;
+}
+
+document.addEventListener('keydown', (e) => {
+  if ($('round').hidden) return;
+  const i = Number(e.key) - 1;
+  const b = $('choices').children[i];
+  if (b) pick(b.dataset.name);
+});
+$('again').addEventListener('click', start);
+start();
+</script>
+</body>
+</html>
