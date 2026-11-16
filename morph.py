@@ -147,15 +147,30 @@ def read_target(path: pathlib.Path) -> tuple[np.ndarray, np.ndarray]:
     return np.array(idx, dtype=np.int64), np.array(delta, dtype=np.float64).reshape(-1, 3)
 
 
-# The stylized style's head (the reference cartoon avatar: a tapering jaw,
-# defined cheekbones, smaller ears), MakeHuman's own targets at these weights,
-# carried in every file as the "stylize" blendshape at 0 and turned on only
-# by the studio's stylized style (STYLIZED.shapes). On the base head, at
-# weight 1: the inverted triangle narrows the jaw 14 mm, head-fat-decr the
-# cheeks 9, each cheekbone target widens the cheekbones 7; this mix, the jaw
-# 5-7 mm narrower (91 -> 86 mm), the cheekbones 5-6 mm wider (116 -> 121).
-STYLIZE = {"head/head-invertedtriangular": 0.5, "head/head-fat-decr": 0.3, "chin/chin-width-decr": 0.5,
-           "cheek/l-cheek-bones-incr": 0.5, "cheek/r-cheek-bones-incr": 0.5,
+# The stylized style's head: MakeHuman's own targets at these weights, carried
+# in every file as the "stylize" blendshape at 0 and turned on only by the
+# studio's stylized style (STYLIZED.shapes). Solved (bounded least squares on
+# the base mesh, in the front view through the landmarks' front skin) so its
+# proportions move as the reference cartoon avatar's move from its photo
+# (style_score.IDEAL): eyes opened half again, lips thinner, mouth, nose and
+# face shorter or narrower, brows nearer the eyes, the jaw kept. Solved twice,
+# the second time against what the first left short in the 8 dev faces'
+# stylized portraits (style_score.py). There, against the photo: eye opening
+# 1.04 -> 1.39 (reference 1.53), lip height 1.05 -> 0.80 (0.75), face height
+# 0.99 -> 0.91 (0.91), mouth 0.96 -> 0.91 (0.90), nose 1.01 -> 0.94 (0.91),
+# brows 1.05 -> 0.95 (0.89); the jaw not (0.93 against 0.985: no target widens
+# it as MediaPipe reads it). Identity held: SFace 0.165 with or without it,
+# dlib 0.69-0.70. The by-eye shape before it (a tapered jaw, wider cheekbones)
+# narrowed the jaw the reference keeps and moved nothing else.
+STYLIZE = {"eyes/l-eye-height1-incr": 0.141, "eyes/r-eye-height1-incr": 0.141,
+           "eyes/l-eye-height2-incr": 1.0, "eyes/r-eye-height2-incr": 1.0,
+           "eyes/l-eye-height3-incr": 1.0, "eyes/r-eye-height3-incr": 1.0,
+           "eyes/l-eye-scale-incr": 0.358, "eyes/r-eye-scale-incr": 0.358,
+           "mouth/mouth-upperlip-height-decr": 0.233, "mouth/mouth-lowerlip-height-decr": 0.391,
+           "mouth/mouth-scale-horiz-decr": 0.617, "mouth/mouth-scale-vert-decr": 0.51,
+           "nose/nose-scale-horiz-decr": 0.43, "nose/nose-nostrils-width-decr": 0.203,
+           "nose/nose-scale-vert-decr": 0.418, "chin/chin-height-decr": 0.677,
+           "head/head-scale-vert-decr": 0.135, "forehead/forehead-scale-vert-decr": 0.104,
            "ears/l-ear-scale-decr": 0.4, "ears/r-ear-scale-decr": 0.4}
 
 
