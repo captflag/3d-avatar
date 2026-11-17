@@ -97,8 +97,16 @@ def skin_tone_lab(rgb: np.ndarray, pixels: np.ndarray) -> np.ndarray:
 
 # --------------------------------------------------------------- sampler -----
 
-# Share of the sheet's fade band (0.18 of the face's width) over which a kept
-# beard fades out at the sheet's edge: about 6% of the face.
+# The band at the sheet's edge over which the photo fades into generated skin,
+# as a share of the face's width. 0.18 until 2026-11-17: the outer fifth of
+# the face on every side was mostly generated skin, for a photo whose tone the
+# skin round it did not match. The skin is the photo's own now and the
+# generated skin takes its tone from this band (compose), and the fade wiped
+# the jawline, the cheeks' edges and any beard the keep map missed: identity
+# at the pose 0.572 at 0.18, 0.586 at 0.08, 0.596 at 0.04, dlib 0.388, 0.367,
+# 0.361 (8 dev faces, without the refine pass; no face worse at 0.04).
+FADE_BAND = 0.04
+# Share of that band over which a kept beard fades out at the sheet's edge.
 KEEP_EDGE = 0.35
 
 
@@ -152,7 +160,7 @@ class FaceSampler:
         # fade that leaves no edge.
         width = np.ptp(xy[:, 0])
         from_border = np.linalg.norm(xy[:, None, :] - xy[border][None, :, :], axis=2).min(axis=1)
-        self._inside = LinearNDInterpolator(xy, np.clip(from_border / (0.18 * width), 0.0, 1.0))
+        self._inside = LinearNDInterpolator(xy, np.clip(from_border / (FADE_BAND * width), 0.0, 1.0))
         self.depth_tolerance = depth_tolerance
         # Photo-space map of pixels to keep at full strength even inside the
         # fade: a beard lives in exactly that outer band of the face.

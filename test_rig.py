@@ -1824,7 +1824,7 @@ def check_details():
     grid = np.stack(np.meshgrid(np.linspace(0, 1, 11), np.linspace(0, 1, 11)), -1).reshape(-1, 2)
     rim = np.nonzero((grid == 0).any(axis=1) | (grid == 1).any(axis=1))[0]
     sampler = FaceSampler(np.c_[grid, np.zeros(len(grid))], grid * 100, rim, keep=np.ones((200, 200)))
-    _, strength = sampler.sample(np.array([[0.5, 0.5, 0.0], [0.5, 0.003, 0.0]]))
+    _, strength = sampler.sample(np.array([[0.5, 0.5, 0.0], [0.5, 0.002, 0.0]]))
     assert strength[0] > 0.99 and strength[1] < 0.2, f"beard kept to the sheet's edge: {strength.round(2)}"
     # Plain dye: a pinstripe dyed plain loses its stripes, keeps broad shading.
     import trimesh

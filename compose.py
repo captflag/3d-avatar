@@ -1498,7 +1498,10 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     landmark_pixels = np.array([[lm.x * pw, lm.y * ph] for lm in landmarks])
     rim_edges, rim_counts = np.unique(full_face.edges_sorted, axis=0, return_counts=True)
     rim = np.unique(rim_edges[rim_counts == 1])
-    beard_map = facetexture.facial_hair(skin_rgb, landmarks, cheeks)
+    # The beard as the photo shows it. Read again off the skin texture, which
+    # is the renderer's albedo now and darker than the photo, it missed
+    # p08's chin beard, and the bake faded it into generated skin.
+    beard_map = facial_hair
     # The forehead up to the hairline, which the landmarks stop short of.
     forehead = appearance.forehead_skin(parts, landmarks)
     sheet = full_face.vertices
