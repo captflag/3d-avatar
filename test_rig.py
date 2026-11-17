@@ -1789,6 +1789,16 @@ def check_details():
     iris = cv2.erode((lab[..., 2] < 118).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
     detail = lab[..., 0] - cv2.GaussianBlur(lab[..., 0], (0, 0), 3)
     assert iris.sum() > 1000 and detail[iris].std() > 3, f"the iris is flat (detail {detail[iris].std():.1f})"
+    # And the person's size: a photo whose irises are 0.09 of the eyes' spacing
+    # in radius (a person's) draws a smaller iris on the base mesh's large ball.
+    from types import SimpleNamespace
+    marks = [SimpleNamespace(x=0.0, y=0.0)] * 468
+    for cx in (0.4, 0.6):
+        marks = marks + [SimpleNamespace(x=cx + dx, y=0.5 + dy) for dx, dy in ((0, 0), (0.018, 0), (0, 0.018), (-0.018, 0), (0, -0.018))]
+    eyes, _, sized = compose.build_eyes(base, groups, np.array([90.0, 120.0, 150.0]), landmarks=marks, photo_size=(1000, 1000))
+    smaller = (cv2.cvtColor(np.asarray(sized), cv2.COLOR_RGB2LAB)[..., 2] < 118).sum() / (lab[..., 2] < 118).sum()
+    assert 18 < eyes.metadata["iris_edge"] < 28.5 and 0.4 < smaller < 0.9, \
+        f"the iris is not the person's size: {eyes.metadata['iris_edge']:.1f} degrees, {smaller:.2f} of the area"
 
     # Brows: a card authored for blending (alpha up to 187) keeps its strands
     # through the 0.5 cut, not a few clumps.

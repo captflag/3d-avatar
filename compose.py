@@ -944,11 +944,24 @@ def head_island(vertices: np.ndarray, groups: dict, faces: np.ndarray,
     return facetexture.uv_island(uv_faces, nose_uv)
 
 
-def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appearance.SCLERA):
+def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appearance.SCLERA,
+               landmarks=None, photo_size=None):
     """Generated eyeballs with this iris colour: (mesh, uv, texture).
 
     Painting the photo's eye region onto the eyeball put eyelid and brow on a
     sphere, which reads as skin, not an eye.
+
+    With the photo's `landmarks` (the iris ones too) and its `photo_size`
+    (width, height), the iris is the person's size. The base mesh's eyeballs
+    are a fifth larger than a face's own (radius 0.145 of a head whose eyes
+    are 0.62 apart; 12 mm to 63 in a person), so an iris at the anatomical
+    28.5 degrees was 1.16-1.34 times the person's against the spacing of the
+    eyes (8 dev faces), and filled the eye opening with hardly any white. An
+    iris is the same size in everyone, so the photo's iris against the photo's
+    eye spacing gives its half-angle on this ball: 21-24 degrees on those
+    faces (identity at the pose 0.563 -> 0.572, dlib 0.396 -> 0.389, without
+    the refine pass). Kept in the mesh's metadata (`iris_edge`, degrees) for
+    the viewer's cornea.
     """
     uv_all, uv_groups = load_base_uv()
     eye_faces = np.vstack([groups["helper-l-eye"], groups["helper-r-eye"]])
@@ -956,8 +969,17 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appe
     eye_uv_all = island_uv(uv_all, eye_uv_faces)
     eye_centres = np.array([vertices[np.unique(groups["helper-l-eye"])].mean(axis=0),
                             vertices[np.unique(groups["helper-r-eye"])].mean(axis=0)])
+    iris_edge = 28.5
+    if landmarks is not None and photo_size is not None and len(landmarks) > 477:
+        at = lambda idx: np.array([[landmarks[i].x, landmarks[i].y] for i in idx]) * photo_size
+        radius = np.mean([np.linalg.norm(at(ring) - at([c])[0], axis=1).mean()
+                          for c, ring in ((468, range(469, 473)), (473, range(474, 478)))])
+        radius *= np.linalg.norm(eye_centres[0] - eye_centres[1]) / max(np.linalg.norm(at([468])[0] - at([473])[0]), 1e-9)
+        ball = np.linalg.norm(vertices[np.unique(groups["helper-l-eye"])] - eye_centres[0], axis=1).mean()
+        # Between a small iris on this ball and a little over the anatomical one.
+        iris_edge = float(np.degrees(np.arcsin(np.clip(radius / ball, np.sin(np.radians(18.0)), np.sin(np.radians(30.0))))))
     texture = facetexture.bake_eyes(vertices, eye_faces, eye_uv_all, eye_uv_faces,
-                                    eye_centres, iris, sclera=sclera)
+                                    eye_centres, iris, sclera=sclera, iris_edge=iris_edge)
     # Written darker by the renderer's lift, as the skin is (delight.RENDER_LIFT):
     # the whites rendered at 246 against the photos' 216, and the iris a
     # shade lighter than the colour read from the photo.
@@ -968,6 +990,7 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appe
     # with the lid surface they drew over it, the whole iris showed ringed by
     # white, and the avatar stared.
     eyes.vertices = eyes.vertices - np.array([0.0, 0.0, EYE_RECESS])
+    eyes.metadata["iris_edge"] = iris_edge
     return eyes, eye_uv, texture
 
 
@@ -1673,7 +1696,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The whites at the photo's own exposure (appearance.sclera_colour).
     iris, eye_colour = appearance.iris_colour(photo_rgb, landmarks)
     iris = np.clip(iris * IRIS_GAIN, 0, 255)
-    eyes, eye_uv, eye_texture = build_eyes(vertices, groups, iris, appearance.sclera_colour(photo_rgb, landmarks))
+    eyes, eye_uv, eye_texture = build_eyes(vertices, groups, iris, appearance.sclera_colour(photo_rgb, landmarks),
+                                            landmarks=landmarks, photo_size=(pw, ph))
 
     # --- rig it --- (skeleton and weights made above, with the nails)
 
@@ -1866,6 +1890,7 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         roughness=ROUGHNESS["eyes"],                 # wet, so the highlight shows
     ))
     parts[-1].clearcoat = CORNEA_COAT
+    parts[-1].material_extras = {"irisEdge": round(eyes.metadata["iris_edge"], 2)}
     parts[-1].morphs = expression_morphs(eyes, face_shapes)
 
     if face_patch:

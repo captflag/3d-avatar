@@ -626,14 +626,22 @@ def brow_colour(photo_rgb: np.ndarray, landmarks, default=(60, 44, 34)) -> np.nd
 
 def bake_eyes(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.ndarray,
               centres: np.ndarray, iris: np.ndarray, size: int = 1024,
-              sclera=(236.0, 232.0, 226.0)) -> Image.Image:
+              sclera=(236.0, 232.0, 226.0), iris_edge: float = 28.5) -> Image.Image:
     """Generated eyeballs: sclera, the person's iris colour, a pupil.
+    `iris_edge` is the iris's half-angle on the ball, in degrees: 28.5 on an
+    eyeball of anatomical size, less on a larger one (compose.build_eyes).
 
     The photo's eye region cannot be painted onto an eyeball: it includes the
     eyelids and brow, and on a sphere it reads as skin. Avatar eyes are
     synthetic for that reason; only the iris colour comes from the photo.
     Each texel's direction from its eyeball's centre decides what it is, so the
     iris is a true circle however coarse the eyeball mesh.
+
+    The photo's own eye painted over the generated one inside the eye opening
+    (iris on iris, at the photo's brightness) was tried once the iris was the
+    person's size: 0.572 -> 0.575 at the photo's pose (SFace, 8 dev faces,
+    2026-11-17; a render differs from itself by 0.008), with the photo's gaze
+    and catchlights baked onto a ball that turns. Not kept.
 
     A flat disc of iris colour round a black pupil read as a doll's eye at any
     distance. Real ones carry radial fibres, a lighter collarette ring part way
@@ -681,7 +689,9 @@ def bake_eyes(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces:
         centre = centres[np.linalg.norm(pos[:, None, :] - centres[None, :, :], axis=2).argmin(axis=1)]
         direction = pos - centre
         direction /= np.maximum(np.linalg.norm(direction, axis=1, keepdims=True), 1e-9)
-        angle = np.degrees(np.arccos(np.clip(direction @ forward, -1.0, 1.0)))[:, None]
+        off_axis = np.degrees(np.arccos(np.clip(direction @ forward, -1.0, 1.0)))[:, None]
+        # The iris and pupil drawn to iris_edge: their angles below are for 28.5.
+        angle = off_axis * (28.5 / iris_edge)
 
         # Sizes from anatomy: an iris about 11.7 mm across on a 24 mm eyeball
         # subtends roughly 29 degrees either side of the gaze. The pupil is
@@ -693,7 +703,7 @@ def bake_eyes(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces:
                  + 0.12 * np.exp(-((angle - 15.0) / 2.0) ** 2)                 # collarette
                  - 0.55 * np.clip((angle - 25.5) / 3.0, 0.0, 1.0)               # limbal ring
                  - 0.12 * np.clip((11.0 - angle) / 3.0, 0.0, 1.0))              # darker by the pupil
-        out = np.clip((angle - 40.0) / 45.0, 0.0, 1.0)
+        out = np.clip((off_axis - 40.0) / 45.0, 0.0, 1.0)
         white = sclera * (1.0 - 0.15 * out) * (1.0 - 0.3 * out * np.abs(np.cos(phi))) \
             + corner * 0.3 * out * np.abs(np.cos(phi))
         colour = white * (1.0 - band(angle, 28.5)) + iris * shade * band(angle, 28.5)
