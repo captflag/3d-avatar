@@ -22,7 +22,10 @@ from PIL import Image
 
 import photo_check
 import skinned_glb
+from catalogue import catalogue, items_by_id
 from compose import compose
+
+JACKET = "outfit_jacket_jeans"
 from generate import NoFaceFound, generate_avatar, get_landmarker
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -129,13 +132,19 @@ def generate():
 
     full_body = request.form.get("mode") == "body"
     gender = "female" if request.form.get("gender") == "female" else "male"
+    # The outfit picked on the photo step: the default, or the jacket in its
+    # place. Built in, as the body under clothes is cut to fit them.
+    wear = None
+    if request.form.get("outfit") == "jacket":
+        defaults = catalogue()["defaults"][gender]
+        wear = [JACKET if items_by_id()[i]["category"] == "outfit" else i for i in defaults]
     # The haircut the photo check saw (/check), if the page ran one: only a
     # catalogue id or "bald" gets through.
     hair_hint = photo_check.hair_hint({"hair_cut": request.form.get("hair_hint")})
     hair_colour = photo_check.hair_colour_hint({"hair_colour": request.form.get("hair_colour")})
     try:
         if full_body:
-            info = compose(photo_path, OUT / f"{entry_id}.glb", gender, side_photos=side_photos or None,
+            info = compose(photo_path, OUT / f"{entry_id}.glb", gender, wear=wear, side_photos=side_photos or None,
                            hair_hint=hair_hint, hair_colour_hint=hair_colour)
         else:
             info = generate_avatar(photo_path, OUT / f"{entry_id}.glb", side_photos)
@@ -204,8 +213,9 @@ def serve_compat(name: str):
 @app.get("/download/<name>")
 def serve_download(name: str):
     """An avatar for download wearing the haircut the studio's picker chose:
-    ?hair=<catalogue id or bald>&colour=r,g,b (skinned_glb.with_hair), the
-    other cuts the file carries taken out; ?compat=1 also as serve_compat."""
+    ?hair=<catalogue id or bald>&colour=r,g,b&glasses=<catalogue id or none>
+    (skinned_glb.with_hair), the other cuts and glasses the file carries
+    taken out; ?compat=1 also as serve_compat."""
     path = OUT / name
     if not name.endswith(".glb") or path.resolve().parent != OUT.resolve() or not path.exists():
         abort(404)
@@ -216,7 +226,7 @@ def serve_download(name: str):
             colour = [int(c) for c in request.args["colour"].split(",") if c.strip().isdigit()]
             if len(colour) != 3 or max(colour) > 255:
                 abort(400)
-        data = skinned_glb.with_hair(data, request.args["hair"], colour)
+        data = skinned_glb.with_hair(data, request.args["hair"], colour, request.args.get("glasses"))
     if request.args.get("compat"):
         data = skinned_glb.dequantised(data)
     return app.response_class(data, mimetype="model/gltf-binary",
@@ -257,6 +267,60 @@ def gallery():
 
 @app.get("/")
 def index():
+    """The app: photo, create, style, save."""
+    return send_from_directory(HERE, "app.html")
+
+
+# The people lineup test (lineup.py): this PC only, as the test photos' consent requires.
+LINEUP_VARIANT = "st3"      # the stylized portraits it shows (style_score.py's renders)
+
+
+@app.get("/lineup")
+def lineup_page():
+    return send_from_directory(HERE, "lineup.html")
+
+
+@app.get("/lineup/trials")
+def lineup_trials():
+    import random
+    import lineup
+    variant = request.args.get("variant", LINEUP_VARIANT)
+    if not re.fullmatch(r"[\w.-]+", variant):
+        abort(400)
+    seed = int(request.args["seed"]) if request.args.get("seed", "").isdigit() else random.randrange(1 << 30)
+    return jsonify(variant=variant, seed=seed, rounds=lineup.trials(lineup.people(variant), seed))
+
+
+@app.get("/lineup/img/<kind>/<name>")
+def lineup_image(kind: str, name: str):
+    import lineup
+    variant = request.args.get("variant", LINEUP_VARIANT)
+    data = lineup.image(kind, name, variant) if re.fullmatch(r"[\w.-]+", variant) else None
+    if data is None:
+        abort(404)
+    return app.response_class(data, mimetype="image/jpeg")
+
+
+@app.post("/lineup/answer")
+def lineup_answer():
+    import lineup
+    answer = request.get_json(silent=True) or {}
+    if not all(isinstance(answer.get(k), str) for k in ("session", "variant", "person", "picked")):
+        abort(400)
+    lineup.record(answer)
+    return jsonify(ok=True)
+
+
+@app.get("/lineup/results")
+def lineup_results():
+    import lineup
+    return jsonify(lineup.results(request.args.get("variant")))
+
+
+@app.get("/studio")
+def studio():
+    """The team's testing studio: every option, the photo checks' numbers,
+    earlier builds."""
     return send_from_directory(HERE, "studio.html")
 
 

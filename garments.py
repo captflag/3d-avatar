@@ -481,6 +481,34 @@ def whiten_teeth(texture, colour) -> "Image.Image":
     return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
 
 
+# The shirt under a jacket (inner_pieces): the top's pieces of cloth darker
+# than this share of the top's median lightness. Measured on the jacket outfit
+# (male_casualsuit05): its striped shirt's four pieces 5-33 mean level, the
+# jacket's 38-53 (median 47); by colour they did not part, black stripes
+# outweighing red.
+INNER_DARKER = 0.75
+
+
+def inner_pieces(texture, mesh: trimesh.Trimesh, top: np.ndarray) -> np.ndarray:
+    """Per face, True on a piece of the top (a connected UV island) much
+    darker than the rest of the top: the shirt showing under a jacket."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    grey = np.asarray(texture.convert("L"), dtype=np.float64)
+    size = grey.shape[0]
+    centre = mesh.metadata["uv"][mesh.faces].mean(axis=1)
+    level = grey[np.clip(((1.0 - centre[:, 1]) * (size - 1)).astype(int), 0, size - 1),
+                 np.clip((centre[:, 0] * (size - 1)).astype(int), 0, size - 1)]
+    n = len(mesh.vertices)
+    edges = np.vstack([mesh.faces[:, [0, 1]], mesh.faces[:, [1, 2]]])
+    _, label = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n)),
+                                    directed=False)
+    piece = label[mesh.faces[:, 0]]
+    mean = np.bincount(piece, weights=level, minlength=label.max() + 1) / np.maximum(
+        np.bincount(piece, minlength=label.max() + 1), 1)
+    return top & (mean[piece] < INNER_DARKER * float(np.median(level[top])))
+
+
 def recolour(texture, mesh: trimesh.Trimesh, faces_mask: np.ndarray, colour,
              plain: bool = False) -> "Image.Image":
     """`texture` with the cloth under `faces_mask` dyed `colour` (sRGB).
@@ -540,6 +568,31 @@ def recolour(texture, mesh: trimesh.Trimesh, faces_mask: np.ndarray, colour,
     if texture.mode == "RGBA":
         return Image.fromarray(np.dstack([out, np.asarray(texture)[..., 3]]), "RGBA")
     return Image.fromarray(out, "RGB")
+
+
+# How far behind a garment the skin under it is kept (tuck_skin), in mesh units
+# (about 10 cm each): 4 mm.
+SKIN_GAP = 0.04
+
+
+def tuck_skin(body: trimesh.Trimesh, covers: list, below: float, reach: float = 0.33) -> np.ndarray:
+    """The body's vertices with any skin under a garment moved in along its
+    normals to SKIN_GAP behind the garment. The pieces are fitted to the base
+    body; on a fuller figure the blouse's bust lay inside the skin, and the
+    skin there, darkened as covered, showed as dark brown blots on four of the
+    five test women's blouses. Pushing the cloth out instead brought a skirt's
+    waistband through the blouse's hem above it. Only below `below` (the
+    collarbones): a collar sits close round a neck that always shows."""
+    from scipy.spatial import cKDTree
+    v = np.asarray(body.vertices, dtype=np.float64).copy()
+    if not covers:
+        return v
+    cloth = np.vstack([c.vertices for c in covers])
+    distance, nearest = cKDTree(cloth).query(v)
+    normals = body.vertex_normals
+    clear = np.einsum("ij,ij->i", cloth[nearest] - v, normals)
+    sink = np.where((distance < reach) & (v[:, 1] < below), np.clip(SKIN_GAP - clear, 0.0, None), 0.0)
+    return v - normals * sink[:, None]
 
 
 def drop_socks(shoes: trimesh.Trimesh, ankle_y: float) -> int:
@@ -1403,6 +1456,54 @@ def shorten_lower_lashes(lashes: trimesh.Trimesh, keep: float = 0.45) -> None:
     lashes.vertices = v
 
 
+# Glasses' frames this far off the skin at least (glasses_frames), in mesh
+# units (about 1 mm): pads that rest on the nose, not in it.
+GLASSES_CLEAR = 0.01
+
+
+def glasses_frames(glasses: trimesh.Trimesh, eyes: np.ndarray, skin: trimesh.Trimesh,
+                   clear: float = GLASSES_CLEAR) -> trimesh.Trimesh:
+    """A pair of glasses with its lenses taken out, and moved forward until its
+    front (the rims, bridge and pads, in front of the eyes' centres) is
+    `clear` off `skin`.
+
+    The lenses: the pieces (welded where the asset splits them at UV seams)
+    with a triangle over an eye's centre, seen from the front. The assets
+    paint them opaque grey, which hid the eyes; the frames alone read as
+    glasses. Fitted from the base head, the pads sank up to 0.027 (3 mm) into
+    a man's nose."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    _, weld = np.unique(np.round(glasses.vertices, 5), axis=0, return_inverse=True)
+    faces = weld.ravel()[glasses.faces]
+    n = int(weld.max()) + 1
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]]])
+    _, label = connected_components(coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])),
+                                               shape=(n, n)), directed=False)
+    a, b, c = (glasses.vertices[glasses.faces[:, k], :2] for k in range(3))
+    over = np.zeros(len(faces), bool)
+    for p in np.asarray(eyes)[:, :2]:
+        # Inside the triangle: p on the same side of all three edges.
+        side = [(q - o)[:, 0] * (p - o)[:, 1] - (q - o)[:, 1] * (p - o)[:, 0] for o, q in ((a, b), (b, c), (c, a))]
+        over |= ((side[0] >= 0) & (side[1] >= 0) & (side[2] >= 0)) | ((side[0] <= 0) & (side[1] <= 0) & (side[2] <= 0))
+    lens = np.isin(label[faces[:, 0]], label[faces[over, 0]])
+    frames = glasses.copy()
+    frames.update_faces(~lens)
+    used = np.unique(frames.faces)
+    front = used[frames.vertices[used, 2] > np.asarray(eyes)[:, 2].mean()]
+    skin_points = np.unique(skin.faces)
+    near = skin_points[cKDTree(skin.vertices[skin_points]).query(frames.vertices[front])[1]]
+    normals = skin.vertex_normals[near]
+    gap = ((frames.vertices[front] - skin.vertices[near]) * normals).sum(axis=1)
+    # Forward, so the gap grows by the normal's forward part only: on the
+    # nose's sides, a third or so.
+    push = (clear - gap) / np.maximum(normals[:, 2], 0.3)
+    frames.vertices = frames.vertices + [0.0, 0.0, max(float(push.max(initial=0.0)), 0.0)]
+    return frames
+
+
 def strand_normals(rgb: np.ndarray, depth: float = 2.0):
     """A tangent-space normal map from a hair texture's own brightness.
 
@@ -1448,3 +1549,109 @@ def open_rim(mesh: trimesh.Trimesh, weld: float = 0.03) -> np.ndarray:
         others = [j for j in tree.query_ball_point(mesh.vertices[v], weld) if piece[rim[j]] != piece[v]]
         keep[i] = not others
     return rim[keep]
+
+
+# A short curly cut (a high-top): no licence-clean one exists in the community
+# packs (2026-11, three hair packs; the "afro" is two round buns), so it is the
+# skull cap made thick and given coils. Thickness in dm: CURL_TOP on the crown
+# down to CURL_SIDE by the ears, rising over CURL_RISE (share of the cap's
+# height from its lowest point), and falling to the skin within CURL_EDGE of
+# its hairline, so its edge is a rounded slope and not a hollow wall.
+CURL_TOP = 0.4
+CURL_SIDE = 0.015
+CURL_RISE = (0.5, 0.95)
+CURL_EDGE = 0.22
+CURL_TILE = 1.2         # dm of head per texture tile
+CURL_SIZE = 256         # texture tile, pixels (three across the cap: 768)
+CURL_COILS = 1400       # coils per tile
+
+
+def curl_texture(size: int = CURL_SIZE, coils: int = CURL_COILS, seed: int = 5):
+    """A tileable texture of tight coils: (grey RGB as PIL, normal map as PIL).
+
+    Each coil a short arc at a random place and angle, drawn on all nine
+    tiled copies so the tile repeats without a seam. Grey averaging about
+    skinned_glb.HAIR_GREY, so the hair colour (its material factor) tints it;
+    the coils' tops a little warmer, the hair's highlight.
+    """
+    import cv2
+    from PIL import Image
+    rng = np.random.default_rng(seed)
+    height = np.zeros((size, size), np.float32)
+    for _ in range(coils):
+        x, y = rng.uniform(0, size, 2)
+        r = rng.uniform(0.012, 0.022) * size
+        start = rng.uniform(0, 360)
+        for dx in (-size, 0, size):
+            for dy in (-size, 0, size):
+                cv2.ellipse(height, (int(x + dx), int(y + dy)), (int(r), int(r * 0.8)), start, 0, 250,
+                            float(rng.uniform(0.6, 1.0)), max(int(0.006 * size), 1), cv2.LINE_AA)
+    # In clumps, as coils grow: a tileable low-frequency field (blurred noise, wrapped).
+    clump = cv2.GaussianBlur(np.tile(rng.random((size, size)).astype(np.float32), (3, 3)), (0, 0), 0.03 * size)
+    clump = clump[size:2 * size, size:2 * size]
+    clump = (clump - clump.min()) / max(float(np.ptp(clump)), 1e-6)
+    height = cv2.GaussianBlur(height, (0, 0), 0.8) * (0.55 + 0.45 * clump)
+    height = np.clip(height / max(float(np.percentile(height, 99)), 1e-3), 0, 1)
+    shade = (0.55 + 0.75 * height)[..., None]
+    warm = np.array([1.0, 0.97, 0.9]) ** height[..., None]      # warmer towards the tops
+    rgb = np.clip(200.0 * shade / shade.mean() * warm, 0, 255).astype(np.uint8)
+    return Image.fromarray(rgb, "RGB"), strand_normals(rgb, depth=3.0)
+
+
+def curl_cap(cap: trimesh.Trimesh) -> trimesh.Trimesh:
+    """The skull cap (catalogue's hair_short, cut to its hairline) made a short
+    curly cut: thickened along its normals (CURL_*), with texture coordinates
+    projected from the crown (no seam, no pole) over curl_texture's tile."""
+    from PIL import Image
+    from scipy.spatial import cKDTree
+    v = np.asarray(cap.vertices, dtype=np.float64)
+    normals = np.asarray(cap.vertex_normals, dtype=np.float64)
+    low, top = v[:, 1].min(), v[:, 1].max()
+    rise = np.clip((((v[:, 1] - low) / max(top - low, 1e-6)) - CURL_RISE[0]) / (CURL_RISE[1] - CURL_RISE[0]), 0, 1)
+    thick = CURL_SIDE + (CURL_TOP - CURL_SIDE) * rise * rise * (3 - 2 * rise)
+    unique, counts = np.unique(cap.edges_sorted, axis=0, return_counts=True)
+    rim = np.unique(unique[counts == 1])
+    if len(rim):
+        edge = np.clip(cKDTree(v[rim]).query(v)[0] / CURL_EDGE, 0, 1)
+        thick = thick * edge * edge * (3 - 2 * edge)
+    out = trimesh.Trimesh(vertices=v + normals * thick[:, None], faces=cap.faces, process=False)
+    out.metadata.update(cap.metadata)
+    # Azimuthal equidistant about the crown: angle from straight up times the
+    # head's radius, in the direction round it.
+    centre = np.array([v[:, 0].mean(), low, v[:, 2].mean()])
+    d = v - centre
+    radius = float(np.linalg.norm(d, axis=1).mean())
+    d /= np.linalg.norm(d, axis=1, keepdims=True)
+    polar = np.arccos(np.clip(d[:, 1], -1, 1)) * radius / CURL_TILE
+    around = np.arctan2(d[:, 2], d[:, 0])
+    uv = np.column_stack([polar * np.cos(around), polar * np.sin(around)])
+    # In tiles; the file keeps texture coordinates within 0-1, so the tile
+    # is repeated in the texture itself, as many times as the cap spans.
+    uv -= uv.min(axis=0)
+    tiles = int(np.ceil(uv.max()))
+    out.metadata["uv"] = uv / tiles
+    out.metadata["texture"], out.metadata["normal_texture"] = (
+        Image.fromarray(np.tile(np.asarray(image), (tiles, tiles, 1))) for image in curl_texture())
+    out.metadata["thickness"] = thick
+    return out
+
+
+# Leather (the jacket outfit's top): shinier than cloth, which an outfit's
+# one material cannot be alone, as the jeans share it. Roughness in a texture,
+# the top's pieces at LEATHER_ROUGHNESS[0], the rest at [1].
+LEATHER_ROUGHNESS = (0.4, 0.85)
+
+
+def leather_roughness(mesh: trimesh.Trimesh, vertices: np.ndarray, groups: dict, size: int = 1024):
+    """A roughness texture (glTF's: green) for an outfit whose top is leather
+    (garment_regions), laid out on the outfit's own texture coordinates."""
+    import cv2
+    from PIL import Image
+    from facetexture import rasterize
+    top = garment_regions(mesh, vertices, groups)
+    uv = mesh.metadata["uv"]
+    region = rasterize(np.ones(len(mesh.vertices)), mesh.faces[top], uv, mesh.faces[top], size, fill=0.0) > 0.5
+    region = cv2.dilate(region.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    green = np.where(region, LEATHER_ROUGHNESS[0], LEATHER_ROUGHNESS[1])
+    return Image.merge("RGB", [Image.fromarray(np.uint8(c)) for c in (np.zeros_like(green), green * 255, np.zeros_like(green))])
+

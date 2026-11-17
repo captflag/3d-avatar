@@ -434,7 +434,10 @@ file (`credits`) lists the authors of what it wears:
 | `hair_elvs_grump_hair`, `hair_elvs_short_side_do`, `hair_elvs_maxwell_hair` | Elvaerwyn | MakeHuman community asset repository, Hair 02 pack |
 | `hair_culturalibre_hair_14` | culturalibre | MakeHuman community asset repository, Hair 03 pack |
 
-The default cut and the other community cuts are CC0 and need no credit.
+The default cut and the other community cuts are CC0 and need no credit. So
+are the glasses (MakeHuman community asset repository, Glasses 01 pack:
+spamrakuen's frames after The Base Mesh and Sagerfrog, kwnet_at's and
+frankyaye's), each marked CC0 in its pack's manifest.
 
 Both were chosen over the better-known research face and body models, which are
 free for research only and need a paid licence to ship. Keep that constraint when

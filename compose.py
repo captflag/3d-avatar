@@ -58,8 +58,16 @@ EYE_RECESS = 0.06
 # toe, a texel is millimetres across, and the same grain at full strength read
 # as bark on the neck.
 PORE_STRENGTH = {"head": 0.5, "body": 0.25}
-# Head and body skin textures, texels a side.
+# Head and body skin textures, texels a side; the cartoon style's head, flat
+# colour and a few shapes, needs less.
 SKIN_SIZE = 2048
+TOON_SIZE = 1024
+# Cards blended by their texture's alpha, not cut at half. The lashes are a
+# few pixels on screen, so they are drawn from the texture's smallest mip
+# levels, where a strand's alpha is averaged far below half: cut, the fine
+# strands vanished and the dense roots stayed as black blobs and spikes along
+# the lids and at the corners of every eye.
+SOFT_CARDS = ("eyelashes",)
 # How much a full crease darkens generated skin (appearance.skin_cavity).
 CAVITY_DEPTH = 0.35
 # Skin's index of refraction: about 1.4, a reflectance of 2.8% head on.
@@ -117,8 +125,10 @@ ROUGHNESS = {"skin": 0.5, "eyes": 0.8, "hair": 0.45,
 CORNEA_COAT = (0.3, 0.03)
 # How much lighter the iris is painted than the photo reads it: the eyeball sits
 # behind the lids, in their shade, and a brown iris read at the photo's
-# colour rendered near black, its pupil lost in it.
-IRIS_GAIN = 1.8
+# colour rendered near black, its pupil lost in it. 1.8 until 2026-10-30, when
+# every test face's iris rendered 6-10 L* lighter than its photo's (iris_dE
+# 12.4 mean over the eight dev faces); at 1.3, 7.0, likeness level.
+IRIS_GAIN = 1.3
 
 
 def body_mesh(vertices: np.ndarray | None = None) -> trimesh.Trimesh:
@@ -371,7 +381,13 @@ def place_face(face: trimesh.Trimesh, vertices: np.ndarray, groups: dict) -> tri
                        skull["mouth"], skull["chin"]])
     source = face_anchor_points(face)
 
-    src, dst = source[:, :2], target[:, :2]
+    # By the eyes and the nose tip only. With the mouth and chin in the solve,
+    # a face whose lower half is longer than the skull's was shrunk and shifted
+    # to meet the skull's mouth and chin halfway, and the fit never saw the
+    # difference: every test face's mouth and chin came out 2-3% of the eye
+    # spacing high against its eyes and nose (the philtrum MakeHuman's base
+    # has at 0.10-0.13 of the eye spacing, the photos at 0.17-0.22).
+    src, dst = source[:3, :2], target[:3, :2]
     src_mean, dst_mean = src.mean(axis=0), dst.mean(axis=0)
     scale = float(((src - src_mean) * (dst - dst_mean)).sum() / ((src - src_mean) ** 2).sum())
 
@@ -928,11 +944,24 @@ def head_island(vertices: np.ndarray, groups: dict, faces: np.ndarray,
     return facetexture.uv_island(uv_faces, nose_uv)
 
 
-def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appearance.SCLERA):
+def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appearance.SCLERA,
+               landmarks=None, photo_size=None):
     """Generated eyeballs with this iris colour: (mesh, uv, texture).
 
     Painting the photo's eye region onto the eyeball put eyelid and brow on a
     sphere, which reads as skin, not an eye.
+
+    With the photo's `landmarks` (the iris ones too) and its `photo_size`
+    (width, height), the iris is the person's size. The base mesh's eyeballs
+    are a fifth larger than a face's own (radius 0.145 of a head whose eyes
+    are 0.62 apart; 12 mm to 63 in a person), so an iris at the anatomical
+    28.5 degrees was 1.16-1.34 times the person's against the spacing of the
+    eyes (8 dev faces), and filled the eye opening with hardly any white. An
+    iris is the same size in everyone, so the photo's iris against the photo's
+    eye spacing gives its half-angle on this ball: 21-24 degrees on those
+    faces (identity at the pose 0.563 -> 0.572, dlib 0.396 -> 0.389, without
+    the refine pass). Kept in the mesh's metadata (`iris_edge`, degrees) for
+    the viewer's cornea.
     """
     uv_all, uv_groups = load_base_uv()
     eye_faces = np.vstack([groups["helper-l-eye"], groups["helper-r-eye"]])
@@ -940,8 +969,17 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appe
     eye_uv_all = island_uv(uv_all, eye_uv_faces)
     eye_centres = np.array([vertices[np.unique(groups["helper-l-eye"])].mean(axis=0),
                             vertices[np.unique(groups["helper-r-eye"])].mean(axis=0)])
+    iris_edge = 28.5
+    if landmarks is not None and photo_size is not None and len(landmarks) > 477:
+        at = lambda idx: np.array([[landmarks[i].x, landmarks[i].y] for i in idx]) * photo_size
+        radius = np.mean([np.linalg.norm(at(ring) - at([c])[0], axis=1).mean()
+                          for c, ring in ((468, range(469, 473)), (473, range(474, 478)))])
+        radius *= np.linalg.norm(eye_centres[0] - eye_centres[1]) / max(np.linalg.norm(at([468])[0] - at([473])[0]), 1e-9)
+        ball = np.linalg.norm(vertices[np.unique(groups["helper-l-eye"])] - eye_centres[0], axis=1).mean()
+        # Between a small iris on this ball and a little over the anatomical one.
+        iris_edge = float(np.degrees(np.arcsin(np.clip(radius / ball, np.sin(np.radians(18.0)), np.sin(np.radians(30.0))))))
     texture = facetexture.bake_eyes(vertices, eye_faces, eye_uv_all, eye_uv_faces,
-                                    eye_centres, iris, sclera=sclera)
+                                    eye_centres, iris, sclera=sclera, iris_edge=iris_edge)
     # Written darker by the renderer's lift, as the skin is (delight.RENDER_LIFT):
     # the whites rendered at 246 against the photos' 216, and the iris a
     # shade lighter than the colour read from the photo.
@@ -952,6 +990,7 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appe
     # with the lid surface they drew over it, the whole iris showed ringed by
     # white, and the avatar stared.
     eyes.vertices = eyes.vertices - np.array([0.0, 0.0, EYE_RECESS])
+    eyes.metadata["iris_edge"] = iris_edge
     return eyes, eye_uv, texture
 
 
@@ -989,13 +1028,16 @@ def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_c
     if mesh.metadata.get("texture") is not None:
         # Authored asset: its own texture, normal map and alpha cut-out.
         # No vertex colour, which glTF would multiply into the texture.
-        return skinned_glb.Part(
+        soft = name in SOFT_CARDS
+        part = skinned_glb.Part(
             name, mesh.vertices, mesh.faces, part_joints, part_weights,
             uv=gltf_uv(mesh.metadata["uv"]), texture=mesh.metadata["texture"],
             normal_texture=mesh.metadata.get("normal_texture"),
-            alpha_mask=mesh.metadata.get("alpha_mask", False),
+            alpha_mask=mesh.metadata.get("alpha_mask", False) and not soft,
             normals=welded_normals(mesh), roughness=roughness,
         )
+        part.alpha_blend = soft and mesh.metadata.get("alpha_mask", False)
+        return part
     return skinned_glb.Part(
         name, mesh.vertices, mesh.faces, part_joints, part_weights,
         colour=mesh.visual.vertex_colors.astype(np.float32) / 255.0,
@@ -1013,12 +1055,123 @@ def outfit_for(gender: str, chosen: list[str] | None) -> list[dict]:
     return [index[i] for i in ids]
 
 
-def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
-            gender: str = "male", wear: list[str] | None = None,
-            face_patch: bool = False, pose: str = "relaxed",
-            side_photos: list[pathlib.Path] | None = None,
-            hair_hint: str | None = None, hair_colour_hint: str | None = None,
-            hair: str | None = None) -> dict:
+def shift_marks(points: np.ndarray, ids: list[int], offsets, rotation: np.ndarray | None = None) -> np.ndarray:
+    """`points` (the face's landmarks, y up) with `ids` moved against
+    `offsets`: per id, how far a render read it from the photo's (x right, y
+    down, in eye-corner spacings), turned into the face's frame by `rotation`
+    (the photo's view) where given."""
+    offsets = np.asarray(offsets, dtype=np.float64)
+    spacing = float(np.linalg.norm(points[33] - points[263]))
+    move = np.c_[offsets[:, 0], -offsets[:, 1], np.zeros(len(offsets))] * spacing
+    out = points.copy()
+    out[ids] -= move if rotation is None else move @ rotation
+    return out
+
+
+# Each lip as a ring of MediaPipe ids, corner to corner along the outer edge
+# and back along the inner.
+UPPER_LIP = [61] + morph.OUTER_UPPER + [291] + morph.INNER_UPPER[::-1]
+LOWER_LIP = [61] + morph.OUTER_LOWER + [291] + morph.INNER_LOWER[::-1]
+
+
+def lip_lightness(rgb: np.ndarray, marks: np.ndarray) -> list[float]:
+    """Median L* (0-100) of the upper and the lower lip in `rgb` at `marks`."""
+    lab = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2LAB)[..., 0].astype(np.float64) * 100 / 255
+    out = []
+    for ring in (UPPER_LIP, LOWER_LIP):
+        mask = np.zeros(rgb.shape[:2], np.uint8)
+        cv2.fillPoly(mask, [np.round(marks[ring]).astype(np.int32)], 1)
+        out.append(float(np.median(lab[mask > 0])) if mask.any() else float("nan"))
+    return out
+
+
+def relight_lips(skin_rgb: np.ndarray, landmarks, light: dict) -> np.ndarray:
+    """Each lip's paint scaled (linear, feathered) by how far a render of the
+    first build drew it from the photo's lightness: `light` is {"upper":
+    [render L*, photo L*], "lower": [...]}. The lower lip faces up into the
+    studio's key light and rendered 6-9 L* lighter than the photo's on five
+    of the eight dev faces, the upper about right. Fed back once, the lower
+    lip's gap went 7.8 -> 2.4 L* on p02, 6.6 -> 3.9 on p06; pushed further
+    (the gain to the power 1.5, half the feather) p02 and p03 came out worse
+    and the smiling photos' teeth with them."""
+    from delight import to_linear, to_srgb
+    h, w = skin_rgb.shape[:2]
+    px = np.array([[lm.x * w, lm.y * h] for lm in landmarks[:468]])
+    linear = to_linear(skin_rgb)
+    width = float(np.ptp(px[UPPER_LIP, 0]))
+    for ring, key in ((UPPER_LIP, "upper"), (LOWER_LIP, "lower")):
+        drawn, seen = light[key]
+        if not (np.isfinite(drawn) and np.isfinite(seen)):
+            continue
+        gain = float(np.clip(((seen + 16.0) / (drawn + 16.0)) ** 3, 0.5, 2.0))
+        mask = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(mask, [np.round(px[ring]).astype(np.int32)], 1)
+        weight = cv2.GaussianBlur(mask.astype(np.float64), (0, 0), max(0.03 * width, 0.5))[..., None]
+        linear = linear * (1.0 + (gain - 1.0) * weight)
+    return to_srgb(linear)
+
+
+def render_shifts(glb: pathlib.Path, photo_path: pathlib.Path) -> dict | None:
+    """Where MediaPipe reads the built head's lips and jaw, drawn at the
+    photo's pose, against the photo's own (see `compose`'s `refine`), or None
+    if no render could be made or read."""
+    import tempfile
+    from generate import stand_up
+    from render import render
+    from score_run import STABLE, align, flat, landmarks
+    with tempfile.TemporaryDirectory() as tmp:
+        png = pathlib.Path(tmp) / "pose.png"
+        render([(glb, png, True)])
+        drawing = flat(png)
+    drawn = landmarks(drawing)
+    photo = np.asarray(stand_up(photo_path)[0].convert("RGB"))
+    seen = landmarks(photo)
+    if drawn is None or seen is None:
+        return None
+    fit = align(drawn[STABLE], seen[STABLE])
+    off = (drawn @ fit[:, :2].T + fit[:, 2] - seen) / np.linalg.norm(seen[33] - seen[263])
+    # The lips' lightness as drawn against the photo's, each on the photo's own outline.
+    warped = cv2.warpAffine(drawing, fit, photo.shape[1::-1], flags=cv2.INTER_AREA, borderValue=(200, 200, 200))
+    light = dict(zip(("upper", "lower"), zip(lip_lightness(warped, seen), lip_lightness(photo, seen))))
+    return {"lips": off[morph.LIP_LANDMARKS].tolist(), "jaw": off[morph.JAW_OUTLINE].tolist(),
+            "lip_light": {k: list(v) for k, v in light.items()}}
+
+
+def compose(photo_path: pathlib.Path, out_path: pathlib.Path, *args, refine: bool = True, **kwargs) -> dict:
+    """The avatar (`_compose`), then, with `refine`, built once more with its
+    lips and jaw aimed by what a render of the first shows.
+
+    MediaPipe does not read the built head where the fit put it: drawn at the
+    photo's pose, its lips and jaw came out up to 5% of the eye spacing off
+    the photo's, differently on each face (the jaw's systematic part is
+    morph.JAW_READ_HIGH). Aimed against what it read, over the eight dev
+    faces: mouth 2.20 -> 1.30% (6 -> 8 within 3%), held-out 2.85 -> 2.38%
+    (2 -> 3 of 3), mouth colour 14.1 -> 13.1, outline 2.74 -> 2.58%,
+    likeness level. Twice the build time, and a browser to draw with; where
+    none renders, the first build stands."""
+    info = _compose(photo_path, out_path, *args, **kwargs)
+    if not refine:
+        return info
+    try:
+        shifts = render_shifts(out_path, photo_path)
+    except (RuntimeError, TimeoutError, OSError) as err:
+        print(f"refine skipped: {err}", file=sys.stderr)
+        shifts = None
+    if shifts is None:
+        return info
+    info = _compose(photo_path, out_path, *args, shifts=shifts, **kwargs)
+    info["refined"] = {part: round(float(np.linalg.norm(shifts[part], axis=1).mean() * 100), 2) for part in ("lips", "jaw")}
+    info["refined"]["lip_light"] = {k: [round(x, 1) for x in v] for k, v in shifts["lip_light"].items()}
+    out_path.with_suffix(".json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    return info
+
+
+def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
+             gender: str = "male", wear: list[str] | None = None,
+             face_patch: bool = False, pose: str = "relaxed",
+             side_photos: list[pathlib.Path] | None = None,
+             hair_hint: str | None = None, hair_colour_hint: str | None = None,
+             hair: str | None = None, shifts: dict | None = None) -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
@@ -1097,7 +1250,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     lip_marks[morph.LIP_LANDMARKS] = 1.0
     # Towards the lips closed: the mesh's met 1.4% of the eye spacing apart on
     # a photo whose own were 0.4 apart, and a sliver of teeth showed.
-    vertices = morph.correct(vertices, base, morph.lip_corr(base, corr), morph.close_lips(person), average,
+    lip_target = morph.close_lips(person)
+    if shifts:
+        # Aimed against where a render of the first build read them (compose).
+        lip_target = shift_marks(lip_target, morph.LIP_LANDMARKS, shifts["lips"])
+    vertices = morph.correct(vertices, base, morph.lip_corr(base, corr), lip_target, average,
                              shape_weights, expression, front, lip_marks)
     vertices = morph.seal_lips(vertices, groups["body"])
     # The jaw's edge as the camera saw it, with the photo's expression off.
@@ -1108,6 +1265,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     head_pose = photo_head_pose(result, landmarks, photo)
     render_turn = rotation if head_pose is None else Rotation.from_quat(head_pose).as_matrix()
     head_only = morph.head_only(vertices, groups["body"], load_weights())
+    if shifts:
+        resting = shift_marks(resting, morph.JAW_OUTLINE, shifts["jaw"], rotation)
     vertices = morph.fit_outline(vertices, head_only, resting, rotation)
 
     # The same expression taken off the landmarks the photo is baked through,
@@ -1127,35 +1286,32 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # beard is a third of some faces, read as shadow by the lighting fit and
     # as darker skin by the skin statistics.
     facial_hair = facetexture.facial_hair(photo_rgb, landmarks, cheeks)
-    skin_rgb, lighting, face_mask = delight.delight(photo_rgb, landmarks, load_canonical_faces(), cheeks,
-                                                    exclude=facial_hair)
+    _, lighting, face_mask = delight.delight(photo_rgb, landmarks, load_canonical_faces(), cheeks,
+                                             exclude=facial_hair)
     bare_skin = face_mask & (facial_hair < 0.2)
-    skin_rgb = appearance.sharpen_creases(skin_rgb, landmarks, face_mask, keep_out=facial_hair)
+    # The skin is the photo's own pixels, repaired only where the head needs
+    # it: an open mouth and the eyes painted over (the mesh has its own teeth
+    # and eyeballs), the lash line put back, hair off the forehead and a
+    # glasses frame out (smooth_skin's repairs), then each pixel turned into
+    # the albedo the studio renders as that pixel (delight.unrender).
+    # De-lit, creased, smoothed, evened and colour-matched in thirteen steps
+    # (until 2026-11-16), the texture kept 0.38 of the person (SFace against
+    # the photo, 8 dev faces; 0.72 before the smoothing alone) and the builds
+    # 0.32; like this the texture keeps 0.74-0.89 and the builds 0.5.
+    skin_rgb = np.ascontiguousarray(photo_rgb[..., :3]).copy()
     # The mouth is closed on the avatar; paint the photo's open mouth over in
     # lip colour so no teeth get baked across the lips.
     skin_rgb, mouth_filled = appearance.fill_mouth(skin_rgb, landmarks, cheeks)
     skin_rgb = appearance.fill_eyes(skin_rgb, landmarks)
-    # The lids lighter than the brow's shade the photo shows over them.
-    skin_rgb = appearance.lift_lids(skin_rgb, landmarks)
-    # The nostrils are the mesh's own.
-    skin_rgb = appearance.fill_nostrils(skin_rgb, landmarks, keep_out=facial_hair)
-    # The lash line back on the lids. The brows are left as the photo has them:
-    # darkened against the skin round them (tighten_brows, gain 1.6), they
-    # rendered 14-34 L* darker than the photos' and the lid under them went
-    # dark with them; without it they render within 9 L* of the photos' and
-    # the identity score rose 0.445 -> 0.471 at the photo's pose, 0.410 ->
-    # 0.446 level (side-session-notes/eye-region.md).
     skin_rgb = appearance.paint_lashes(skin_rgb, photo_rgb, landmarks)
-    # A colour cast that puts skin outside the natural range is pulled back.
-    skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
-    # The lips darker and less yellow by what the render adds to them.
-    skin_rgb = appearance.lip_tone(skin_rgb, landmarks)
-    # The beard darker by what the studio's light lifts dark paint.
-    skin_rgb = appearance.darken_beard(skin_rgb, facial_hair, landmarks)
-    # Smooth, even skin: no freckles, pores, spots or light's patches
-    # (appearance.smooth_skin); eyes, brows, lips and beard as the photo has them.
-    parts = appearance.segment(photo_rgb)
-    skin_rgb = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair)
+    parts = appearance.refine_hair(photo_rgb, appearance.segment(photo_rgb))
+    skin_rgb, photo_glasses = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair,
+                                                     repairs_only=True)
+    skin_rgb = delight.unrender(np.clip(skin_rgb, 0, 255).astype(np.uint8))
+    colour_gains, cast_shift = np.ones(3), (0.0, 0.0)
+    if shifts and shifts.get("lip_light"):
+        # Each lip as light as the photo's, by a render of the first build (compose).
+        skin_rgb = relight_lips(skin_rgb, landmarks, shifts["lip_light"])
     tone = facetexture.skin_tone_lab(skin_rgb, cheeks)
     full_face = place_face(face, vertices, groups)
     full_face.vertices = level_upper_face(full_face.vertices)
@@ -1189,13 +1345,13 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         if top_rgb is not None:
             dye = delight.albedo_for(top_rgb)
             outfit = [{**i, "recolour": {**i["recolour"], "top": [int(c) for c in dye]}}
-                      if i.get("recolour") else i for i in outfit]
+                      if i.get("recolour") and not i.get("keep_colour") else i for i in outfit]
         # And the trousers, where the photo shows them (appearance.trousers_colour).
         bottom_rgb = appearance.trousers_colour(photo_rgb, landmarks, parts)
         if bottom_rgb is not None:
             dye = delight.albedo_for(bottom_rgb)
             outfit = [{**i, "recolour": {**i["recolour"], "bottom": [int(c) for c in dye]}}
-                      if i.get("recolour", {}).get("bottom") else i for i in outfit]
+                      if i.get("recolour", {}).get("bottom") and not i.get("keep_colour") else i for i in outfit]
 
     # Teeth and tongue go in every mouth, whatever is worn: hidden at rest,
     # and what an opened jaw shows.
@@ -1301,6 +1457,13 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
 
     # Only clothing hides skin; hair sits on top of it.
     covering = [(item, m) for item, m in worn if item["category"] in ("top", "bottom", "shoes", "outfit")]
+    # And no skin in front of it (garments.tuck_skin).
+    collarbone = float(vertices[np.unique(groups["joint-l-clavicle"])][:, 1].mean())
+    under = np.unique(groups["body"])
+    tucked = garments.tuck_skin(trimesh.Trimesh(vertices, groups["body"], process=False),
+                                [m for _, m in covering], collarbone)
+    vertices = vertices.copy()
+    vertices[under] = tucked[under]
     # Every body triangle is kept; skin under clothes is hidden by the texture's
     # alpha instead, with a band left under each garment edge (coverage_alpha).
     body_faces = groups["body"]
@@ -1346,10 +1509,20 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     landmark_pixels = np.array([[lm.x * pw, lm.y * ph] for lm in landmarks])
     rim_edges, rim_counts = np.unique(full_face.edges_sorted, axis=0, return_counts=True)
     rim = np.unique(rim_edges[rim_counts == 1])
-    beard_map = facetexture.facial_hair(skin_rgb, landmarks, cheeks)
+    # The beard as the photo shows it. Read again off the skin texture, which
+    # is the renderer's albedo now and darker than the photo, it missed
+    # p08's chin beard, and the bake faded it into generated skin.
+    beard_map = facial_hair
     # The forehead up to the hairline, which the landmarks stop short of.
     forehead = appearance.forehead_skin(parts, landmarks)
-    sampler = facetexture.FaceSampler(full_face.vertices, landmark_pixels, rim,
+    sheet = full_face.vertices
+    if shifts:
+        # The photo's jaw edge is painted where the sheet's jaw points sit,
+        # wherever the mesh's own jaw is, and MediaPipe reads the jaw off that
+        # paint (drawn in flat skin, p03's outline read 11.5% off, not 4.2):
+        # moved against what a render of the first build read, like the mesh.
+        sheet = shift_marks(sheet, morph.JAW_OUTLINE, shifts["jaw"], rotation)
+    sampler = facetexture.FaceSampler(sheet, landmark_pixels, rim,
                                       keep=beard_map,
                                       lips=([78] + morph.INNER_UPPER + [308],
                                             [78] + morph.INNER_LOWER + [308]),
@@ -1380,7 +1553,13 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
 
     # A skin texture built to the person's own cheek statistics, so skin is
     # mottled rather than one flat colour.
-    stats = skin.face_stats(skin_rgb, bare_skin)
+    # From the face's outer band, the skin the generated skin borders (forehead
+    # top, temples, jaw): the face keeps the photo's own shading now, its
+    # middle is the lit part, and to the whole face's tone the scalp and ears
+    # came out lighter than the face they join (p02).
+    reach = max(int(0.1 * np.ptp([lm.x for lm in landmarks[:468]]) * pw), 3)
+    border = bare_skin & ~(cv2.erode(face_mask.astype(np.uint8), np.ones((reach, reach), np.uint8)) > 0)
+    stats = skin.face_stats(skin_rgb, border) or skin.face_stats(skin_rgb, bare_skin)
     skin_mean, skin_spread = stats if stats is not None else skin.cheek_stats(skin_rgb, cheeks)
     # The pore map stays 1024: it is noise, and at 2048 it cost 885 KB.
     skin_normals = Image.fromarray(skin.pore_normals(1024))
@@ -1414,6 +1593,23 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     head_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces,
                                     sampler, face_centre, face_radius, skin_rgb, head_base,
                                     size=head_size, blend="none")
+    # The cartoon style's head (the viewer's applyToon): the face drawn flat
+    # (appearance.cartoon_face) and baked the same way, on one skin tone.
+    toon_skin = delight.median_colour(skin_rgb[bare_skin]).astype(np.float64)
+    # Its tone scaled as the photo's whole face is against its cheek patches
+    # (appearance.stylized_skin's gain).
+    _, style_gain = appearance.stylized_skin(skin_rgb, photo_rgb, bare_skin, landmarks)
+    drawn_beard = facetexture.facial_hair(photo_rgb, landmarks, cheeks, grey=True)
+    # Scalp and ears tinted as the face is: untinted they stayed the lighter
+    # calibrated tone round a darker face.
+    style_base = delight.to_srgb(delight.to_linear(toon_skin.astype(np.uint8)[None, :]) * style_gain)[0].astype(np.float64)
+    # Painted warmer than the photo (appearance.STYLE_CHROMA).
+    chroma = appearance.style_chroma(style_base)
+    style_base = appearance.richer(style_base, chroma)
+    # The cartoon's flat tone the same corrected one.
+    toon_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces, sampler, face_centre,
+                                    face_radius, appearance.cartoon_face(photo_rgb, landmarks, style_base, drawn_beard),
+                                    style_base, size=TOON_SIZE, blend="none")
     # A beard's hairs are finer than the photo's pixels: grain where it was.
     head_texture = appearance.stubble(head_texture, vertices, head_faces, head_uv_all, head_uv_faces,
                                       sampler, skin_rgb, cheeks, jaw_beard, landmarks)
@@ -1508,7 +1704,8 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The whites at the photo's own exposure (appearance.sclera_colour).
     iris, eye_colour = appearance.iris_colour(photo_rgb, landmarks)
     iris = np.clip(iris * IRIS_GAIN, 0, 255)
-    eyes, eye_uv, eye_texture = build_eyes(vertices, groups, iris, appearance.sclera_colour(photo_rgb, landmarks))
+    eyes, eye_uv, eye_texture = build_eyes(vertices, groups, iris, appearance.sclera_colour(photo_rgb, landmarks),
+                                            landmarks=landmarks, photo_size=(pw, ph))
 
     # --- rig it --- (skeleton and weights made above, with the nails)
 
@@ -1545,7 +1742,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         photo_mouth = morph.photo_mouth(vertices, face_shapes, photo_face, morph.lip_corr(base, corr), person,
                                         on_skin, laughing_teeth)
         photo_face["photoMouth"] = 1.0
-    face_shapes = np.concatenate([face_shapes, photo_mouth[None]])
+    face_shapes = np.concatenate([face_shapes, photo_mouth[None], morph.stylize_shape(len(vertices))[None]])
     # Normals from the whole skin, not from each part's own triangles: split
     # at the neck, each side averaged only its own, and light broke along the
     # seam in angular patches under the ear.
@@ -1561,6 +1758,19 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     socket = (appearance.under_brow(vertices, corr) * photo_strength)[:, None]
     skin_normal = skin_normal * (1.0 - socket) + broad * socket
     skin_normal /= np.maximum(np.linalg.norm(skin_normal, axis=1, keepdims=True), 1e-12)
+    # The stylized style's head (the viewer's applyStylized): the realistic
+    # head's own texture, warmer. As warm as the photo's skin tone allows
+    # (appearance.style_chroma), in one colour shift (appearance.warmer), and
+    # at half the size, which is all the smoothing it gets; the body's tint the
+    # same change, so face, ears and neck still match.
+    # Repainted until 2026-11-17 (the skin flattened to one tone, brows, lips
+    # and lashes drawn on as shapes), that paint was 0.11 of the stylized
+    # portraits' likeness: 0.26 with it, 0.37 wearing the realistic texture
+    # (SFace, 8 dev faces); like this 0.39.
+    grade = appearance.style_chroma(delight.median_colour(photo_rgb[bare_skin]))
+    style_texture = Image.fromarray(appearance.warmer(
+        np.asarray(head_texture.convert("RGB").resize((TOON_SIZE, TOON_SIZE), Image.LANCZOS)), toon_skin, grade))
+    style_tint = delight.to_linear(appearance.richer(toon_skin, grade)) / np.maximum(delight.to_linear(toon_skin), 1e-4)
     for name, mesh, uv, texture in (("head", head, head_uv, head_texture),
                                     ("body", body, body_uv, rest_texture)):
         source = mesh.metadata["base_index"]
@@ -1571,6 +1781,11 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             roughness=appearance.SKIN_ROUGHNESS["skin"], normal_scale=PORE_STRENGTH[name],
         ))
         parts[-1].morphs = expression_morphs(mesh, face_shapes)
+        if name == "head":
+            parts[-1].extra_textures = {"toonTexture": toon_texture, "styleTexture": style_texture}
+        else:
+            # The stylized style tints the body's skin as the head's is graded.
+            parts[-1].material_extras = {"styleTint": [round(float(g), 4) for g in style_tint]}
         # Skin reflects less than the glTF default (IOR 1.5): with it the
         # face wore a pale sheen of reflected room that read as grey.
         parts[-1].ior = SKIN_IOR
@@ -1628,6 +1843,10 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # Cloth scatters light at grazing angles: a soft rim along folds
             # and edges that plain roughness does not give (KHR_materials_sheen).
             parts[-1].sheen = CLOTH_SHEEN
+        if item.get("leather"):
+            # Leather has a gloss, not cloth's grazing sheen (garments.leather_roughness).
+            parts[-1].sheen = None
+            parts[-1].roughness_texture = garments.leather_roughness(mesh, vertices, groups)
         if item["category"] == "hair" and "mhclo" in item:
             # Hair's highlight runs across the strands, a band rather than a
             # spot; the strands lie along the texture's v axis.
@@ -1641,17 +1860,48 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     shown = next((item["id"] for item, _ in worn if item["category"] == "hair" and "mhclo" in item), None)
     tint = next((m.metadata["tint"] for item, m in worn if item["category"] == "hair"
                  and m.metadata.get("tint") is not None), None)
+    if tint is None and hair_rgb is None and hair_reading and hair_reading.get("colour") is not None:
+        # Built bald (as the studio builds), the picker's cuts still in the
+        # photo's hair colour: they were all the stock brown, grey and white
+        # hair too (read_hair read p06's 183 176 168).
+        hair_rgb = hair_reading["colour"]
+        if hair_colour_hint:
+            hair_rgb = photo_check.within_colour(hair_rgb, hair_colour_hint)
     if tint is None:
         tint = dye_colour(hair_rgb if hair_rgb is not None else HAIR_FALLBACK)
     hair_options = [item for item in items_by_id().values()
-                    if item["category"] == "hair" and "mhclo" in item and item["id"] != shown]
+                    if item["category"] == "hair" and ("mhclo" in item or item.get("curl")) and item["id"] != shown]
     for item in hair_options:
-        mesh = build_item(item, np.full(3, skinned_glb.HAIR_GREY), vertices)
+        if item.get("curl"):
+            # Made, not loaded: the skull cap to this head's hairline, thickened and coiled.
+            cut = {**item, "hairline": hairline_for(placed, vertices, groups, float(item.get("hairline_lift", 0.0)))}
+            cut.pop("y_min", None)
+            mesh = garments.curl_cap(build_item(cut, np.full(3, skinned_glb.HAIR_GREY), vertices))
+        else:
+            mesh = build_item(item, np.full(3, skinned_glb.HAIR_GREY), vertices)
         parts.append(rigged_part(item["id"], mesh, item.get("roughness", ROUGHNESS.get("hair", 0.8)), vertices,
                                  groups, joints, weights, len(skeleton)))
         parts[-1].morphs = expression_morphs(mesh, face_shapes)
-        parts[-1].anisotropy = HAIR_ANISOTROPY
+        if not item.get("curl"):
+            # Strands' highlight; coils have none (it drew streaks across them).
+            parts[-1].anisotropy = HAIR_ANISOTROPY
         parts[-1].base_colour = skinned_glb.hair_factor(tint)
+
+    # Glasses, every pair fitted to this head and hidden, as the haircuts: the
+    # studio wears the first when the photo shows glasses (smooth_skin's
+    # reading), and the person can take them off. The viewer hides every pair
+    # unless asked (chooseGlasses), so likeness renders stay bare-faced, and
+    # the download keeps only the one picked. Bound to the head bone alone:
+    # rigid, they do not bend with the brows. Frames only (glasses_frames).
+    glasses_options = [item for item in items_by_id().values() if item["category"] == "glasses"]
+    eye_centres = np.array([vertices[np.unique(groups[g])].mean(axis=0) for g in ("helper-l-eye", "helper-r-eye")])
+    skin_surface = trimesh.Trimesh(vertices, body_faces, process=False)
+    for item in glasses_options:
+        mesh = garments.glasses_frames(build_item(item, None, vertices), eye_centres, skin_surface)
+        parts.append(rigged_part(item["id"], mesh, item.get("roughness", 0.3), vertices, groups,
+                                 joints, weights, len(skeleton)))
+        parts[-1].joints, parts[-1].weights = rigid_binding(len(mesh.vertices), skeleton.index.get("head", 0))
+    glasses_shown = glasses_options[0]["id"] if photo_glasses and glasses_options else None
 
     eye_base = eyes.metadata["base_index"]
     parts.append(skinned_glb.Part(
@@ -1661,6 +1911,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         roughness=ROUGHNESS["eyes"],                 # wet, so the highlight shows
     ))
     parts[-1].clearcoat = CORNEA_COAT
+    parts[-1].material_extras = {"irisEdge": round(eyes.metadata["iris_edge"], 2)}
     parts[-1].morphs = expression_morphs(eyes, face_shapes)
 
     if face_patch:
@@ -1684,16 +1935,24 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # swung out until the hands clear the hips.
     body_part = next(p for p in parts if p.name == "body")
     skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
-                       morph_names=morph.ARKIT_NAMES + ["photoMouth"],
+                       morph_names=morph.ARKIT_NAMES + ["photoMouth", "stylize"],
                        expression=photo_face,
                        head_pose=head_pose,
-                       extras={"hair": shown, "hairOptions": [item["id"] for item in hair_options]})
+                       extras={"hair": shown, "hairOptions": [item["id"] for item in hair_options],
+                               "glassesOptions": [item["id"] for item in glasses_options],
+                               # The chin's height and the eye spacing, for the viewer's neck shadow.
+                               "jawLine": [float(vertices[corr[152], 1]),
+                                           float(np.linalg.norm(vertices[corr[33]] - vertices[corr[263]]))]})
 
     info = {
         "advice": photo_advice(landmarks, (pw, ph), expression_of(result), result, photo_rgb),
         "hair": {"shown": shown, "colour": [int(c) for c in tint],
                  "options": [{"id": i["id"], "label": i["label"]}
                              for i in ([items_by_id()[shown]] if shown else []) + hair_options]},
+        # The studio's glasses picker: `shown` is what it starts on, a pair
+        # where the photo shows glasses (`photo`), none otherwise.
+        "glasses": {"photo": bool(photo_glasses), "shown": glasses_shown,
+                    "options": [{"id": i["id"], "label": i["label"]} for i in glasses_options]},
         "source_photo": photo_path.name,
         "photo_size": list(photo.size),
         "kind": "full-body",
@@ -1722,6 +1981,7 @@ def compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "mouth_filled": mouth_filled,
         "top_colour": None if top_rgb is None else [int(c) for c in top_rgb],
         "jaw_beard": jaw_beard,
+        "colour_gains": [float(g) for g in colour_gains],
         "hair_comb": hair_comb,
         "cast_corrected": list(cast_shift),
         "hair_reading": None if hair_reading is None else
@@ -1757,6 +2017,8 @@ def main() -> int:
                              "except for a hard edge across the forehead")
     parser.add_argument("--pose", choices=sorted(POSES), default="relaxed",
                         help="the stance the file opens in (the skeleton is the same)")
+    parser.add_argument("--no-refine", dest="refine", action="store_false",
+                        help="skip the second build that aims the lips and jaw by a render of the first")
     parser.add_argument("--compat", action="store_true",
                         help="write normals and texture coordinates as floats, without "
                              "KHR_mesh_quantization, for old viewers such as Windows' 3D Viewer")
@@ -1765,7 +2027,7 @@ def main() -> int:
     try:
         info = compose(args.photo, args.out, args.gender,
                        args.wear.split(",") if args.wear else None, args.face_patch, args.pose,
-                       side_photos=args.side or None, hair=args.hair)
+                       side_photos=args.side or None, hair=args.hair, refine=args.refine)
     except NoFaceFound:
         print("no face found in the photo", file=sys.stderr)
         return 1

@@ -75,6 +75,8 @@ class Part:
         self.anisotropy = None          # (strength, rotation in radians): KHR_materials_anisotropy
         self.clearcoat = None           # (strength, roughness): KHR_materials_clearcoat
         self.base_colour = None         # linear RGB the texture is multiplied by (hair_factor)
+        self.extra_textures = {}        # {"toonTexture": PIL, ...}: other styles' base colours, in the material's extras
+        self.material_extras = {}       # plain values for the material's extras (e.g. styleTint)
 
 
 class _Buffer:
@@ -386,6 +388,10 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
             material.pbrMetallicRoughness.baseColorTexture = gl.TextureInfo(
                 index=_add_texture(gltf, buf, part.texture, _seen=embedded, smooth_alpha=part.alpha_blend)
             )
+        if part.extra_textures or part.material_extras:
+            # Not glTF slots: the studio's other styles swap them in.
+            material.extras = {**{name: _add_texture(gltf, buf, image, _seen=embedded) for name, image in part.extra_textures.items()},
+                               **part.material_extras}
         if part.alpha_mask:
             material.alphaMode = "MASK"
             material.alphaCutoff = 0.5
@@ -534,23 +540,26 @@ def _pack(doc: dict, blob: bytearray) -> bytes:
     return struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body
 
 
-def with_hair(glb: bytes, cut: str | None, colour=None) -> bytes:
+def with_hair(glb: bytes, cut: str | None, colour=None, glasses: str | None = None) -> bytes:
     """The avatar wearing one haircut: the others the file carries for the
     studio's picker (its mesh's `hairOptions`) taken out, so another engine
     does not draw them all at once, and the hair recoloured to `colour`
-    (sRGB) if given. `cut` None or "bald" leaves no haircut."""
+    (sRGB) if given. `cut` None or "bald" leaves no haircut. The same for
+    the glasses (`glassesOptions`): `glasses` the pair kept, None none."""
     doc, blob = _unpack(glb)
     mesh = doc["meshes"][0]
     extras = mesh.get("extras", {})
     cuts = set(extras.get("hairOptions", [])) | ({extras["hair"]} if extras.get("hair") else set())
+    pairs = set(extras.get("glassesOptions", []))
     name = lambda primitive: doc["materials"][primitive["material"]].get("name")
-    mesh["primitives"] = [pr for pr in mesh["primitives"] if name(pr) not in cuts or name(pr) == cut]
+    mesh["primitives"] = [pr for pr in mesh["primitives"]
+                          if (name(pr) not in cuts or name(pr) == cut) and (name(pr) not in pairs or name(pr) == glasses)]
     if colour is not None:
         for primitive in mesh["primitives"]:
             if name(primitive) == cut:
                 doc["materials"][primitive["material"]]["pbrMetallicRoughness"]["baseColorFactor"] = \
                     [*hair_factor(colour), 1.0]
-    mesh["extras"] = {**extras, "hair": cut if cut in cuts else None, "hairOptions": []}
+    mesh["extras"] = {**extras, "hair": cut if cut in cuts else None, "hairOptions": [], "glassesOptions": []}
     return _pack(*_compact(doc, blob))
 
 

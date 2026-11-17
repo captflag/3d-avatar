@@ -14,8 +14,8 @@ the system pack covers thinly. Each item is checked against its pack's own
 manifest before it is used.
 
 The haircuts from MakeHuman's community asset packs (Hair 01, CC0; Hair 02
-and 03, CC-BY) are fetched the same way, folder by folder, each checked
-against its pack's own manifest.
+and 03, CC-BY) and the glasses (Glasses 01, CC0) are fetched the same way,
+folder by folder, each checked against its pack's own manifest.
 
 Also fetches the six regional macro targets `morph.body_for` blends to make a
 man's or a woman's body, and the expression units `morph.fit` uses to tell a

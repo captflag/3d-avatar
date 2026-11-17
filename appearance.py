@@ -33,6 +33,10 @@ HAIR, BODY_SKIN, FACE_SKIN, CLOTHES = 1, 2, 3, 4
 
 _segmenter = None
 _segmenter_lock = threading.Lock()
+# SAM 2.1 small (Apache-2.0), from the Hugging Face cache: refine_hair.
+HAIR_REFINER = "facebook/sam2.1-hiera-small"
+_refiner = None
+_refiner_lock = threading.Lock()
 
 # What a healthy sclera measures, as LAB a*, b* offsets from neutral.
 NATURAL_WHITE = np.array([1.0, 4.0])
@@ -48,6 +52,13 @@ IRIS_PALETTE = {
     "green": (96, 116, 70), "grey": (120, 126, 128), "blue-grey": (96, 118, 138),
     "blue": (72, 112, 158),
 }
+# The iris's lightness (OpenCV LAB, 0-255) from which it is a light eye
+# (hazel, green, grey, blue), told apart by colour alone. An iris reads dark
+# in any photo, in the lids' shade, so matched with lightness every test face
+# came out dark brown: the six brown-eyed read 18-40, the grey-green and
+# blue-grey 59 and 67.
+LIGHT_IRIS = 50.0
+LIGHT_FAMILIES = ("hazel", "green", "grey", "blue-grey", "blue")
 
 
 def _lab(pixels: np.ndarray) -> np.ndarray:
@@ -97,7 +108,15 @@ SCLERA_L = (45.0, 93.0)
 # 15% more: matched exactly, identity fell on both faces tried (p01 0.502 ->
 # 0.493, samples/portrait.jpg 0.538 -> 0.531); 15% brighter it held
 # (0.500, 0.536) with the whites still within the bar (sclera_dE 8.0, 19.6).
-SCLERA_GAIN = 0.72 / 0.56 * 1.15
+# Over the eight dev faces later the whites rendered 6-17 L* brighter than the
+# photos' and stood out stark; without the 15% they are 15.6 -> 11.1 dE off,
+# likeness level (2026-10-30). Still 6 L* lighter than the photos' over the
+# eight then: 10% off that.
+SCLERA_GAIN = 0.72 / 0.56 * 0.9
+# The range (LAB a*, b*) a white's own hue is read in: held to a healthy
+# white's (NATURAL_WHITE), the whites rendered 7 a* and 5 b* cooler than every
+# test photo's, which are warm and pinkish (a* 6-13, b* 6-12).
+SCLERA_HUE = ((1.0, 4.0), (10.0, 12.0))
 
 
 def sclera_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = None) -> np.ndarray:
@@ -115,20 +134,23 @@ def sclera_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = No
         return SCLERA.copy()
     bright = pixels[pixels[:, 0] >= np.percentile(pixels[:, 0], 60)]
     lightness = np.clip(SCLERA_GAIN * np.median(bright[:, 0]) * 100 / 255, *SCLERA_L) * 255 / 100
-    return _rgb(np.array([lightness, *(128.0 + NATURAL_WHITE)])).astype(np.float64)
+    hue = np.clip(np.median(bright[:, 1:], axis=0) - 128.0, *SCLERA_HUE)
+    return _rgb(np.array([lightness, *(128.0 + hue)])).astype(np.float64)
 
 
-# The lips' inner edge (MediaPipe ids), and a tooth's natural hue as LAB a*,
-# b* offsets from neutral (the catalogue's tooth colour, 232 224 208).
+# The lips' inner edge (MediaPipe ids), and the range of a tooth's natural hue
+# as LAB a*, b* offsets from neutral, the photo's own held within it. One
+# fixed hue (1, 9) left p01's and p08's teeth 7-8 a* more neutral than their
+# photos' (teeth_dE 8.3 and 10.6); the dev photos' teeth read a* 3-9, b* 8-17.
 INNER_LIPS = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95]
-TOOTH_HUE = np.array([1.0, 9.0])
+TOOTH_HUE = (np.array([0.0, 4.0]), np.array([10.0, 20.0]))
 
 
 def teeth_colour(photo_rgb: np.ndarray, landmarks):
     """The teeth as the photo shows them (sRGB), or None where it shows too
     little of them: the brighter half inside the inner lips, at the photo's
-    exposure, its hue held to a natural tooth's and its lightness to
-    SCLERA_L. The catalogue's fixed near-white rendered at L* 88 in a photo
+    exposure, its hue the photo's held to a natural tooth's (TOOTH_HUE) and
+    its lightness to SCLERA_L. The catalogue's fixed near-white rendered at L* 88 in a photo
     whose teeth read 51 (the test set's first face, smiling)."""
     if len(landmarks) <= 477:
         return None
@@ -142,7 +164,8 @@ def teeth_colour(photo_rgb: np.ndarray, landmarks):
     pixels = _lab(photo_rgb[inner > 0])
     bright = pixels[pixels[:, 0] >= np.median(pixels[:, 0])]
     lightness = np.clip(np.median(bright[:, 0]) * 100 / 255, *SCLERA_L) * 255 / 100
-    return _rgb(np.array([lightness, *(128.0 + TOOTH_HUE)])).astype(np.float64)
+    hue = np.clip(np.median(bright[:, 1:], axis=0) - 128.0, *TOOTH_HUE)
+    return _rgb(np.array([lightness, *(128.0 + hue)])).astype(np.float64)
 
 
 def white_balance(rgb: np.ndarray, cast: np.ndarray, strength: float = 0.6) -> np.ndarray:
@@ -171,10 +194,18 @@ def iris_colour(photo_rgb: np.ndarray, landmarks, cast: np.ndarray | None = None
 
     names = list(IRIS_PALETTE)
     palette = _lab(np.array([IRIS_PALETTE[n] for n in names]))
-    # Hue decides the family; lightness only separates dark from light shades.
-    distance = np.linalg.norm((palette - measured) * np.array([0.5, 1.0, 1.0]), axis=1)
+    # Light or dark by lightness; within a light eye's families by colour alone,
+    # within a brown eye's by lightness too.
+    light = measured[0] >= LIGHT_IRIS
+    weight = np.array([0.0, 1.0, 1.0]) if light else np.array([0.5, 1.0, 1.0])
+    distance = np.linalg.norm((palette - measured) * weight, axis=1)
+    distance[[(n in LIGHT_FAMILIES) != light for n in names]] = np.inf
     nearest = int(distance.argmin())
     snapped = (measured + palette[nearest]) / 2.0
+    # A light eye keeps the photo's own lightness: snapped halfway to the
+    # palette's, a grey iris rendered 15-20 dE off the photo's, lighter.
+    if light:
+        snapped[0] = measured[0]
     return _rgb(snapped).astype(np.float64), names[nearest]
 
 
@@ -198,6 +229,58 @@ def segment(photo_rgb: np.ndarray) -> np.ndarray | None:
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(photo_rgb[..., :3]))
         mask = _segmenter.segment(image).category_mask.numpy_view()
     return np.array(mask).reshape(photo_rgb.shape[:2])
+
+
+def refine_hair(photo_rgb: np.ndarray, parts: np.ndarray | None) -> np.ndarray | None:
+    """`parts` (segment) with its hair redrawn at the photo's own resolution by
+    SAM 2.1 small, prompted from it: points well inside its hair, and inside
+    the face's skin and the background as not hair. MediaPipe's segmenter works
+    at 256 px: on the dev faces it left gaps between a fringe's strands (p09),
+    ran the hair down the temples to the ears where it was skin (the example)
+    and painted a band over bald scalp (p03). It gains hair only where the
+    segmenter saw background (taken from skin too, the ears' and neck's, the
+    skin's smoothing moved and p01's mouth read 0.7% off); hair it drops
+    becomes background. As it is
+    without SAM 2 in the Hugging Face cache, or with no hair to prompt from.
+    About 2 s on the CPU."""
+    global _refiner
+    if parts is None or not (parts == HAIR).any():
+        return parts
+    try:
+        import torch
+        from transformers import Sam2Model, Sam2Processor
+        with _refiner_lock:
+            if _refiner is None:
+                _refiner = (Sam2Processor.from_pretrained(HAIR_REFINER, local_files_only=True),
+                            Sam2Model.from_pretrained(HAIR_REFINER, local_files_only=True).eval())
+    except Exception as err:            # no transformers, torchvision or model: MediaPipe's mask
+        print(f"refine_hair: {HAIR_REFINER} not available ({type(err).__name__}); keeping the segmenter's hair")
+        return parts
+    processor, model = _refiner
+    from PIL import Image
+    h, w = parts.shape
+    rng = np.random.default_rng(0)
+    inset = max(int(0.01 * max(h, w)), 2)
+
+    def inside(mask, n):
+        core = cv2.erode(mask.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=inset) > 0
+        ys, xs = np.nonzero(core)
+        pick = rng.choice(len(ys), size=min(n, len(ys)), replace=False) if len(ys) else []
+        return [[float(xs[i]), float(ys[i])] for i in pick]
+
+    hair, other = inside(parts == HAIR, 8), inside(parts == FACE_SKIN, 4) + inside(parts == 0, 4)
+    if not hair:
+        return parts
+    inputs = processor(images=Image.fromarray(np.ascontiguousarray(photo_rgb[..., :3])), input_points=[[hair + other]],
+                       input_labels=[[[1] * len(hair) + [0] * len(other)]], return_tensors="pt")
+    with torch.no_grad():
+        out = model(**inputs, multimask_output=True)
+    masks = processor.post_process_masks(out.pred_masks.cpu(), inputs["original_sizes"])[0][0]
+    sam = masks[int(out.iou_scores[0, 0].argmax())].numpy() > 0
+    refined = parts.copy()
+    refined[(parts == HAIR) & ~sam] = 0
+    refined[sam & (parts == 0)] = HAIR
+    return refined
 
 
 # Heights above the brows, in eye spacings, at which the hair's width is read
@@ -515,6 +598,263 @@ def sharpen_creases(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray,
     return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
 
 
+# The cartoon style's face paint (cartoon_face), as shares of the face's
+# width: the upper lash line's and the lip line's thickness, the blush's
+# size and strength, and the lash colour.
+TOON_LASH = 0.014
+TOON_LIP_LINE = 0.006
+TOON_BLUSH = (0.09, 0.22)
+TOON_LASH_RGB = (38, 28, 26)
+TOON_CHEEKS = (205, 425)                    # MediaPipe ids at the middle of each cheek
+# The painted styles' skin up to this much more saturated than the photo's
+# (L*a*b* chroma): the reference cartoon avatar's cheeks read a*/b* 19-24 /
+# 28-29 against its photo's 12 / 16, and ours, at the photo's, rendered grey.
+# But the paint no more saturated than STYLE_CHROMA_MAX (style_chroma): 1.9x
+# for all rendered the warmer-skinned dev faces orange, cheeks C* 46-50 (p01,
+# p07, p09) against the reference's 36 and the example's 38. The studio
+# renders skin about 1.45x the paint's chroma (example paint 25 -> 38, p01
+# 34 -> 49, p09 29 -> 45).
+STYLE_CHROMA = 1.9
+STYLE_CHROMA_MAX = 26.0
+# The stylized paint keeps a share of the photo's large-scale tone (blurred
+# over [0] of the face's width), [1]: the example photo, lit from above,
+# painted a pale forehead over a dark orange chin, where the reference is one
+# tone and the studio's light gives the volume. And [2] of the finer detail
+# under that, in lightness only: the person is in it (style_score.py, dev
+# faces' SFace: 0.122 with half of it, colour too, and an edge-preserving
+# filter; in lightness only 0.148 with half, 0.181 with three quarters, 0.186
+# with all), and in colour it came back as orange blotches (p02's cheek
+# patch, p06's and p09's freckles) once saturated. Three quarters: nearly all
+# the person, a quarter less of the wrinkles and scars.
+STYLE_FLATTEN = (0.12, 0.3, 0.75)
+STYLE_LOWER_LIP = 0.15                      # the stylized paint's lower lip this much darker
+# A beard is drawn where it covers this share of the jaw, a moustache this
+# share of the zone between nose and upper lip (beard_cover): real ones read
+# 0.62 / 0.96 (p01), 0.61 jaw (p08), 0.80 moustache (p05); a shadowed jaw on a
+# clean-shaven face 0.18 / 0.24, p03's light stubble 0.20 / 0.26.
+TOON_BEARD_AT = (0.30, 0.50)
+TOON_MOUSTACHE_ZONE = [98, 97, 2, 326, 327, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185, 61]
+# The lid crease: how far above the lid line, and how much darker.
+TOON_CREASE = (0.03, 0.22)
+TOON_BROW_GROW = 0.004                      # brows thickened by this share of the face's width
+TOON_LIP_INSET = 0.03                       # lips drawn this far inside the landmarks' outline
+TOON_UPPER_LIP = [291, 409, 270, 269, 267, 0, 37, 39, 40, 185, 61, 78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308]
+
+
+def stylized_skin(skin_rgb: np.ndarray, photo_rgb: np.ndarray, bare: np.ndarray, landmarks) -> tuple[np.ndarray, np.ndarray]:
+    """The skin as a stylized 3D character paints it: one even colour with the
+    photo's broad lighting mostly taken out (STYLE_FLATTEN), and the photo's
+    finer detail kept in lightness only, which is where the person is. Scaled
+    (linear, per channel) by the photo's skin
+    over the whole face (`bare`) against its cheek patches: the skin is matched
+    to render as the cheeks do (delight.match_colour), and where they carry
+    a highlight (the example photo's at 230 193 170) the whole face rendered
+    that light. Returns (image, gain): the gain (linear RGB) tints the rest of
+    the skin, scalp, ears and body, the same way."""
+    from delight import CHEEK_PATCHES, median_colour, to_linear, to_srgb
+    h, w = photo_rgb.shape[:2]
+    cheeks = np.zeros((h, w), np.uint8)
+    for ring in CHEEK_PATCHES:
+        pts = np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in ring])
+        cv2.fillPoly(cheeks, [cv2.convexHull(pts.round().astype(np.int32))], 1)
+    gain = to_linear(median_colour(photo_rgb[bare])[None, :])[0] / np.maximum(
+        to_linear(median_colour(photo_rgb[(cheeks > 0) & bare])[None, :])[0], 1e-4)
+    gain = np.clip(gain, 0.4, 1.5)
+    smooth = to_srgb(to_linear(np.ascontiguousarray(skin_rgb[..., :3])) * gain).astype(np.uint8)
+    px = np.array([[lm.x * w, lm.y * h] for lm in landmarks[:468]])
+    face_w = float(np.ptp(px[:, 0]))
+    blur = lambda x: cv2.GaussianBlur(x, (0, 0), max(STYLE_FLATTEN[0] * face_w, 1.0))
+    # Over the whole face, not `bare`: a beard reading (the example's shadowed
+    # jaw) left the lower face out and its darkness in. Eyes, brows and lips
+    # out, which would leave a light halo round each.
+    weight = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(weight, cv2.convexHull(np.round(px).astype(np.int32)), 1)
+    for ids in (*EYE_CONTOURS, *BROWS, OUTER_LIPS):
+        cv2.fillPoly(weight, [cv2.convexHull(np.round(px[list(ids)]).astype(np.int32))], 0)
+    weight = weight.astype(np.float32)
+    lab = cv2.cvtColor(smooth, cv2.COLOR_RGB2LAB).astype(np.float32)
+    large = blur(lab * weight[..., None]) / np.maximum(blur(weight), 1e-3)[..., None]
+    tone = cv2.cvtColor(median_colour(smooth[bare]).reshape(1, 1, 3), cv2.COLOR_RGB2LAB).astype(np.float32)[0, 0]
+    out = tone + STYLE_FLATTEN[1] * (large - tone)
+    out[..., 0] += STYLE_FLATTEN[2] * (lab[..., 0] - large[..., 0])
+    # Outside the face's outline the one tone: the photo sheet reaches past
+    # the chin, and painted the example's hoodie and headphones on the neck.
+    inside = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(inside, cv2.convexHull(np.round(px).astype(np.int32)), 1)
+    inside = cv2.GaussianBlur(cv2.erode(inside, np.ones((3, 3), np.uint8), iterations=max(int(0.02 * face_w), 1)).astype(np.float32),
+                              (0, 0), max(0.03 * face_w, 1.0))[..., None]
+    out = np.clip(out * inside + tone * (1.0 - inside), 0, 255).astype(np.uint8)
+    return cv2.cvtColor(out, cv2.COLOR_LAB2RGB), gain
+
+
+def style_chroma(skin) -> float:
+    """How much richer() saturates this person's paint (sRGB skin tone
+    `skin`): STYLE_CHROMA, or less if that would take it past STYLE_CHROMA_MAX,
+    but never less saturated than the photo."""
+    lab = cv2.cvtColor(np.uint8(np.clip(skin, 0, 255)).reshape(1, 1, 3), cv2.COLOR_RGB2LAB)[0, 0].astype(np.float64)
+    return float(np.clip(STYLE_CHROMA_MAX / max(np.hypot(lab[1] - 128.0, lab[2] - 128.0), 1.0), 1.0, STYLE_CHROMA))
+
+
+def richer(rgb: np.ndarray, chroma: float = STYLE_CHROMA) -> np.ndarray:
+    """sRGB colours (any shape, ... x 3) with their L*a*b* chroma scaled by `chroma`, lightness kept."""
+    rgb = np.asarray(rgb)
+    lab = cv2.cvtColor(np.clip(rgb, 0, 255).astype(np.uint8).reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).astype(np.float64)
+    lab[..., 1:] = 128.0 + (lab[..., 1:] - 128.0) * chroma
+    out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    return out.reshape(rgb.shape).astype(rgb.dtype)
+
+
+def warmer(rgb: np.ndarray, tone, chroma: float) -> np.ndarray:
+    """sRGB colours (any shape, ... x 3) moved in colour (L*a*b* a, b) by what
+    richer() moves the skin tone `tone`: one shift for the whole picture, so
+    its own variation stays as it was. Scaled instead, a photo's freckles and
+    flush were scaled with the tone, and the skin came out blotched orange."""
+    rgb = np.asarray(rgb)
+    lab = lambda x: cv2.cvtColor(np.clip(x, 0, 255).astype(np.uint8).reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).astype(np.float64)
+    tone = np.asarray(tone, dtype=np.float64)
+    out = lab(rgb)
+    out[..., 1:] += (lab(richer(tone, chroma)) - lab(tone))[0, 0, 1:]
+    return cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB).reshape(rgb.shape).astype(rgb.dtype)
+
+
+def beard_cover(beard: np.ndarray, px: np.ndarray) -> tuple[float, float]:
+    """How much of the jaw and of the moustache zone (nose to upper lip) a
+    facial_hair map calls beard (> 0.5), 0-1 each, at landmarks `px`."""
+    h, w = beard.shape
+    face_w = float(np.ptp(px[:, 0]))
+    jaw = [172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397]
+    taken = [beard[int(np.clip(px[i, 1] - k, 0, h - 1)), int(np.clip(px[i, 0], 0, w - 1))]
+             for i in jaw for k in np.arange(0, 0.25 * face_w, max(0.03 * face_w, 1))]
+    zone = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(zone, [np.round(px[TOON_MOUSTACHE_ZONE]).astype(np.int32)], 1)
+    return float(np.mean(np.array(taken) > 0.5)), float(np.mean(beard[zone > 0] > 0.5)) if zone.any() else 0.0
+
+
+def cartoon_face(photo_rgb: np.ndarray, landmarks, skin, beard: np.ndarray | None = None,
+                 base: np.ndarray | None = None) -> np.ndarray:
+    """The face as a cartoon draws it, in the photo's pixels: one flat skin
+    tone (`skin`, sRGB) with a soft blush, and on it the person's own brows,
+    lips and lash line as clean shapes in their photo colours, a soft lid
+    crease, and a beard or moustache (`beard`, facetexture.facial_hair's map)
+    where the photo clearly has one (TOON_BEARD_AT). With `base`
+    (stylized_skin) the shapes are drawn on that instead of the flat tone.
+    Baked onto the head like the photo (the cartoon and stylized styles' head
+    textures): every part sits where the photo's does."""
+    h, w = photo_rgb.shape[:2]
+    px = np.array([[lm.x * w, lm.y * h] for lm in landmarks[:468]])
+    face_w = float(np.ptp(px[:, 0]))
+    ring = lambda ids: np.round(px[list(ids)]).astype(np.int32)
+
+    def poly(ids):
+        mask = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(mask, [ring(ids)], 1, cv2.LINE_AA)
+        return mask > 0
+
+    soft = lambda mask, k=0.004: cv2.GaussianBlur(mask.astype(np.float32), (0, 0), max(k * face_w, 0.7))[..., None]
+    from delight import median_colour, to_linear, to_srgb
+    hull = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(hull, cv2.convexHull(ring(range(468))), 1)
+    # The photo's colours drawn as dark against `skin` as they were against
+    # the photo's skin (linear, per channel): on the example, a skin tone
+    # darkened by stylized_skin's gain left its lips as light as the skin.
+    ratio = to_linear(np.asarray(skin, np.float64)) / np.maximum(to_linear(median_colour(photo_rgb[hull > 0])), 1e-4)
+    paint = lambda rgb: to_srgb(to_linear(rgb) * ratio).astype(np.float64)
+    out = np.empty((h, w, 3), np.float64)
+    out[:] = skin if base is None else base
+    # A soft blush on each cheek, each skin's own colour warmer and redder:
+    # a fixed pink lightened dark skin.
+    blush = np.zeros((h, w), np.float32)
+    for i in TOON_CHEEKS:
+        cv2.circle(blush, tuple(int(v) for v in px[i]), max(int(TOON_BLUSH[0] * face_w), 1), 1.0, -1)
+    blush = cv2.GaussianBlur(blush, (0, 0), max(TOON_BLUSH[0] * face_w / 2, 1.0))[..., None] * TOON_BLUSH[1]
+    out = out * (1 - blush) + out * np.array([1.08, 0.82, 0.80]) * blush
+    # A beard or moustache only where the photo clearly has one, inside the
+    # face: a shadowed jaw's leftover reading was drawn as a smudge round the mouth.
+    if beard is not None:
+        jaw, moustache = beard_cover(beard, px)
+        lip_top = float(px[[0, 37, 267], 1].min())
+        rows = np.arange(h)[:, None]
+        where = (beard > 0.35) & (hull > 0) & ((jaw >= TOON_BEARD_AT[0]) | (
+            (moustache >= TOON_BEARD_AT[1]) & (rows < lip_top + 0.02 * face_w)))
+        hairs = photo_rgb[(beard > 0.5) & where].astype(np.float64)
+        if len(hairs):
+            shape = cv2.GaussianBlur(where.astype(np.float32), (0, 0), max(0.01 * face_w, 1.0))[..., None]
+            # Its hairs' colour, the darker half: the skin between them made the median a light brown.
+            light = hairs.mean(axis=1)
+            out = out * (1 - 0.9 * shape) + paint(np.median(hairs[light <= np.median(light)], axis=0)) * 0.9 * shape
+    # A soft crease above each upper lid.
+    crease = np.zeros((h, w), np.uint8)
+    for contour in EYE_CONTOURS:
+        upper = _upper_lid(px, contour)
+        if len(upper) > 1:
+            cv2.polylines(crease, [np.round(upper - [0, TOON_CREASE[0] * face_w]).astype(np.int32)], False, 1,
+                          max(int(0.012 * face_w), 1), cv2.LINE_AA)
+    out = out * (1 - TOON_CREASE[1] * soft(crease, 0.008))
+    # Brows: the darker quarter of the photo's brow pixels (their median read
+    # skin as well and came out light brown), a little thicker, feathered.
+    brows = poly(BROWS[0]) | poly(BROWS[1])
+    if brows.any():
+        dark = photo_rgb[brows].astype(np.float64)
+        light = dark.mean(axis=1)
+        brow = paint(np.median(dark[light <= np.percentile(light, 25)], axis=0))
+        grow = max(int(TOON_BROW_GROW * face_w), 1)
+        grown = cv2.dilate(brows.astype(np.uint8), np.ones((2 * grow + 1, 2 * grow + 1), np.uint8))
+        a = soft(grown)
+        out = out * (1 - a) + brow * a
+    # Lips: the darker half of the photo's lip pixels (the median took in the
+    # lower lip's highlight and came out pink), inset a little from the
+    # landmarks; the upper lip darker, a soft highlight on the lower.
+    lips = poly(OUTER_LIPS)
+    if lips.any():
+        px_l = photo_rgb[lips].astype(np.float64)
+        light = px_l.mean(axis=1)
+        lip = paint(np.median(px_l[light <= np.median(light)], axis=0))
+        centre = px[OUTER_LIPS].mean(axis=0)
+        inset = np.round(centre + (px[OUTER_LIPS] - centre) * (1 - TOON_LIP_INSET)).astype(np.int32)
+        inner = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(inner, [inset], 1, cv2.LINE_AA)
+        upper = poly(TOON_UPPER_LIP) & (inner > 0)
+        a = soft(inner > 0, 0.003)
+        out = out * (1 - a) + lip * a
+        out = out * (1 - 0.18 * soft(upper, 0.003))
+        if base is not None:
+            # Lit (the stylized style), the lower lip faces into the key and
+            # rendered as light as the cheeks (175 against 190; the upper 130):
+            # darker paint and no painted shine, the light gives that.
+            out = out * (1 - STYLE_LOWER_LIP * soft((inner > 0) & ~upper, 0.003))
+    if lips.any() and base is None:
+        shine = np.zeros((h, w), np.float32)
+        lower_mid = (px[17] + px[14]) / 2
+        cv2.ellipse(shine, tuple(int(v) for v in lower_mid), (max(int(0.06 * face_w), 1), max(int(0.015 * face_w), 1)),
+                    0, 0, 360, 1.0, -1)
+        shine = cv2.GaussianBlur(shine, (0, 0), max(0.012 * face_w, 1.0))[..., None] * 0.18
+        out = out * (1 - shine) + np.minimum(out * 1.35, 255) * shine
+    if lips.any():
+        line = np.zeros((h, w), np.uint8)
+        cv2.polylines(line, [ring(INNER_LIPS)], True, 1, max(int(TOON_LIP_LINE * face_w), 1), cv2.LINE_AA)
+        out = out * (1 - 0.45 * soft(line, 0.002))
+    canvas = np.clip(out, 0, 255).astype(np.uint8)
+    # The upper lash line, thicker towards the outer corner.
+    for contour in EYE_CONTOURS:
+        upper = _upper_lid(px, contour)
+        if len(upper) > 1:
+            outer = upper if px[contour[0], 0] > px[1, 0] else upper[::-1]
+            cv2.polylines(canvas, [np.round(upper).astype(np.int32)], False, TOON_LASH_RGB,
+                          max(int(TOON_LASH * face_w), 1), cv2.LINE_AA)
+            cv2.polylines(canvas, [np.round(outer[len(outer) // 2:]).astype(np.int32)], False, TOON_LASH_RGB,
+                          max(int(1.6 * TOON_LASH * face_w), 1), cv2.LINE_AA)
+    return canvas
+
+
+def _upper_lid(px: np.ndarray, contour) -> np.ndarray:
+    """An eye contour's points above the line between its corners, left to right."""
+    pts = px[list(contour)]
+    corners = pts[[0, 8]]
+    order = np.argsort(corners[:, 0])
+    upper = [p for p in pts if p[1] <= np.interp(p[0], corners[order, 0], corners[order, 1])]
+    return np.array(sorted(upper, key=lambda p: p[0]))
+
+
 def paint_lashes(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks) -> np.ndarray:
     """The upper lash line, as dark as the photo's, drawn on the lid skin just
     outside the eye opening after fill_eyes has painted the opening over.
@@ -688,6 +1028,33 @@ def lip_tone(skin_rgb: np.ndarray, landmarks) -> np.ndarray:
     lab = cv2.cvtColor(np.ascontiguousarray(skin_rgb), cv2.COLOR_RGB2LAB).astype(np.float32)
     lab += LIP_RENDER_SHIFT[None, None, :].astype(np.float32) * mask[..., None]
     return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+
+
+def match_lips(skin_rgb: np.ndarray, photo_rgb: np.ndarray, landmarks, limits=(0.3, 3.0)):
+    """The lips scaled (linear, a gain per channel, feathered at their edge) so
+    they render the colour the photo shows them, as delight.match_colour does
+    the cheeks. A fixed shift (lip_tone) and the cheeks' gain left them as far
+    off as either way: 9.8 L* dark on p04, 4.7 on p02, 5.1 light on p08.
+    Returns (image, gains)."""
+    from delight import rendered, to_linear, to_srgb
+    h, w = photo_rgb.shape[:2]
+    ring = lambda ids: np.array([[landmarks[i].x * w, landmarks[i].y * h] for i in ids]).round().astype(np.int32)
+    outer, inner = np.zeros((h, w), np.uint8), np.zeros((h, w), np.uint8)
+    cv2.fillPoly(outer, [ring(OUTER_LIPS)], 1)
+    cv2.fillPoly(inner, [ring(INNER_LIPS)], 1)
+    width = float(np.ptp(ring(OUTER_LIPS)[:, 0]))
+    grow = max(int(0.03 * width), 1)
+    lips = (cv2.erode(outer, np.ones((2 * grow + 1,) * 2, np.uint8)) > 0) & ~(cv2.dilate(inner, np.ones((2 * grow + 1,) * 2, np.uint8)) > 0)
+    if lips.sum() < 30:
+        return skin_rgb, np.ones(3)
+    target = to_linear(np.median(photo_rgb[lips], axis=0).round().astype(np.uint8)[None, :])[0]
+    have = to_linear(np.median(skin_rgb[lips], axis=0).round().astype(np.uint8)[None, :])[0]
+    gains = np.ones(3)
+    for _ in range(12):
+        gains = np.clip(gains * target / np.maximum(rendered(have * gains), 1e-4), *limits)
+    weight = cv2.GaussianBlur(outer.astype(np.float64), (0, 0), max(0.03 * width, 0.5))[..., None]
+    linear = to_linear(skin_rgb)
+    return to_srgb(linear * (1.0 + (gains - 1.0) * weight)), np.round(gains, 3)
 
 
 # ------------------------------------------------------------ colour cast -----
@@ -962,14 +1329,17 @@ def forehead_skin(parts: np.ndarray | None, landmarks) -> np.ndarray | None:
     took the top of the forehead from generated skin. The segmenter sees the
     real forehead; this keeps its face-skin class above the brows and between
     the temples, pulled in from the hair a little, as the part of the photo to
-    bake there.
+    bake there. And the hair over the forehead with it: the avatar is bald, and
+    smooth_skin fills that hair with the face's skin. Left to generated skin, a
+    fringe's strands and the hairline came out on the bald forehead as streaks
+    and a band in the generated skin's other tone (p09, p01).
     """
     if parts is None or len(landmarks) <= 454:
         return None
     h, w = parts.shape
     face_w = abs(landmarks[454].x - landmarks[234].x) * w
     grow = max(int(round(0.03 * face_w)), 1)
-    skin = cv2.erode((parts == FACE_SKIN).astype(np.uint8), np.ones((2 * grow + 1,) * 2, np.uint8))
+    skin = cv2.erode(((parts == FACE_SKIN) | (parts == HAIR)).astype(np.uint8), np.ones((2 * grow + 1,) * 2, np.uint8))
     brow = np.mean([landmarks[i].y for i in (105, 334)]) * h
     lid = np.mean([landmarks[i].y for i in (159, 386)]) * h
     rows, cols = np.arange(h)[:, None], np.arange(w)[None, :]
@@ -1505,17 +1875,42 @@ def warm_ears(rgb: np.ndarray, ear: np.ndarray) -> np.ndarray:
 # larger and stays), the scale the colour is evened at and how far towards its
 # median (light's patches), the edge's feather, how far past the eyes, brows
 # and lips they are kept, and how much of the skin's own grain is left so it
-# does not read as wax.
-SMOOTH_MARKS = 0.035
+# does not read as wax. Marks at 1.2% with a little grain kept ("style B"): at
+# 3.5% with none, fully smooth, the nose and cheekbones flattened with the
+# freckles, and likeness at the photo's pose over the eight test faces fell
+# 0.273 -> 0.178 against the photo's own skin; at 1.2% it is 0.247, the
+# blemishes still gone (2026-10-30, asked for after the first version).
+# Then on the colour only (SMOOTH_LIGHT_GRAIN, all the lightness's detail
+# kept): pasting the photo's fine detail onto the render was worth +0.135
+# likeness on all eight faces, another person's -0.073, and the smoothing took
+# a third of it. Over the eight: outline 3.35 -> 3.02% (3 -> 5 of 8 within
+# 3%), mouth 2.78 -> 2.34%, held-out 3.68 -> 3.37%, likeness 0.232 -> 0.244
+# (p02 -0.027, its acne scars harsher than the photo's; dlib 0.657 -> 0.665).
+# Chosen by eye against style B by the user (2026-11-03).
+SMOOTH_MARKS = 0.012
 SMOOTH_BROAD = 0.035
 SMOOTH_EVEN = 1.0
+# The evening's lightness part: none. Evened in lightness too (all of it,
+# until 2026-11-16), every shade broader than SMOOTH_BROAD went to one tone:
+# the nose's, the cheeks' and the eye sockets' own shading, which is the
+# person. The texture's SFace against its photo (8 dev faces, in photo space):
+# 0.717 before this function, 0.378 after it; with the colour alone evened
+# 0.547, with no evening 0.567 (the rest is the hair and glasses taken out).
+SMOOTH_EVEN_LIGHT = 0.0
 SMOOTH_FEATHER = 0.012
 SMOOTH_KEEP = 0.025
-SMOOTH_GRAIN = 0.0
+SMOOTH_GRAIN = 0.12
+SMOOTH_LIGHT_GRAIN = 1.0
+# How far round the photo's hair above the brows its shade reaches, as a share
+# of the face's width: filled with the hair as bald skin (smooth_skin).
+HAIR_SHADE = 0.06
 # The features kept from the photo sharpened (unsharp mask): how much, and at
 # what scale (a share of the face's width). Beside the smoothed skin they read
-# soft, the photo's own focus and the texture's resampling both.
-FEATURE_SHARPEN = (0.8, 0.004)
+# soft, the photo's own focus and the texture's resampling both. At 0.8 the
+# lips rendered with 55-60% of the photo's fine detail (p07, p01, matched in
+# size); at 1.6 about 77%, likeness level (0.226 -> 0.229 over the eight dev
+# faces). At 2.4 brows and beards began to look stringy, with halos.
+FEATURE_SHARPEN = (1.6, 0.004)
 # Brows kept hair by hair (smooth_skin): pixels this much (L*, of 255) darker
 # than the skin, and lines thinner than FRAME_WIDTH of the face's width taken
 # out first. Kept as a whole zone, a pair of glasses' rim crossing it survived
@@ -1528,6 +1923,13 @@ BROWS = ([70, 63, 105, 66, 107, 55, 65, 52, 53, 46], [300, 293, 334, 296, 336, 2
 BROW_LOWER = ([55, 65, 52, 53, 46], [285, 295, 282, 283, 276])
 BROW_BELOW = 0.01
 FRAME_RUN = 0.05
+# The photo-true skin's frame (smooth_skin, repairs_only): marks at least this
+# long, as a share of the face's width (a lens's rim is 0.3-0.4, both with the
+# bridge 0.9), with this share of their pixels 4 x BROW_DARKER off the skin.
+# On the two dev faces with glasses the frames are 0.96 and 0.99 long with
+# 0.36 and 0.60 strong; skin lines under 0.35 long with 0.00-0.05.
+FRAME_RING = 0.25
+FRAME_STRONG = 0.25
 # The brow drawn under its kept hairs (smooth_skin), so a fine, light or
 # rim-crossed brow reads as one whole brow: its strength at the inner and
 # outer ends, how far its shape is drawn in from the landmarks' outline (a
@@ -1553,18 +1955,30 @@ def _skin_blur(rgb: np.ndarray, source: np.ndarray, sigma: float) -> np.ndarray:
 
 
 def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: np.ndarray | None,
-                beard: np.ndarray | None = None) -> np.ndarray:
-    """The face's skin smooth and even: no freckles, spots, pores or the
-    blotches a photo's light leaves; its form (the nose, the cheekbones), the
-    eyes, brows, lips and any beard kept as the photo has them.
+                beard: np.ndarray | None = None, repairs_only: bool = False) -> tuple[np.ndarray, bool]:
+    """The face's skin even in colour: no red or brown blotches or the patches
+    a photo's light leaves; its lightness's detail (creases, lid lines,
+    texture), its form (the nose, the cheekbones), the eyes, brows, lips and
+    any beard kept as the photo has them. And whether the photo shows glasses
+    (a frame's rim under each eye), which the studio's glasses picker starts
+    from.
 
-    Asked for: smooth, flawless skin, no marks of any kind. Frequency
-    separation: the skin's detail under SMOOTH_MARKS of the face's width is
-    taken out but for SMOOTH_GRAIN of it, and its colour evened SMOOTH_EVEN of
-    the way to the median at SMOOTH_BROAD, features included. Smoothed at the
+    Frequency separation: the skin's detail under SMOOTH_MARKS of the face's
+    width is taken out of its colour but for SMOOTH_GRAIN of it, and out of
+    its lightness but for SMOOTH_LIGHT_GRAIN, and its colour evened SMOOTH_EVEN of
+    the way to the median at SMOOTH_BROAD (its lightness SMOOTH_EVEN_LIGHT of
+    that), features included. Smoothed at the
     broad scale alone (the first version) the face went soft: the nose and
     cheekbones flattened with the freckles. Hair over the face above the brows
-    (a fringe, the hairline: the avatar is built bald) is skin to fill."""
+    (a fringe, the hairline: the avatar is built bald) is skin to fill.
+
+    With `repairs_only` (the photo-true skin, compose) nothing is smoothed,
+    evened or sharpened: the photo's pixels stay as they are but for the hair
+    over the forehead, filled with the face's median tone, and a glasses
+    frame, its thin lines painted out from the skin beside them
+    (cv2.inpaint). Smoothed and evened, the texture's SFace against its photo
+    fell 0.72 -> 0.38 over the 8 dev faces; repaired only, the builds went
+    0.32 -> 0.5."""
     h, w = face_mask.shape
     px = np.array([[lm.x * w, lm.y * h] for lm in landmarks[:468]])
     face_w = float(np.ptp(px[:, 0]))
@@ -1600,15 +2014,37 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     # face's width); a thin brow's own edge is one too, so only on a face
     # wearing glasses (such a line under the eyes as well, where no brow is),
     # and only below the lowest such line in each column.
-    def level_lines(where):
-        thin = (np.abs(lightness - no_lines) > BROW_DARKER) & where
+    def level_lines(where, darker=BROW_DARKER):
+        thin = (np.abs(lightness - no_lines) > darker) & where
         thin = cv2.dilate(thin.astype(np.uint8), np.ones((3, 1), np.uint8))
         return cv2.morphologyEx(thin, cv2.MORPH_OPEN, np.ones((1, max(int(FRAME_RUN * face_w), 5)), np.uint8)) > 0
     eyes_y = float(px[[159, 386], 1].mean()); nose_y = float(px[1, 1])
     under = np.zeros((h, w), bool)
     under[int(eyes_y + 0.35 * (nose_y - eyes_y)):int(nose_y), int(px[:, 0].min()):int(px[:, 0].max())] = True
-    if level_lines(under & ~keep).sum() > FRAME_RUN * face_w:
-        rim = level_lines(zone)
+    # A rim under each eye, at twice a brow's contrast: wrinkles and a cheek's
+    # creases under the eyes made lines too, fainter or on one side only
+    # (p07's both sides at 5 and 3 rim lengths at a brow's contrast, none at
+    # twice; p02's one side at 7; the two faces wearing glasses 8 or more on
+    # each side).
+    rims = level_lines(under & ~keep, 2 * BROW_DARKER)
+    side = np.arange(w)[None, :] < float(px[1, 0])
+    glasses = min((rims & side).sum(), (rims & ~side).sum()) > FRAME_RUN * face_w
+    if glasses:
+        # Where the rim slopes it is no level line: the thin lines that run on
+        # well outside the brow are the rim, and not brow either inside it.
+        # Opened first: a hair is a pixel or two wide, a rim several, and
+        # hairs touching the rim joined the whole brow to it.
+        thin = cv2.morphologyEx((np.abs(lightness - no_lines) > 2 * BROW_DARKER).astype(np.uint8),
+                                cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        _, labels = cv2.connectedComponents(thin, connectivity=8)
+        apart = thin & ~(cv2.dilate(brow_hair.astype(np.uint8), disc) > 0)
+        count, pieces, stats, _ = cv2.connectedComponentsWithStats(apart.astype(np.uint8), connectivity=8)
+        extent = np.maximum(stats[1:, cv2.CC_STAT_WIDTH], stats[1:, cv2.CC_STAT_HEIGHT])
+        long = np.flatnonzero((extent > FRAME_RUN * face_w)
+                              & (stats[1:, cv2.CC_STAT_AREA] < FRAME_WIDTH * face_w * extent)) + 1
+        sloped = np.isin(labels, np.setdiff1d(np.unique(labels[np.isin(pieces, long)]), [0]))
+        brow_hair &= ~(cv2.dilate(sloped.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0)
+        rim = level_lines(zone) | sloped & zone
         cols = np.nonzero(rim.any(axis=0))[0]
         if len(cols):
             lowest = h - 1 - rim[::-1, cols].argmax(axis=0)
@@ -1624,13 +2060,27 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     # showed as a light line through the brow. The gap is brow, coloured from
     # the line-free image below.
     brow_hair = cv2.morphologyEx(brow_hair, cv2.MORPH_CLOSE, np.ones((2 * tall, 3), np.uint8)) > 0
-    keep |= brow_hair
+    # Hair by hair, with the brow drawn under them, only on a face wearing
+    # glasses. Without, the brow is kept whole as the photo has it: hair by
+    # hair it came out thinner and lighter, and likeness at the photo's pose
+    # fell 0.379 -> 0.298 on p01, 0.243 -> 0.226 over the eight test faces.
+    keep |= brow_hair if glasses else cv2.dilate(hull(BROWS), disc) > 0
     if beard is not None:
-        keep |= beard > 0.2
+        # The gaps between a moustache's clumps kept too, stubble and all:
+        # smoothed, they read as bare islands of skin and the moustache as
+        # separate patches (p08).
+        gaps = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(int(0.1 * face_w), 3) | 1,) * 2)
+        keep |= cv2.morphologyEx((beard > 0.2).astype(np.uint8), cv2.MORPH_CLOSE, gaps) > 0
     hair = (parts == HAIR) if parts is not None else np.zeros((h, w), bool)
     # The photo's hair above the brows is the bald head's skin too: baked as it
     # was, the hairline lay on the bare scalp as a dark band.
-    hair = hair & (np.arange(h)[:, None] < float(px[[105, 334], 1].mean()))
+    above = np.arange(h)[:, None] < float(px[[105, 334], 1].mean())
+    # With the skin between a fringe's strands and a band under the hairline:
+    # in the hair's shade, darker than the forehead, they kept the fringe's and
+    # the hairline's outline on the bald head as streaks and a ring (p09, p01).
+    shade = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(int(HAIR_SHADE * face_w), 3) | 1,) * 2)
+    hair = cv2.dilate(cv2.morphologyEx((hair & above).astype(np.uint8), cv2.MORPH_CLOSE, shade), shade) > 0
+    hair &= above & ~keep
     # All the photo's skin, not the landmark mesh's outline alone: the bake
     # paints the forehead to the hairline and the jaw past the outline from
     # the photo too.
@@ -1638,7 +2088,7 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     region = (face_mask | skin_parts | hair) & ~keep
     source = region & ~hair
     if source.sum() < 500:
-        return skin_rgb
+        return skin_rgb, glasses
     rgb = skin_rgb.astype(np.float64)
     # The rims out of the brow zone's colour too, so the smoothing's feather
     # round the brow hairs does not let them back in as a faint arc.
@@ -1646,30 +2096,114 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     # pixels that are not brow hair take it.
     k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(int(2 * FRAME_WIDTH * face_w), 5) | 1,) * 2)
     clean = cv2.morphologyEx(cv2.morphologyEx(skin_rgb.astype(np.uint8), cv2.MORPH_CLOSE, k2), cv2.MORPH_OPEN, k2)
-    lines = zone & ~((no_lines < skin_l - BROW_DARKER) & (lightness < skin_l - BROW_DARKER))
-    rgb[lines] = clean[lines]
+    if glasses and not repairs_only:
+        lines = zone & ~((no_lines < skin_l - BROW_DARKER) & (lightness < skin_l - BROW_DARKER))
+        rgb[lines] = clean[lines]
+    # On a face wearing glasses, the frame out of all the skin: smoothed at
+    # SMOOTH_MARKS with some grain kept, the rims round the eyes and the bridge
+    # stayed as faint rings, a nose pad's grey shadow as a smudge by the eye
+    # and the hinges as dots. Small dark spots go first, as the thin lines'
+    # filter leaves them; then the frame is the long dark lines (rims, bridge,
+    # pad arms, hinges) and the grey beside them (the clear pads and their
+    # shadow), in the eye's kept margin too, filled from the skin round it.
+    if glasses:
+        eyes = hull(EYE_CONTOURS)
+        lashes = cv2.dilate(eyes, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * (grow // 3) + 1,) * 2)) > 0
+        reach = region | (cv2.dilate(eyes, disc) > 0) & ~lashes
+        spots = np.abs(skin_rgb.astype(np.float64) - clean).max(axis=2)
+        dots = cv2.dilate((region & (spots > BROW_DARKER)).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        if not repairs_only:
+            rgb[dots & region] = clean[dots & region]
+        thin = (reach & (spots > 2 * BROW_DARKER)).astype(np.uint8)
+        if repairs_only:
+            # Where a frame sits only: from the brows' top to the nose's tip.
+            # Everywhere, a shiny forehead's and a beard's edges made long
+            # runs too, and a fifth of p08's face was painted over.
+            band = np.zeros((h, w), np.uint8)
+            band[max(int(px[[105, 334, 66, 296], 1].min() - 0.08 * face_w), 0):int(nose_y + 0.05 * face_w)] = 1
+            thin &= band
+            # And only what is as thin as a frame: wider marks (a lens's
+            # shadow on the cheek, shine) hung on the rim as one piece with it.
+            wide = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(int(2 * FRAME_WIDTH * face_w), 3) | 1,) * 2)
+            thin &= 1 - cv2.dilate(cv2.morphologyEx(thin, cv2.MORPH_OPEN, wide), wide)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(thin, connectivity=8)
+        extent = np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT])
+        long = np.flatnonzero(extent > FRAME_RUN * face_w)
+        if repairs_only:
+            # And lines, not patches: a rim's whole ring is about three times
+            # its length in area, a patch of shine many more.
+            long = long[stats[long, cv2.CC_STAT_AREA] < 5 * FRAME_WIDTH * face_w * extent[long]]
+            # And a frame, not the skin's own lines: as long as a lens's rim,
+            # and standing out twice as far as a mark has to. A forehead's
+            # and the under-eyes' creases and a rough skin's pores are long
+            # thin marks too, and with them p08's cheeks and brow were
+            # painted out in patches (16% of his face; the lines 3% of it now).
+            strong = (spots > 4 * BROW_DARKER) & (labels > 0)
+            share = np.bincount(labels[strong], minlength=count) / np.maximum(stats[:, cv2.CC_STAT_AREA], 1)
+            long = long[(extent[long] > FRAME_RING * face_w) & (share[long] > FRAME_STRONG)]
+        frame = np.isin(labels, long[long > 0]).astype(np.uint8)
+        pad = max(int(FRAME_WIDTH * face_w / 2), 2)
+        if repairs_only:
+            # Of those, what lies along the strong line itself: creases that
+            # cross a rim are one piece with it.
+            frame &= cv2.dilate(strong.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1,) * 2))
+            # And still as long as a rim without them: a cluster of moles a
+            # crease joined to the rim is not.
+            count, labels, stats, _ = cv2.connectedComponentsWithStats(frame, connectivity=8)
+            extent = np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT])
+            frame = np.isin(labels, np.flatnonzero(extent[1:] > FRAME_RING * face_w) + 1).astype(np.uint8)
+        near = cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (16 * pad + 1,) * 2)) > 0
+        lab = cv2.cvtColor(skin_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
+        chroma = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)
+        grey = chroma < 0.8 * np.median(chroma[source])
+        if repairs_only:
+            # The frame's own lines only, painted out from the skin beside them.
+            lines = cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1,) * 2)) & reach.astype(np.uint8)
+            rgb = cv2.inpaint(np.clip(rgb, 0, 255).astype(np.uint8), lines, float(2 * pad), cv2.INPAINT_TELEA).astype(np.float64)
+        else:
+            frame = (cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1,) * 2)) > 0) | near & grey
+            frame = (cv2.dilate(frame.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & reach
+            rgb[frame] = _skin_blur(rgb, source & ~frame, max(SMOOTH_MARKS * face_w, 1.0))[frame]
     fine = _skin_blur(rgb, source, max(SMOOTH_MARKS * face_w, 1.0))
     broad = _skin_blur(rgb, source, max(SMOOTH_BROAD * face_w, 1.0))
-    shift = SMOOTH_EVEN * (np.median(rgb[source], axis=0) - broad)
+    # The evening, in L*a*b*: colour (a, b) SMOOTH_EVEN of the way to the
+    # median, lightness SMOOTH_EVEN_LIGHT of that. As an RGB shift with its
+    # luma taken out it bent the hue of dark and light skin (p02 greyed, and
+    # match_colour then doubled her blue).
+    to_lab = lambda x: cv2.cvtColor(np.clip(x / 255.0, 0, 1).astype(np.float32), cv2.COLOR_RGB2LAB).astype(np.float64)
+    shift = (0.0 if repairs_only else SMOOTH_EVEN) * (to_lab(np.median(rgb[source], axis=0)[None, None, :]) - to_lab(broad))
+    shift[..., 0] *= SMOOTH_EVEN_LIGHT
+
+    def evened(image, weight=1.0):
+        lab = to_lab(image) + shift * weight
+        return cv2.cvtColor(lab.astype(np.float32), cv2.COLOR_LAB2RGB).astype(np.float64) * 255.0
     feather = max(SMOOTH_FEATHER * face_w, 1.0)
     whole = cv2.GaussianBlur((region | keep & face_mask).astype(np.float64), (0, 0), feather)[..., None]
     # Every skin pixel fully smoothed, the feather falling on the kept
     # features' side: feathered both ways, the unsmoothed lid skin beside a
-    # brow showed through as a faint light line along it.
-    alpha = np.maximum(cv2.GaussianBlur(region.astype(np.float64), (0, 0), feather), region)[..., None]
+    # brow kept hair by hair showed through as a faint light line along it.
+    alpha = cv2.GaussianBlur(region.astype(np.float64), (0, 0), feather)
+    alpha = (np.maximum(alpha, region) if glasses else alpha)[..., None]
     # Hair filled from the skin round it: its own detail is hair's, not grain.
-    grain = SMOOTH_GRAIN * (rgb - fine) * (~hair)[..., None]
-    skin = fine + grain + shift
+    # The lightness part of that detail kept SMOOTH_LIGHT_GRAIN of the way:
+    # the creases, lid lines and texture a face is recognised by are in it,
+    # the blotches mostly in the colour.
+    detail = rgb - fine
+    light = detail @ np.array([0.299, 0.587, 0.114])
+    grain = (SMOOTH_GRAIN * detail + (SMOOTH_LIGHT_GRAIN - SMOOTH_GRAIN) * light[..., None]) * (~hair)[..., None]
+    if repairs_only:
+        grain = detail * (~hair)[..., None]
+    skin = evened(fine + grain)
     # Where the photo had hair, the face's own median skin, softened in: filled
     # from the skin round it, the darker skin at the hairline came with it and
     # lay on the bald scalp as a band.
     median = np.median(rgb[source], axis=0)
     filled = cv2.GaussianBlur(hair.astype(np.float64), (0, 0), 2 * feather)[..., None]
     skin = skin * (1.0 - filled) + median * filled
-    amount, scale = FEATURE_SHARPEN
+    amount, scale = (0.0, FEATURE_SHARPEN[1]) if repairs_only else FEATURE_SHARPEN
     detail = rgb - cv2.GaussianBlur(rgb, (0, 0), max(scale * face_w, 0.6))
     sharp = rgb + amount * detail * (keep & face_mask)[..., None]
-    out = (sharp + shift * whole) * (1.0 - alpha) + skin * alpha
+    out = evened(sharp, whole) * (1.0 - alpha) + skin * alpha
     # Each brow drawn whole beneath its hairs: kept hair by hair, a fine or
     # light brow came out sparse and broken, and one a rim crossed, notched.
     # Its own hairs' colour (they stay on top), its landmarks' shape drawn in a
@@ -1679,7 +2213,7 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     dark = brow_hair & (lightness < skin_l - BROW_DARKER)
     hairs = cv2.GaussianBlur(dark.astype(np.float64), (0, 0), 1.0)
     inset = max(int(BROW_INSET * face_w), 1)
-    for ring, inner, outer in zip(BROWS, (55, 285), (46, 276)):
+    for ring, inner, outer in zip(BROWS, (55, 285), (46, 276)) if glasses and not repairs_only else ():
         shape = np.zeros((h, w), np.uint8)
         cv2.fillPoly(shape, [px[list(ring)].round().astype(np.int32)], 1)
         shape = cv2.erode(shape, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset + 1,) * 2))
@@ -1701,4 +2235,4 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
         fill = cv2.GaussianBlur(shape.astype(np.float64), (0, 0), max(BROW_FEATHER * face_w, 1.0)) * strength
         fill = (fill * (1.0 - hairs))[..., None]
         out = out * (1.0 - fill) + colour * fill
-    return np.clip(out, 0, 255).astype(np.uint8)
+    return np.clip(out, 0, 255).astype(np.uint8), glasses

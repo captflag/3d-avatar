@@ -147,6 +147,43 @@ def read_target(path: pathlib.Path) -> tuple[np.ndarray, np.ndarray]:
     return np.array(idx, dtype=np.int64), np.array(delta, dtype=np.float64).reshape(-1, 3)
 
 
+# The stylized style's head: MakeHuman's own targets at these weights, carried
+# in every file as the "stylize" blendshape at 0 and turned on only by the
+# studio's stylized style (STYLIZED.shapes). Solved (bounded least squares on
+# the base mesh, in the front view through the landmarks' front skin) so its
+# proportions move as the reference cartoon avatar's move from its photo
+# (style_score.IDEAL): eyes opened half again, lips thinner, mouth, nose and
+# face shorter or narrower, brows nearer the eyes, the jaw kept. Solved twice,
+# the second time against what the first left short in the 8 dev faces'
+# stylized portraits (style_score.py). There, against the photo: eye opening
+# 1.04 -> 1.39 (reference 1.53), lip height 1.05 -> 0.80 (0.75), face height
+# 0.99 -> 0.91 (0.91), mouth 0.96 -> 0.91 (0.90), nose 1.01 -> 0.94 (0.91),
+# brows 1.05 -> 0.95 (0.89); the jaw not (0.93 against 0.985: no target widens
+# it as MediaPipe reads it). Identity held: SFace 0.165 with or without it,
+# dlib 0.69-0.70. The by-eye shape before it (a tapered jaw, wider cheekbones)
+# narrowed the jaw the reference keeps and moved nothing else.
+STYLIZE = {"eyes/l-eye-height1-incr": 0.141, "eyes/r-eye-height1-incr": 0.141,
+           "eyes/l-eye-height2-incr": 1.0, "eyes/r-eye-height2-incr": 1.0,
+           "eyes/l-eye-height3-incr": 1.0, "eyes/r-eye-height3-incr": 1.0,
+           "eyes/l-eye-scale-incr": 0.358, "eyes/r-eye-scale-incr": 0.358,
+           "mouth/mouth-upperlip-height-decr": 0.233, "mouth/mouth-lowerlip-height-decr": 0.391,
+           "mouth/mouth-scale-horiz-decr": 0.617, "mouth/mouth-scale-vert-decr": 0.51,
+           "nose/nose-scale-horiz-decr": 0.43, "nose/nose-nostrils-width-decr": 0.203,
+           "nose/nose-scale-vert-decr": 0.418, "chin/chin-height-decr": 0.677,
+           "head/head-scale-vert-decr": 0.135, "forehead/forehead-scale-vert-decr": 0.104,
+           "ears/l-ear-scale-decr": 0.4, "ears/r-ear-scale-decr": 0.4}
+
+
+def stylize_shape(count: int) -> np.ndarray:
+    """The "stylize" blendshape over `count` base-mesh vertices (STYLIZE)."""
+    out = np.zeros((count, 3), dtype=np.float32)
+    for name, weight in STYLIZE.items():
+        idx, delta = read_target(TARGET_DIR / f"{name}.target")
+        keep = idx < count
+        out[idx[keep]] += weight * delta[keep]
+    return out
+
+
 def load_targets():
     """Every face target as (name, vertex indices, offsets)."""
     global _targets
@@ -663,6 +700,13 @@ OUTLINE_REACH = 0.25
 OUTLINE_DAMPING = 0.3
 # Silhouettes are drawn at this many pixels per eye-corner spacing.
 OUTLINE_SCALE = 300.0
+# The jaw's targets set this far below the photo's outline (eye-corner
+# spacings): MediaPipe reads the bald render's jaw that much higher than the
+# silhouette it is fitted to. Measured on the eight dev faces' renders (1.8-2.3%
+# at every jaw point); set lower by it, outline 3.02 -> 2.78%, jaw 3.42 ->
+# 2.93%, chin 1.78 -> 1.01%. A per-face loop through a render did better
+# (2.51%, 6 of 8 within 3%) at a second build's cost.
+JAW_READ_HIGH = 0.02
 
 
 def head_only(vertices: np.ndarray, faces: np.ndarray, weights: dict) -> np.ndarray:
@@ -738,6 +782,7 @@ def fit_outline(vertices: np.ndarray, head_faces: np.ndarray, person: np.ndarray
     size = int(4 * OUTLINE_SCALE)
     in_view = lambda q: np.stack([q[:, 0] * scale + size / 2, -q[:, 1] * scale + size / 2], axis=1)
     targets = in_view((person[JAW_OUTLINE] - centre) @ rotation.T)
+    targets[:, 1] += JAW_READ_HIGH * spacing * scale
     nose = in_view((person[[1]] - centre) @ rotation.T)[0]
     rays = (targets - nose) / np.linalg.norm(targets - nose, axis=1, keepdims=True)
     on_head = np.unique(head_faces)

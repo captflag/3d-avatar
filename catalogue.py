@@ -235,11 +235,15 @@ def build_item(item: dict, colour=None, vertices: np.ndarray | None = None) -> t
             if texture is not None and item.get("recolour"):
                 # One outfit file, any colours: dye the shirt and the trousers
                 # separately, keeping the fabric's own shading.
-                from garments import garment_regions, recolour
+                from garments import garment_regions, inner_pieces, recolour
                 top = garment_regions(mesh, vertices, load_base()[1])
+                masks = {"top": top, "bottom": ~top}
+                if "inner" in item["recolour"]:
+                    # A shirt under a jacket: the top's dark pieces.
+                    inner = inner_pieces(texture, mesh, top)
+                    masks.update(top=top & ~inner, inner=inner)
                 for part, dye in item["recolour"].items():
-                    texture = recolour(texture, mesh, top if part == "top" else ~top, dye,
-                                       plain=part in item.get("plain", ()))
+                    texture = recolour(texture, mesh, masks[part], dye, plain=part in item.get("plain", ()))
             if texture is not None and item.get("tooth_colour"):
                 from garments import whiten_teeth
                 texture = whiten_teeth(texture, item["tooth_colour"])
