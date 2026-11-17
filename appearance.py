@@ -1923,6 +1923,13 @@ BROWS = ([70, 63, 105, 66, 107, 55, 65, 52, 53, 46], [300, 293, 334, 296, 336, 2
 BROW_LOWER = ([55, 65, 52, 53, 46], [285, 295, 282, 283, 276])
 BROW_BELOW = 0.01
 FRAME_RUN = 0.05
+# The photo-true skin's frame (smooth_skin, repairs_only): marks at least this
+# long, as a share of the face's width (a lens's rim is 0.3-0.4, both with the
+# bridge 0.9), with this share of their pixels 4 x BROW_DARKER off the skin.
+# On the two dev faces with glasses the frames are 0.96 and 0.99 long with
+# 0.36 and 0.60 strong; skin lines under 0.35 long with 0.00-0.05.
+FRAME_RING = 0.25
+FRAME_STRONG = 0.25
 # The brow drawn under its kept hairs (smooth_skin), so a fine, light or
 # rim-crossed brow reads as one whole brow: its strength at the inner and
 # outer ends, how far its shape is drawn in from the landmarks' outline (a
@@ -2126,8 +2133,25 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
             # And lines, not patches: a rim's whole ring is about three times
             # its length in area, a patch of shine many more.
             long = long[stats[long, cv2.CC_STAT_AREA] < 5 * FRAME_WIDTH * face_w * extent[long]]
+            # And a frame, not the skin's own lines: as long as a lens's rim,
+            # and standing out twice as far as a mark has to. A forehead's
+            # and the under-eyes' creases and a rough skin's pores are long
+            # thin marks too, and with them p08's cheeks and brow were
+            # painted out in patches (16% of his face; the lines 3% of it now).
+            strong = (spots > 4 * BROW_DARKER) & (labels > 0)
+            share = np.bincount(labels[strong], minlength=count) / np.maximum(stats[:, cv2.CC_STAT_AREA], 1)
+            long = long[(extent[long] > FRAME_RING * face_w) & (share[long] > FRAME_STRONG)]
         frame = np.isin(labels, long[long > 0]).astype(np.uint8)
         pad = max(int(FRAME_WIDTH * face_w / 2), 2)
+        if repairs_only:
+            # Of those, what lies along the strong line itself: creases that
+            # cross a rim are one piece with it.
+            frame &= cv2.dilate(strong.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1,) * 2))
+            # And still as long as a rim without them: a cluster of moles a
+            # crease joined to the rim is not.
+            count, labels, stats, _ = cv2.connectedComponentsWithStats(frame, connectivity=8)
+            extent = np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT])
+            frame = np.isin(labels, np.flatnonzero(extent[1:] > FRAME_RING * face_w) + 1).astype(np.uint8)
         near = cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (16 * pad + 1,) * 2)) > 0
         lab = cv2.cvtColor(skin_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
         chroma = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)
