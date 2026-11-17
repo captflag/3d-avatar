@@ -349,6 +349,14 @@ def hair_style(reading: dict | None, default: str) -> str | None:
     (0.720) and lower on the rest. The others stay in the catalogue for the
     photo check and --wear.
 
+    Hair reaching the jaw is toigo's blunt bob (community Hair 01 pack, CC0),
+    fringe or none. MakeHuman's own bob01 and bob02 sweep a long fringe over
+    one eye, and lifted to the photo's hairline the fringe tore open: on two
+    generated faces with jaw-length hair, identity at the pose 0.15 and 0.27
+    in bob01, 0.24 and 0.40 in bob02, 0.50 and 0.39 in the blunt bob. Its
+    version with a straight fringe scored 0.33 on both: lifted the same way,
+    its fringe broke into a jagged edge.
+
     ponytail: five measurements and fourteen short cuts, one pick for all.
     The long-hair branch has not yet been checked against a real long-haired
     photo.
@@ -361,7 +369,7 @@ def hair_style(reading: dict | None, default: str) -> str | None:
     if reading["bottom"] > 0.15:
         return "hair_long01"
     if reading["bottom"] > -0.15:
-        return "hair_bob02" if fringe else "hair_bob01"
+        return "hair_toigo_blunt_bob"
     if fringe:
         return "hair_short03"
     # Hair that barely stands out past the face's outline at the temples is a

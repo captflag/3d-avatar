@@ -441,6 +441,33 @@
       "credit": "culturalibre"
     },
     {
+      "id": "hair_toigo_blunt_bob",
+      "category": "hair",
+      "label": "Bob, chin length",
+      "mhclo": "community_packs/hair01_cc0/hair/toigo_blunt_bob/toigo_blunt_bob.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC0-1.0 (toigo, MakeHuman community asset repository; hair01_cc0.zip from files2.makehumancommunity.org/asset_packs, marked CC0 in its packs manifest)"
+    },
+    {
+      "id": "hair_toigo_blunt_bob_with_bangs",
+      "category": "hair",
+      "label": "Bob with a straight fringe",
+      "mhclo": "community_packs/hair01_cc0/hair/toigo_blunt_bob_with_bangs/toigo_blunt_bob_with_bangs.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC0-1.0 (toigo, MakeHuman community asset repository; hair01_cc0.zip from files2.makehumancommunity.org/asset_packs, marked CC0 in its packs manifest)"
+    },
+    {
+      "id": "hair_toigo_curled_under_bob",
+      "category": "hair",
+      "label": "Bob, curled under",
+      "mhclo": "community_packs/hair01_cc0/hair/toigo_curled_under_bob/toigo_curled_under_bob.mhclo",
+      "colour": "from_photo",
+      "roughness": 0.68,
+      "licence": "CC0-1.0 (toigo, MakeHuman community asset repository; hair01_cc0.zip from files2.makehumancommunity.org/asset_packs, marked CC0 in its packs manifest)"
+    },
+    {
       "id": "hair_bob01",
       "category": "hair",
       "label": "Bob",
@@ -492,7 +519,11 @@
       "_why": "Worn by every avatar: hidden with the mouth closed, shown when a blendshape opens the jaw. The lower teeth hang from the lower jaw's helper, which the jaw-open unit moves.",
       "mhclo": "mh_system/teeth/teeth_base/teeth_base.mhclo",
       "roughness": 0.3,
-      "tooth_colour": [232, 224, 208],
+      "tooth_colour": [
+        232,
+        224,
+        208
+      ],
       "licence": "CC0-1.0 (MakeHuman system asset pack, makehuman_system_assets_cc0.zip from files2.makehumancommunity.org; every asset in its packs/makehuman_system_assets.json is marked CC0, and MakeHuman's license.txt section C releases its bundled proxies, clothes and textures under CC0 1.0)"
     },
     {
