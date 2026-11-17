@@ -710,6 +710,14 @@ def check_style_paint():
     k = ap.style_chroma(warm)
     lab = cv2.cvtColor(np.uint8(ap.richer(warm, k)).reshape(1, 1, 3), cv2.COLOR_RGB2LAB)[0, 0].astype(float)
     assert 1 < k < ap.STYLE_CHROMA and ap.style_chroma([210, 120, 70]) == 1.0 and abs(np.hypot(lab[1] - 128, lab[2] - 128) - ap.STYLE_CHROMA_MAX) < 3, f"chroma x{k:.2f}"
+    # The stylized head's grade (warmer): the tone lands where richer() puts
+    # it, and a freckle keeps its own difference from the skin, not k times it.
+    to_lab = lambda x: cv2.cvtColor(np.uint8(x).reshape(-1, 1, 3), cv2.COLOR_RGB2LAB)[:, 0].astype(float)
+    pair = np.array([warm, warm - [30.0, 30.0, 10.0]])
+    graded = ap.warmer(pair, warm, k)
+    apart = lambda x: (to_lab(x)[1] - to_lab(x)[0])[1:]
+    assert np.abs(to_lab(graded)[0] - lab).max() <= 2 and np.abs(apart(graded) - apart(pair)).max() <= 2, \
+        f"the grade is not one shift: tone {to_lab(graded)[0]} for {lab}, freckle {apart(graded)} for {apart(pair)}"
     print(f"ok  style paint: beard gated, lips and brows darker than skin, warm skin saturated x{k:.2f} not x{ap.STYLE_CHROMA}")
 
 

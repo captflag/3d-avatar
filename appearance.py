@@ -704,6 +704,19 @@ def richer(rgb: np.ndarray, chroma: float = STYLE_CHROMA) -> np.ndarray:
     return out.reshape(rgb.shape).astype(rgb.dtype)
 
 
+def warmer(rgb: np.ndarray, tone, chroma: float) -> np.ndarray:
+    """sRGB colours (any shape, ... x 3) moved in colour (L*a*b* a, b) by what
+    richer() moves the skin tone `tone`: one shift for the whole picture, so
+    its own variation stays as it was. Scaled instead, a photo's freckles and
+    flush were scaled with the tone, and the skin came out blotched orange."""
+    rgb = np.asarray(rgb)
+    lab = lambda x: cv2.cvtColor(np.clip(x, 0, 255).astype(np.uint8).reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).astype(np.float64)
+    tone = np.asarray(tone, dtype=np.float64)
+    out = lab(rgb)
+    out[..., 1:] += (lab(richer(tone, chroma)) - lab(tone))[0, 0, 1:]
+    return cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB).reshape(rgb.shape).astype(rgb.dtype)
+
+
 def beard_cover(beard: np.ndarray, px: np.ndarray) -> tuple[float, float]:
     """How much of the jaw and of the moustache zone (nose to upper lip) a
     facial_hair map calls beard (> 0.5), 0-1 each, at landmarks `px`."""

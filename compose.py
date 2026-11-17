@@ -1582,22 +1582,16 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The cartoon style's head (the viewer's applyToon): the face drawn flat
     # (appearance.cartoon_face) and baked the same way, on one skin tone.
     toon_skin = delight.median_colour(skin_rgb[bare_skin]).astype(np.float64)
-    # And the stylized style's: the same shapes on the photo's skin smoothed
-    # to paint (appearance.stylized_skin), lit like the realistic style.
-    style_rgb, style_gain = appearance.stylized_skin(skin_rgb, photo_rgb, bare_skin, landmarks)
+    # Its tone scaled as the photo's whole face is against its cheek patches
+    # (appearance.stylized_skin's gain).
+    _, style_gain = appearance.stylized_skin(skin_rgb, photo_rgb, bare_skin, landmarks)
     drawn_beard = facetexture.facial_hair(photo_rgb, landmarks, cheeks, grey=True)
     # Scalp and ears tinted as the face is: untinted they stayed the lighter
     # calibrated tone round a darker face.
     style_base = delight.to_srgb(delight.to_linear(toon_skin.astype(np.uint8)[None, :]) * style_gain)[0].astype(np.float64)
-    # Painted warmer than the photo (appearance.STYLE_CHROMA); the body's tint
-    # the same change, so face, ears and neck still match.
+    # Painted warmer than the photo (appearance.STYLE_CHROMA).
     chroma = appearance.style_chroma(style_base)
-    style_rgb, style_base = appearance.richer(style_rgb, chroma), appearance.richer(style_base, chroma)
-    style_gain = delight.to_linear(style_base) / np.maximum(delight.to_linear(toon_skin), 1e-4)
-    style_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces, sampler, face_centre,
-                                     face_radius, appearance.cartoon_face(photo_rgb, landmarks, style_base, drawn_beard,
-                                                                          base=style_rgb),
-                                     style_base, size=TOON_SIZE, blend="none")
+    style_base = appearance.richer(style_base, chroma)
     # The cartoon's flat tone the same corrected one.
     toon_texture = facetexture.bake(vertices, head_faces, head_uv_all, head_uv_faces, sampler, face_centre,
                                     face_radius, appearance.cartoon_face(photo_rgb, landmarks, style_base, drawn_beard),
@@ -1750,6 +1744,19 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     socket = (appearance.under_brow(vertices, corr) * photo_strength)[:, None]
     skin_normal = skin_normal * (1.0 - socket) + broad * socket
     skin_normal /= np.maximum(np.linalg.norm(skin_normal, axis=1, keepdims=True), 1e-12)
+    # The stylized style's head (the viewer's applyStylized): the realistic
+    # head's own texture, warmer. As warm as the photo's skin tone allows
+    # (appearance.style_chroma), in one colour shift (appearance.warmer), and
+    # at half the size, which is all the smoothing it gets; the body's tint the
+    # same change, so face, ears and neck still match.
+    # Repainted until 2026-11-17 (the skin flattened to one tone, brows, lips
+    # and lashes drawn on as shapes), that paint was 0.11 of the stylized
+    # portraits' likeness: 0.26 with it, 0.37 wearing the realistic texture
+    # (SFace, 8 dev faces); like this 0.39.
+    grade = appearance.style_chroma(delight.median_colour(photo_rgb[bare_skin]))
+    style_texture = Image.fromarray(appearance.warmer(
+        np.asarray(head_texture.convert("RGB").resize((TOON_SIZE, TOON_SIZE), Image.LANCZOS)), toon_skin, grade))
+    style_tint = delight.to_linear(appearance.richer(toon_skin, grade)) / np.maximum(delight.to_linear(toon_skin), 1e-4)
     for name, mesh, uv, texture in (("head", head, head_uv, head_texture),
                                     ("body", body, body_uv, rest_texture)):
         source = mesh.metadata["base_index"]
@@ -1763,8 +1770,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         if name == "head":
             parts[-1].extra_textures = {"toonTexture": toon_texture, "styleTexture": style_texture}
         else:
-            # The stylized style tints the body's skin by the face's gain (appearance.stylized_skin).
-            parts[-1].material_extras = {"styleTint": [round(float(g), 4) for g in style_gain]}
+            # The stylized style tints the body's skin as the head's is graded.
+            parts[-1].material_extras = {"styleTint": [round(float(g), 4) for g in style_tint]}
         # Skin reflects less than the glTF default (IOR 1.5): with it the
         # face wore a pale sheen of reflected room that read as grey.
         parts[-1].ior = SKIN_IOR
