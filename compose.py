@@ -1263,39 +1263,29 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # beard is a third of some faces, read as shadow by the lighting fit and
     # as darker skin by the skin statistics.
     facial_hair = facetexture.facial_hair(photo_rgb, landmarks, cheeks)
-    skin_rgb, lighting, face_mask = delight.delight(photo_rgb, landmarks, load_canonical_faces(), cheeks,
-                                                    exclude=facial_hair)
+    _, lighting, face_mask = delight.delight(photo_rgb, landmarks, load_canonical_faces(), cheeks,
+                                             exclude=facial_hair)
     bare_skin = face_mask & (facial_hair < 0.2)
-    skin_rgb = appearance.sharpen_creases(skin_rgb, landmarks, face_mask, keep_out=facial_hair)
+    # The skin is the photo's own pixels, repaired only where the head needs
+    # it: an open mouth and the eyes painted over (the mesh has its own teeth
+    # and eyeballs), the lash line put back, hair off the forehead and a
+    # glasses frame out (smooth_skin's repairs), then each pixel turned into
+    # the albedo the studio renders as that pixel (delight.unrender).
+    # De-lit, creased, smoothed, evened and colour-matched in thirteen steps
+    # (until 2026-11-16), the texture kept 0.38 of the person (SFace against
+    # the photo, 8 dev faces; 0.72 before the smoothing alone) and the builds
+    # 0.32; like this the texture keeps 0.74-0.89 and the builds 0.5.
+    skin_rgb = np.ascontiguousarray(photo_rgb[..., :3]).copy()
     # The mouth is closed on the avatar; paint the photo's open mouth over in
     # lip colour so no teeth get baked across the lips.
     skin_rgb, mouth_filled = appearance.fill_mouth(skin_rgb, landmarks, cheeks)
     skin_rgb = appearance.fill_eyes(skin_rgb, landmarks)
-    # The lids lighter than the brow's shade the photo shows over them.
-    skin_rgb = appearance.lift_lids(skin_rgb, landmarks)
-    # The nostrils are the mesh's own.
-    skin_rgb = appearance.fill_nostrils(skin_rgb, landmarks, keep_out=facial_hair)
-    # The lash line back on the lids. The brows are left as the photo has them:
-    # darkened against the skin round them (tighten_brows, gain 1.6), they
-    # rendered 14-34 L* darker than the photos' and the lid under them went
-    # dark with them; without it they render within 9 L* of the photos' and
-    # the identity score rose 0.445 -> 0.471 at the photo's pose, 0.410 ->
-    # 0.446 level (side-session-notes/eye-region.md).
     skin_rgb = appearance.paint_lashes(skin_rgb, photo_rgb, landmarks)
-    # A colour cast that puts skin outside the natural range is pulled back.
-    skin_rgb, cast_shift = appearance.correct_cast(skin_rgb, bare_skin)
-    # The lips darker and less yellow by what the render adds to them.
-    skin_rgb = appearance.lip_tone(skin_rgb, landmarks)
-    # The beard darker by what the studio's light lifts dark paint.
-    skin_rgb = appearance.darken_beard(skin_rgb, facial_hair, landmarks)
-    # Smooth, even skin: no freckles, pores, spots or light's patches
-    # (appearance.smooth_skin); eyes, brows, lips and beard as the photo has them.
     parts = appearance.refine_hair(photo_rgb, appearance.segment(photo_rgb))
-    skin_rgb, photo_glasses = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair)
-    # And the cheeks at the photo's colour once all that is done (delight.match_colour).
-    skin_rgb, colour_gains = delight.match_colour(skin_rgb, photo_rgb, landmarks, exclude=facial_hair)
-    # And the lips at the photo's lips' colour (appearance.match_lips).
-    skin_rgb, lip_gains = appearance.match_lips(skin_rgb, photo_rgb, landmarks)
+    skin_rgb, photo_glasses = appearance.smooth_skin(skin_rgb, landmarks, face_mask, parts, facial_hair,
+                                                     repairs_only=True)
+    skin_rgb = delight.unrender(np.clip(skin_rgb, 0, 255).astype(np.uint8))
+    colour_gains, cast_shift = np.ones(3), (0.0, 0.0)
     if shifts and shifts.get("lip_light"):
         # Each lip as light as the photo's, by a render of the first build (compose).
         skin_rgb = relight_lips(skin_rgb, landmarks, shifts["lip_light"])
@@ -1526,7 +1516,13 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
 
     # A skin texture built to the person's own cheek statistics, so skin is
     # mottled rather than one flat colour.
-    stats = skin.face_stats(skin_rgb, bare_skin)
+    # From the face's outer band, the skin the generated skin borders (forehead
+    # top, temples, jaw): the face keeps the photo's own shading now, its
+    # middle is the lit part, and to the whole face's tone the scalp and ears
+    # came out lighter than the face they join (p02).
+    reach = max(int(0.1 * np.ptp([lm.x for lm in landmarks[:468]]) * pw), 3)
+    border = bare_skin & ~(cv2.erode(face_mask.astype(np.uint8), np.ones((reach, reach), np.uint8)) > 0)
+    stats = skin.face_stats(skin_rgb, border) or skin.face_stats(skin_rgb, bare_skin)
     skin_mean, skin_spread = stats if stats is not None else skin.cheek_stats(skin_rgb, cheeks)
     # The pore map stays 1024: it is noise, and at 2048 it cost 885 KB.
     skin_normals = Image.fromarray(skin.pore_normals(1024))

@@ -91,6 +91,31 @@ def rendered(albedo: np.ndarray, light: float = RENDER_LIGHT) -> np.ndarray:
     return np.where(peak < start, c, squeezed)
 
 
+def unrender(rgb: np.ndarray) -> np.ndarray:
+    """The sRGB albedo the studio renders as each pixel of `rgb` (sRGB, as the
+    photo shows it) under the cheeks' light: `rendered` inverted exactly, pixel
+    by pixel. One gain per channel for the whole face (match_colour) is right
+    only for a face of one tone: the tone curve takes a fixed step off dark
+    values, and dark skin asked for twice its blue, which turned its lighter
+    skin blue-white."""
+    out = to_linear(np.ascontiguousarray(rgb[..., :3]))
+    # The highlights' squeeze undone: the brightest channel came out at new_peak.
+    start, d = 0.76, 0.24
+    new_peak = np.minimum(out.max(axis=-1, keepdims=True), 0.995)
+    peak = d * d / (1.0 - new_peak) - d + start
+    blend = 1.0 - 1.0 / (0.15 * (peak - new_peak) + 1.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        c = np.where(new_peak < start, out, (out - new_peak * blend) * peak / (new_peak * (1.0 - blend)))
+    # And the step off the darks: it was taken from the smallest channel's value.
+    low = np.maximum(c.min(axis=-1, keepdims=True), 0.0)
+    c = c + np.where(low < 0.04, np.sqrt(low / 6.25) - low, 0.04)
+    albedo = np.maximum(c / (RENDER_LIGHT * RENDER_EXPOSURE), 0.0)
+    # A highlight the studio cannot show asks for an albedo over 1: brought
+    # down whole, its hue kept. Each channel cut at 1 on its own, white-pink
+    # highlights turned yellow (a patch on p03's and p06's lit cheek).
+    return to_srgb(albedo / np.maximum(albedo.max(axis=-1, keepdims=True), 1.0))
+
+
 # The bare cheeks under the eyes (MediaPipe ids), where a skin's tone reads.
 CHEEK_PATCHES = ([50, 205, 187, 123, 116, 117, 118, 101], [280, 425, 411, 352, 345, 346, 347, 330])
 

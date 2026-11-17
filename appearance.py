@@ -1877,6 +1877,13 @@ def warm_ears(rgb: np.ndarray, ear: np.ndarray) -> np.ndarray:
 SMOOTH_MARKS = 0.012
 SMOOTH_BROAD = 0.035
 SMOOTH_EVEN = 1.0
+# The evening's lightness part: none. Evened in lightness too (all of it,
+# until 2026-11-16), every shade broader than SMOOTH_BROAD went to one tone:
+# the nose's, the cheeks' and the eye sockets' own shading, which is the
+# person. The texture's SFace against its photo (8 dev faces, in photo space):
+# 0.717 before this function, 0.378 after it; with the colour alone evened
+# 0.547, with no evening 0.567 (the rest is the hair and glasses taken out).
+SMOOTH_EVEN_LIGHT = 0.0
 SMOOTH_FEATHER = 0.012
 SMOOTH_KEEP = 0.025
 SMOOTH_GRAIN = 0.12
@@ -1928,7 +1935,7 @@ def _skin_blur(rgb: np.ndarray, source: np.ndarray, sigma: float) -> np.ndarray:
 
 
 def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: np.ndarray | None,
-                beard: np.ndarray | None = None) -> tuple[np.ndarray, bool]:
+                beard: np.ndarray | None = None, repairs_only: bool = False) -> tuple[np.ndarray, bool]:
     """The face's skin even in colour: no red or brown blotches or the patches
     a photo's light leaves; its lightness's detail (creases, lid lines,
     texture), its form (the nose, the cheekbones), the eyes, brows, lips and
@@ -1939,10 +1946,19 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     Frequency separation: the skin's detail under SMOOTH_MARKS of the face's
     width is taken out of its colour but for SMOOTH_GRAIN of it, and out of
     its lightness but for SMOOTH_LIGHT_GRAIN, and its colour evened SMOOTH_EVEN of
-    the way to the median at SMOOTH_BROAD, features included. Smoothed at the
+    the way to the median at SMOOTH_BROAD (its lightness SMOOTH_EVEN_LIGHT of
+    that), features included. Smoothed at the
     broad scale alone (the first version) the face went soft: the nose and
     cheekbones flattened with the freckles. Hair over the face above the brows
-    (a fringe, the hairline: the avatar is built bald) is skin to fill."""
+    (a fringe, the hairline: the avatar is built bald) is skin to fill.
+
+    With `repairs_only` (the photo-true skin, compose) nothing is smoothed,
+    evened or sharpened: the photo's pixels stay as they are but for the hair
+    over the forehead, filled with the face's median tone, and a glasses
+    frame, its thin lines painted out from the skin beside them
+    (cv2.inpaint). Smoothed and evened, the texture's SFace against its photo
+    fell 0.72 -> 0.38 over the 8 dev faces; repaired only, the builds went
+    0.32 -> 0.5."""
     h, w = face_mask.shape
     px = np.array([[lm.x * w, lm.y * h] for lm in landmarks[:468]])
     face_w = float(np.ptp(px[:, 0]))
@@ -2060,7 +2076,7 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     # pixels that are not brow hair take it.
     k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(int(2 * FRAME_WIDTH * face_w), 5) | 1,) * 2)
     clean = cv2.morphologyEx(cv2.morphologyEx(skin_rgb.astype(np.uint8), cv2.MORPH_CLOSE, k2), cv2.MORPH_OPEN, k2)
-    if glasses:
+    if glasses and not repairs_only:
         lines = zone & ~((no_lines < skin_l - BROW_DARKER) & (lightness < skin_l - BROW_DARKER))
         rgb[lines] = clean[lines]
     # On a face wearing glasses, the frame out of all the skin: smoothed at
@@ -2076,22 +2092,54 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
         reach = region | (cv2.dilate(eyes, disc) > 0) & ~lashes
         spots = np.abs(skin_rgb.astype(np.float64) - clean).max(axis=2)
         dots = cv2.dilate((region & (spots > BROW_DARKER)).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
-        rgb[dots & region] = clean[dots & region]
+        if not repairs_only:
+            rgb[dots & region] = clean[dots & region]
         thin = (reach & (spots > 2 * BROW_DARKER)).astype(np.uint8)
+        if repairs_only:
+            # Where a frame sits only: from the brows' top to the nose's tip.
+            # Everywhere, a shiny forehead's and a beard's edges made long
+            # runs too, and a fifth of p08's face was painted over.
+            band = np.zeros((h, w), np.uint8)
+            band[max(int(px[[105, 334, 66, 296], 1].min() - 0.08 * face_w), 0):int(nose_y + 0.05 * face_w)] = 1
+            thin &= band
+            # And only what is as thin as a frame: wider marks (a lens's
+            # shadow on the cheek, shine) hung on the rim as one piece with it.
+            wide = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(int(2 * FRAME_WIDTH * face_w), 3) | 1,) * 2)
+            thin &= 1 - cv2.dilate(cv2.morphologyEx(thin, cv2.MORPH_OPEN, wide), wide)
         count, labels, stats, _ = cv2.connectedComponentsWithStats(thin, connectivity=8)
-        long = np.flatnonzero(np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]) > FRAME_RUN * face_w)
+        extent = np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT])
+        long = np.flatnonzero(extent > FRAME_RUN * face_w)
+        if repairs_only:
+            # And lines, not patches: a rim's whole ring is about three times
+            # its length in area, a patch of shine many more.
+            long = long[stats[long, cv2.CC_STAT_AREA] < 5 * FRAME_WIDTH * face_w * extent[long]]
         frame = np.isin(labels, long[long > 0]).astype(np.uint8)
         pad = max(int(FRAME_WIDTH * face_w / 2), 2)
         near = cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (16 * pad + 1,) * 2)) > 0
         lab = cv2.cvtColor(skin_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float64)
         chroma = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)
         grey = chroma < 0.8 * np.median(chroma[source])
-        frame = (cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1,) * 2)) > 0) | near & grey
-        frame = (cv2.dilate(frame.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & reach
-        rgb[frame] = _skin_blur(rgb, source & ~frame, max(SMOOTH_MARKS * face_w, 1.0))[frame]
+        if repairs_only:
+            # The frame's own lines only, painted out from the skin beside them.
+            lines = cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1,) * 2)) & reach.astype(np.uint8)
+            rgb = cv2.inpaint(np.clip(rgb, 0, 255).astype(np.uint8), lines, float(2 * pad), cv2.INPAINT_TELEA).astype(np.float64)
+        else:
+            frame = (cv2.dilate(frame, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1,) * 2)) > 0) | near & grey
+            frame = (cv2.dilate(frame.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & reach
+            rgb[frame] = _skin_blur(rgb, source & ~frame, max(SMOOTH_MARKS * face_w, 1.0))[frame]
     fine = _skin_blur(rgb, source, max(SMOOTH_MARKS * face_w, 1.0))
     broad = _skin_blur(rgb, source, max(SMOOTH_BROAD * face_w, 1.0))
-    shift = SMOOTH_EVEN * (np.median(rgb[source], axis=0) - broad)
+    # The evening, in L*a*b*: colour (a, b) SMOOTH_EVEN of the way to the
+    # median, lightness SMOOTH_EVEN_LIGHT of that. As an RGB shift with its
+    # luma taken out it bent the hue of dark and light skin (p02 greyed, and
+    # match_colour then doubled her blue).
+    to_lab = lambda x: cv2.cvtColor(np.clip(x / 255.0, 0, 1).astype(np.float32), cv2.COLOR_RGB2LAB).astype(np.float64)
+    shift = (0.0 if repairs_only else SMOOTH_EVEN) * (to_lab(np.median(rgb[source], axis=0)[None, None, :]) - to_lab(broad))
+    shift[..., 0] *= SMOOTH_EVEN_LIGHT
+
+    def evened(image, weight=1.0):
+        lab = to_lab(image) + shift * weight
+        return cv2.cvtColor(lab.astype(np.float32), cv2.COLOR_LAB2RGB).astype(np.float64) * 255.0
     feather = max(SMOOTH_FEATHER * face_w, 1.0)
     whole = cv2.GaussianBlur((region | keep & face_mask).astype(np.float64), (0, 0), feather)[..., None]
     # Every skin pixel fully smoothed, the feather falling on the kept
@@ -2106,17 +2154,19 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     detail = rgb - fine
     light = detail @ np.array([0.299, 0.587, 0.114])
     grain = (SMOOTH_GRAIN * detail + (SMOOTH_LIGHT_GRAIN - SMOOTH_GRAIN) * light[..., None]) * (~hair)[..., None]
-    skin = fine + grain + shift
+    if repairs_only:
+        grain = detail * (~hair)[..., None]
+    skin = evened(fine + grain)
     # Where the photo had hair, the face's own median skin, softened in: filled
     # from the skin round it, the darker skin at the hairline came with it and
     # lay on the bald scalp as a band.
     median = np.median(rgb[source], axis=0)
     filled = cv2.GaussianBlur(hair.astype(np.float64), (0, 0), 2 * feather)[..., None]
     skin = skin * (1.0 - filled) + median * filled
-    amount, scale = FEATURE_SHARPEN
+    amount, scale = (0.0, FEATURE_SHARPEN[1]) if repairs_only else FEATURE_SHARPEN
     detail = rgb - cv2.GaussianBlur(rgb, (0, 0), max(scale * face_w, 0.6))
     sharp = rgb + amount * detail * (keep & face_mask)[..., None]
-    out = (sharp + shift * whole) * (1.0 - alpha) + skin * alpha
+    out = evened(sharp, whole) * (1.0 - alpha) + skin * alpha
     # Each brow drawn whole beneath its hairs: kept hair by hair, a fine or
     # light brow came out sparse and broken, and one a rim crossed, notched.
     # Its own hairs' colour (they stay on top), its landmarks' shape drawn in a
@@ -2126,7 +2176,7 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     dark = brow_hair & (lightness < skin_l - BROW_DARKER)
     hairs = cv2.GaussianBlur(dark.astype(np.float64), (0, 0), 1.0)
     inset = max(int(BROW_INSET * face_w), 1)
-    for ring, inner, outer in zip(BROWS, (55, 285), (46, 276)) if glasses else ():
+    for ring, inner, outer in zip(BROWS, (55, 285), (46, 276)) if glasses and not repairs_only else ():
         shape = np.zeros((h, w), np.uint8)
         cv2.fillPoly(shape, [px[list(ring)].round().astype(np.int32)], 1)
         shape = cv2.erode(shape, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset + 1,) * 2))

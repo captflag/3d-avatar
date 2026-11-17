@@ -9,7 +9,9 @@ SFace (MobileFaceNet, OpenCV model zoo, weights Apache-2.0) embeds the
 largest face found by YuNet in each image; the score is the cosine
 similarity of the two. OpenCV's same-person threshold is 0.363. On this
 repo's photos: different people 0.15; two real photos of the same man
-0.48-0.67; the same build rendered twice differs by 0.008 at most.
+0.48-0.67; the same build rendered twice differs by 0.008 at most. (Those
+numbers predate DETECT_SIZE; with it a photo against its own crop is 0.87-0.98,
+two of the dev faces' different people 0.17 on average.)
 
 **Internal yardstick only.** SFace was trained on research face datasets
 whose terms bar commercial use. Never ship it or import it from the product.
@@ -60,15 +62,27 @@ def _load():
     return _models
 
 
+# The image is shrunk (area-averaged) to this on its longer side before the
+# face is found. YuNet at a phone photo's own size (1536 x 2500, the face 800
+# px wide) boxed three of the eight dev faces wrongly: the same photo, only
+# cropped, then matched itself at 0.10-0.27 (p02, p06, p08), under two
+# strangers' 0.17, and every score against those photos was noise. Found at
+# 640, the eight match their own crops at 0.87-0.98.
+DETECT_SIZE = 640
+
+
 def _face(path):
-    """The image (BGR) with a transparent render flattened onto grey, and the
-    largest face YuNet finds in it, or None."""
+    """The image (BGR, no larger than DETECT_SIZE) with a transparent render
+    flattened onto grey, and the largest face YuNet finds in it, or None."""
     detector, _ = _load()
     with Image.open(path) as im:
         rgba = im.convert("RGBA")
     flat = Image.new("RGBA", rgba.size, (200, 200, 200, 255))
     flat.alpha_composite(rgba)
     img = cv2.cvtColor(np.asarray(flat.convert("RGB")), cv2.COLOR_RGB2BGR)
+    shrink = DETECT_SIZE / max(img.shape[:2])
+    if shrink < 1:
+        img = cv2.resize(img, None, fx=shrink, fy=shrink, interpolation=cv2.INTER_AREA)
     detector.setInputSize((img.shape[1], img.shape[0]))
     _, faces = detector.detect(img)
     return img, (None if faces is None else max(faces, key=lambda f: f[2] * f[3]))
