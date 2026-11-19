@@ -24,6 +24,7 @@ import photo_check
 import skinned_glb
 from catalogue import catalogue, items_by_id
 from compose import compose
+from morph import BODY_TYPES, HEIGHTS
 
 JACKET = "outfit_jacket_jeans"
 from generate import NoFaceFound, generate_avatar, get_landmarker
@@ -132,6 +133,9 @@ def generate():
 
     full_body = request.form.get("mode") == "body"
     gender = "female" if request.form.get("gender") == "female" else "male"
+    # The build and height picked on the photo step; anything else is the average.
+    body_type = request.form.get("build") if request.form.get("build") in BODY_TYPES else "average"
+    height = request.form.get("height") if request.form.get("height") in HEIGHTS else "average"
     # The outfit picked on the photo step: the default, or the jacket in its
     # place. Built in, as the body under clothes is cut to fit them.
     wear = None
@@ -145,7 +149,7 @@ def generate():
     try:
         if full_body:
             info = compose(photo_path, OUT / f"{entry_id}.glb", gender, wear=wear, side_photos=side_photos or None,
-                           hair_hint=hair_hint, hair_colour_hint=hair_colour)
+                           hair_hint=hair_hint, hair_colour_hint=hair_colour, body_type=body_type, height=height)
         else:
             info = generate_avatar(photo_path, OUT / f"{entry_id}.glb", side_photos)
     except NoFaceFound:

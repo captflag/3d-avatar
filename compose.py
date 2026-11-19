@@ -104,6 +104,19 @@ CLOTH_SHEEN = ((0.12, 0.12, 0.12), 0.8)
 # Hair: anisotropy strength, and its direction (radians from the texture's u
 # axis, which the strands run across).
 HAIR_ANISOTROPY = (0.7, np.pi / 2)
+# At the catalogue's roughness 0.68 the highlight did not show at all: renders with anisotropy on
+# and off were the same. Cuts whose strands run along v (garments.strands_along_v at SHEEN_SHARE or
+# more: the bobs, long01, grump, maxwell, the curls) take HAIR_SHEEN, (roughness, anisotropy): a
+# sheen along the strands. The short cuts paint their strands every way, and one direction at that
+# roughness lit them in blotches, so they keep theirs. Every cut's highlight is in the hair's own
+# hue at HAIR_SPECULAR strength: grey-white, it read as wet plastic, and at full strength it lifted
+# dark brown hair to golden.
+HAIR_SHEEN = (0.5, (0.9, np.pi / 2))
+SHEEN_SHARE = 0.75
+HAIR_SPECULAR = 0.7
+# Hair's roots darker than its ends (root_shade): the shade at the scalp, rising to 1 at 95% of the
+# cut's own length from it. One tint from root to tip read as a dyed wig.
+ROOT_SHADE = 0.75
 
 # Surface finish, written into the file itself so Blender, Unity and Unreal show
 # what the studio shows. Everything used to go out at 0.85, which is right for
@@ -994,6 +1007,52 @@ def build_eyes(vertices: np.ndarray, groups: dict, iris: np.ndarray, sclera=appe
     return eyes, eye_uv, texture
 
 
+def hair_finish(part, mesh) -> None:
+    """A haircut's highlight (HAIR_SHEEN, HAIR_SPECULAR): a band along strands that run one way,
+    in the hair's own hue."""
+    part.specular = HAIR_SPECULAR
+    if mesh.metadata.get("texture") is not None and garments.strands_along_v(mesh.metadata["texture"]) >= SHEEN_SHARE:
+        part.roughness, part.anisotropy = HAIR_SHEEN
+    else:
+        part.anisotropy = HAIR_ANISOTROPY
+
+
+def root_shade(part, mesh) -> None:
+    """Roots darker than the ends (ROOT_SHADE), by each vertex's distance from the cut's scalp layer
+    over the cut's own length, as vertex colour, which glTF multiplies into the texture: any viewer
+    shows it, and the picker still dyes the hair any colour. The darkening's mean is given back in the
+    material's colour (and `shadeGain` in its extras, for the studio's picker), so the hair as a
+    whole stays the colour asked for. Cuts without a scalp layer (the coils) are left as they are."""
+    from scipy.spatial import cKDTree
+    n = mesh.metadata.get("scalp_vertices")
+    if not n or n >= len(mesh.vertices):
+        return
+    points = np.asarray(mesh.vertices)
+    away = cKDTree(points[-n:]).query(points)[0]
+    length = max(float(np.percentile(away[:-n], 95)), 0.3)
+    shade = ROOT_SHADE + (1.0 - ROOT_SHADE) * np.clip(away / length, 0.0, 1.0) ** 0.7
+    shade[-n:] = ROOT_SHADE
+    gain = 1.0 / float(shade[:-n].mean())
+    part.colour = np.repeat(shade[:, None], 3, axis=1).astype(np.float32)
+    part.material_extras["shadeGain"] = round(gain, 4)
+    if part.base_colour is not None:
+        part.base_colour = np.minimum(np.asarray(part.base_colour) * gain, 1.0).round(4).tolist()
+
+
+def hair_shadow_part(name, mesh, vertices, groups, joints, weights, bone_count, face_shapes) -> list:
+    """The haircut's shadow on the skin (garments.with_scalp), as a part of its own under the cut's
+    name: the studio's picker and with_hair show and strip parts by material name, so it comes and
+    goes with its cut. Black, blended by its vertices' alpha, no highlight."""
+    shadow = mesh.metadata.get("shadow")
+    if shadow is None:
+        return []
+    part = rigged_part(name, shadow, 1.0, vertices, groups, joints, weights, bone_count)
+    part.alpha_blend = True
+    part.specular = 0.0      # no highlight in any viewer: Blender gave it glTF's default
+    part.morphs = expression_morphs(shadow, face_shapes)
+    return [part]
+
+
 def welded_normals(mesh: trimesh.Trimesh) -> np.ndarray:
     """Vertex normals continuous across seams: a card mesh keeps a vertex per
     texture island, so two copies of one position sat on different cards with
@@ -1171,7 +1230,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
              face_patch: bool = False, pose: str = "relaxed",
              side_photos: list[pathlib.Path] | None = None,
              hair_hint: str | None = None, hair_colour_hint: str | None = None,
-             hair: str | None = None, shifts: dict | None = None) -> dict:
+             hair: str | None = None, shifts: dict | None = None,
+             body_type: str = "average", height: str = "average") -> dict:
     if not BODY_OBJ.exists():
         raise FileNotFoundError(
             f"{BODY_OBJ} is missing. See README.md 'Set up' for the body mesh download."
@@ -1201,8 +1261,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         measured[lips] = 0.0
         depth_trust = morph.DEPTH_TRUST + (1.0 - morph.DEPTH_TRUST) * measured
 
-    # A man's or a woman's body first, then the face fitted on top of it.
-    base = morph.body_for(raw, gender)
+    # A man's or a woman's body of the build they picked first, then the face fitted on top of it.
+    base = morph.body_for(raw, gender, height=morph.HEIGHTS[height], **morph.BODY_TYPES[body_type])
 
     # Shape the skull to this person before anything is built from it. The
     # person's face and MediaPipe's average face are placed on the head the same
@@ -1414,6 +1474,10 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             garments.fit_hair(mesh, vertices, head_only, render_turn, person,
                               np.array([[lm.x * pw, lm.y * ph] for lm in landmarks]),
                               parts == appearance.HAIR, appearance.opaque_hair)
+        if item["category"] == "hair" and "mhclo" in item and item.get("strands", True):
+            # Its scalp, in its shade, under it (garments.with_scalp).
+            mesh = garments.with_scalp(garments.off_skin(mesh, vertices, groups["body"]), vertices, groups["body"],
+                                       [groups["helper-l-eye"], groups["helper-r-eye"]])
         if item["category"] == "brows":
             mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
         if item["category"] in ("teeth", "tongue"):
@@ -1836,12 +1900,14 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # Leather has a gloss, not cloth's grazing sheen (garments.leather_roughness).
             parts[-1].sheen = None
             parts[-1].roughness_texture = garments.leather_roughness(mesh, vertices, groups)
-        if item["category"] == "hair" and "mhclo" in item:
-            # Hair's highlight runs across the strands, a band rather than a
-            # spot; the strands lie along the texture's v axis.
-            parts[-1].anisotropy = HAIR_ANISOTROPY
+        if item["category"] == "hair" and "mhclo" in item and item.get("strands", True):
+            hair_finish(parts[-1], mesh)
         if mesh.metadata.get("tint") is not None:
             parts[-1].base_colour = skinned_glb.hair_factor(mesh.metadata["tint"])
+        if item["category"] == "hair" and "mhclo" in item and item.get("strands", True):
+            # After the tint: added before it, the shadow part took the hair's colour.
+            root_shade(parts[-1], mesh)
+            parts.extend(hair_shadow_part(item["id"], mesh, vertices, groups, joints, weights, len(skeleton), face_shapes))
 
     # Every other haircut, fitted to this head and hidden, for the studio's
     # picker (as Snap's): the photo's own cut shows, shaped to the photo; the
@@ -1868,13 +1934,18 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             mesh = garments.curl_cap(build_item(cut, np.full(3, skinned_glb.HAIR_GREY), vertices))
         else:
             mesh = build_item(item, np.full(3, skinned_glb.HAIR_GREY), vertices)
+            if item.get("strands", True):
+                mesh = garments.with_scalp(garments.off_skin(mesh, vertices, groups["body"]), vertices, groups["body"],
+                                       [groups["helper-l-eye"], groups["helper-r-eye"]])
         parts.append(rigged_part(item["id"], mesh, item.get("roughness", ROUGHNESS.get("hair", 0.8)), vertices,
                                  groups, joints, weights, len(skeleton)))
         parts[-1].morphs = expression_morphs(mesh, face_shapes)
-        if not item.get("curl"):
+        if not item.get("curl") and item.get("strands", True):
             # Strands' highlight; coils have none (it drew streaks across them).
-            parts[-1].anisotropy = HAIR_ANISOTROPY
+            hair_finish(parts[-1], mesh)
         parts[-1].base_colour = skinned_glb.hair_factor(tint)
+        root_shade(parts[-1], mesh)
+        parts.extend(hair_shadow_part(item["id"], mesh, vertices, groups, joints, weights, len(skeleton), face_shapes))
 
     # Glasses, every pair fitted to this head and hidden, as the haircuts: the
     # studio wears the first when the photo shows glasses (smooth_skin's
@@ -1957,7 +2028,7 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "rigged": True,
         "pose": pose,
         "bones": len(skeleton),
-        "gender": gender,
+        "gender": gender, "body_type": body_type, "height": height,
         "wearing": [item["id"] for item, _ in worn],
         # CC-BY items name their authors, to be credited where the avatar is shown.
         "credits": sorted({f"{item['label']}: {item['credit']} (CC-BY)" for item, _ in worn if item.get("credit")}),
@@ -2000,6 +2071,8 @@ def main() -> int:
                         help="a photo of the head turned to one side (30-45 degrees); give it once per side")
     parser.add_argument("--wear", help="comma-separated catalogue ids, overriding the default outfit")
     parser.add_argument("--hair", help="a catalogue haircut id (or bald) in place of the one the photo reads")
+    parser.add_argument("--body", choices=sorted(morph.BODY_TYPES), default="average", help="the build (morph.BODY_TYPES)")
+    parser.add_argument("--height", choices=sorted(morph.HEIGHTS), default="average")
     parser.add_argument("--face-patch", dest="face_patch", action="store_true",
                         help="also lay the fitted landmark patch over the head. Off by default: "
                              "since the skull is shaped to the face, the patch sits behind it "
@@ -2016,7 +2089,8 @@ def main() -> int:
     try:
         info = compose(args.photo, args.out, args.gender,
                        args.wear.split(",") if args.wear else None, args.face_patch, args.pose,
-                       side_photos=args.side or None, hair=args.hair, refine=args.refine)
+                       side_photos=args.side or None, hair=args.hair, refine=args.refine,
+                       body_type=args.body, height=args.height)
     except NoFaceFound:
         print("no face found in the photo", file=sys.stderr)
         return 1

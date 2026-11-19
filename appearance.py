@@ -395,14 +395,33 @@ def read_hair(photo_rgb: np.ndarray, landmarks, parts: np.ndarray | None) -> dic
                    bottom=round(float((np.percentile(ys, 99) - cy) / face_h), 2),
                    fringe=round(float(forehead.mean()) if forehead.size else 0.0, 2),
                    sides=round(float(np.median(overhang)), 2) if overhang else None,
-                   colour=_rgb(base))
+                   colour=_rgb(base), curl=hair_curl(photo_rgb, hair, face_h))
     return reading
+
+
+def hair_curl(photo_rgb: np.ndarray, hair: np.ndarray, face_h: float) -> float | None:
+    """How many ways the hair's strands run: 1 less the median coherence of its texture's structure
+    tensor over the hair (eroded off its edge), at 2% of the face's height. Straight hair runs one way
+    (p09 0.08, p04 0.08); curls every way (p07 0.45). Short wavy hair reads as curly too (p01 0.44),
+    so hair_style uses it on jaw-length and longer hair only. None with too little hair to read."""
+    core = cv2.erode(hair.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
+    if core.sum() < 200:
+        return None
+    scale = max(0.02 * face_h, 1.0)
+    grey = cv2.GaussianBlur(cv2.cvtColor(photo_rgb, cv2.COLOR_RGB2GRAY).astype(np.float64), (0, 0), 0.25 * scale)
+    gx, gy = cv2.Sobel(grey, cv2.CV_64F, 1, 0), cv2.Sobel(grey, cv2.CV_64F, 0, 1)
+    jxx, jyy, jxy = (cv2.GaussianBlur(a, (0, 0), scale) for a in (gx * gx, gy * gy, gx * gy))
+    coherence = np.sqrt((jxx - jyy) ** 2 + 4 * jxy ** 2) / np.maximum(jxx + jyy, 1e-9)
+    return round(float(1.0 - np.median(coherence[core])), 2)
 
 
 # Below this `sides` (read_hair: hair past the face's outline at the temples,
 # face widths) short hair is a close crop. ponytail: set between photo-10's
 # 0.08 and the next test face's 0.12; one close-cropped face so far.
 CROP_SIDES = 0.10
+# Above this `curl` (hair_curl), jaw-length and longer hair is the curly cut, not the straight bob or
+# long01. ponytail: one curly test face (p07 0.45) against straight long hair (p09 0.08); provisional.
+CURLY = 0.3
 
 
 def hair_style(reading: dict | None, default: str) -> str | None:
@@ -441,6 +460,10 @@ def hair_style(reading: dict | None, default: str) -> str | None:
     its fringe broke into a jagged edge.
 
     ponytail: five measurements and fourteen short cuts, one pick for all.
+    Curly hair reaching the jaw or longer (`curl` over CURLY) is punkduck's
+    curly cut: p07's long curls read 0.10 below the chin and were given the
+    straight blunt bob.
+
     The long-hair branch has not yet been checked against a real long-haired
     photo.
     """
@@ -449,6 +472,8 @@ def hair_style(reading: dict | None, default: str) -> str | None:
     if reading["amount"] < 0.08:
         return None                                   # bald or shaved
     fringe = reading["fringe"] > 0.35
+    if reading["bottom"] > -0.15 and (reading.get("curl") or 0.0) > CURLY:
+        return "hair_punkduck_alpha7_curly"
     if reading["bottom"] > 0.15:
         return "hair_long01"
     if reading["bottom"] > -0.15:

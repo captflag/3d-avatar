@@ -173,7 +173,29 @@ def main() -> None:
                 raise SystemExit(f"{region}/{unit}.target has no CC0 header; not using it")
             path.write_bytes(data)
     print(f"expression: {len(EXPRESSION_UNITS)} units x {len(REGIONS)} regions")
+    fetch_body_types()
+
+
+def fetch_body_types() -> None:
+    """MakeHuman's macro targets for a young adult's build (morph.BODY_TYPES): the universal
+    muscle x weight targets and the height targets for each, both sexes. CC0, each checked."""
+    for sub, names in (("", [f"universal-{sex}-young-{m}muscle-{w}weight.target"
+                             for sex in ("female", "male") for m in ("min", "average", "max") for w in ("min", "average", "max")]),
+                       ("height/", [f"{sex}-young-{m}muscle-{w}weight-{h}height.target"
+                                    for sex in ("female", "male") for m in ("min", "average", "max")
+                                    for w in ("min", "average", "max") for h in ("min", "max")])):
+        out = ASSETS / "targets" / "macrodetails" / sub
+        out.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            if (out / name).exists():
+                continue
+            data = urllib.request.urlopen(TARGETS + sub + name, timeout=60).read()
+            if b"released as CC0" not in data[:500]:
+                raise SystemExit(f"{sub}{name} has no CC0 header; not using it")
+            (out / name).write_bytes(data)
+        print(f"macrodetails/{sub or 'universal'}: {len(names)} body-type targets")
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    fetch_body_types() if sys.argv[1:] == ["body"] else main()

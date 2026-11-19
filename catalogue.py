@@ -183,6 +183,10 @@ def _mesh_from(faces: np.ndarray, colour, offset: float,
     return mesh
 
 
+# How much of a hair texture's own light and dark is kept when it is dyed (garments.material_textures).
+HAIR_CONTRAST = 0.65
+
+
 def build_item(item: dict, colour=None, vertices: np.ndarray | None = None) -> trimesh.Trimesh:
     """One wearable: cut from the base mesh's helper shells, or loaded from a file.
 
@@ -231,7 +235,8 @@ def build_item(item: dict, colour=None, vertices: np.ndarray | None = None) -> t
             # Teeth and tongue are inside a closed mouth most of the time.
             inside = item.get("category") in ("teeth", "tongue")
             texture, normal, transparent = material_textures(material, rgb, size=2048 if clothes else 512 if inside else 1024,
-                                                             derive_normal=item.get("category") == "hair")
+                                                             derive_normal=item.get("category") == "hair",
+                                                             contrast=HAIR_CONTRAST if item.get("category") == "hair" else 1.0)
             if texture is not None and item.get("recolour"):
                 # One outfit file, any colours: dye the shirt and the trousers
                 # separately, keeping the fabric's own shading.
