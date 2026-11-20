@@ -1260,6 +1260,16 @@ def check_bodies_and_assets():
     base, groups = load_base()
     body = np.unique(groups["body"])
     heights = {g: np.ptp(morph.body_for(base, g)[body][:, 1]) for g in ("male", "female")}
+    # Body types: taller and shorter by about 8 cm, a full build wider at the waist than a slim one.
+    if (morph.TARGET_DIR / "macrodetails" / "height").is_dir():
+        tall = np.ptp(morph.body_for(base, "male", height=morph.HEIGHTS["tall"])[body][:, 1])
+        short = np.ptp(morph.body_for(base, "male", height=morph.HEIGHTS["short"])[body][:, 1])
+        assert 0.5 < tall - heights["male"] < 1.2 and 0.5 < heights["male"] - short < 1.2,             f"heights {short * 10:.0f} / {heights['male'] * 10:.0f} / {tall * 10:.0f} cm"
+        def waist(build):
+            shaped = morph.body_for(base, "male", **morph.BODY_TYPES[build])[body]
+            y = shaped[:, 1]; band = shaped[(np.abs(y - (y.min() + 0.61 * np.ptp(y))) < 0.01 * np.ptp(y)) & (np.abs(shaped[:, 0]) < 1.6)]
+            return np.ptp(band[:, 0])
+        assert waist("full") > waist("average") > waist("slim"), "the builds do not change the waist"
     assert heights["female"] < heights["male"] * 0.97, f"bodies barely differ: {heights}"
 
     assert _ranges(["3", "-", "5", "9"]).tolist() == [3, 4, 5, 9]
@@ -1395,6 +1405,9 @@ def check_appearance():
     assert pick({**reading, "bottom": 0.0}, "x") == "hair_toigo_blunt_bob"
     assert pick({**reading, "bottom": 0.0, "fringe": 0.6}, "x") == "hair_toigo_blunt_bob"
     assert pick({**reading, "bottom": 0.4}, "x") == "hair_long01"
+    assert pick({**reading, "bottom": 0.1, "curl": 0.45}, "x") == "hair_punkduck_alpha7_curly", "long curls given a straight cut"
+    assert pick({**reading, "bottom": 0.4, "curl": 0.1}, "x") == "hair_long01", "straight long hair given curls"
+    assert pick({**reading, "curl": 0.45}, "x") == "hair_culturalibre_hair_05", "short wavy hair given the long curly cut"
     assert pick({**reading, "amount": 0.02}, "x") is None, "a bald head was given hair"
     assert pick(None, "hair_short02") == "hair_short02", "no segmenter should keep the default"
 
@@ -1661,7 +1674,12 @@ def check_review_fixes():
         cloth = [m for m in gltf.materials if m.name.startswith("outfit")]
         assert cloth and all("KHR_materials_sheen" in m.extensions for m in cloth), "cloth has no sheen"
         # Strands catch a band of light; the made curly cut's coils have relief only.
-        hair = [m for m in gltf.materials if m.name.startswith("hair_")]
+        hair = [m for m in gltf.materials if m.name.startswith("hair_") and m.alphaMode != "BLEND"]
+        # And each cut's shadow on the skin comes with it: black, blended, no highlight.
+        shadows = [m for m in gltf.materials if m.name.startswith("hair_") and m.alphaMode == "BLEND"]
+        assert shadows and all(set(m.extensions) == {"KHR_materials_specular"}
+                               and m.extensions["KHR_materials_specular"]["specularFactor"] == 0 for m in shadows), \
+            "the hair's shadow is missing or shiny"
         assert hair and all(("KHR_materials_anisotropy" in m.extensions or m.name == "hair_short_curly")
                             and m.normalTexture for m in hair), "hair has no strand highlight or relief"
     print(f"ok  review fixes: forearm leans {off_vertical:.0f} deg forward, smile not taken as mouth shape, neck kept")
@@ -1966,6 +1984,65 @@ def check_stubble():
     print(f"ok  stubble: grain {hair.std():.1f} over the beard at its own average, none on a shaven face")
 
 
+def check_texture_palette():
+    """A cut-away texel stays see-through in a texture of few colours, and a hair's object-space
+    normal map is not used as a tangent one."""
+    import io
+    import pygltflib
+    from PIL import Image
+    import skinned_glb
+    from garments import material_textures
+    a = np.zeros((64, 64, 4), np.uint8); a[..., :3] = 120; a[:, 32:, :3] = 180; a[..., 3] = 255; a[:16, :, 3] = 0
+    gltf = pygltflib.GLTF2(); gltf.images, gltf.samplers, gltf.textures = [], [], []
+    views = []
+    class Buf:
+        def add_view(self, data): views.append(data); return len(views) - 1
+    skinned_glb._add_texture(gltf, Buf(), Image.fromarray(a, "RGBA"))
+    back = np.asarray(Image.open(io.BytesIO(views[0])).convert("RGBA"))
+    assert back[:16, :, 3].max() == 0, "cut-away texels came out opaque: the palette is short of its transparent entry"
+    assert back[16:, :, 3].min() == 255 and abs(int(back[20, 40, 0]) - 180) < 3
+    from catalogue import ASSET_DIR
+    messy = ASSET_DIR / "community_packs/hair01_cc0/hair/cortu_short_messy_hair/short_messy.mhmat"
+    if messy.exists():
+        _, normal, _ = material_textures(messy, (90, 60, 40), derive_normal=True)
+        n = np.asarray(normal)
+        assert (n[..., 2] < 128).mean() < 0.05, "an object-space normal map was used as a tangent one"
+    assert skinned_glb.specular_hue([0.2, 0.1, 0.05]) == [1.0, 0.5, 0.25], "the hair's highlight lost its hue"
+    from garments import strands_along_v
+    stripes = np.zeros((128, 128, 4), np.uint8); stripes[..., 3] = 255
+    stripes[:, ::4, :3] = 200                                   # strands down the texture
+    assert strands_along_v(Image.fromarray(stripes)) > 0.9
+    assert strands_along_v(Image.fromarray(stripes.transpose(1, 0, 2).copy())) < 0.1
+    # Roots darker than the ends, the hair's mean given back in its colour.
+    from catalogue import build_item, items_by_id, load_base
+    from compose import ROOT_SHADE, root_shade
+    import garments
+    if (ASSET_DIR / "mh_system/hair/long01/long01.mhclo").exists():
+        vertices, groups = load_base()
+        cut = garments.with_scalp(build_item(items_by_id()["hair_long01"], (200, 200, 200), vertices), vertices, groups["body"])
+        part = skinned_glb.Part("hair_long01", cut.vertices, cut.faces, np.zeros((len(cut.vertices), 4)), np.zeros((len(cut.vertices), 4)))
+        part.base_colour = [0.2, 0.1, 0.05]
+        root_shade(part, cut)
+        n = cut.metadata["scalp_vertices"]; shade = part.colour[:-n, 0]
+        top = cut.vertices[:-n, 1]
+        assert shade[top > np.percentile(top, 90)].mean() < shade[top < np.percentile(top, 10)].mean() - 0.1, "roots not darker than ends"
+        assert abs(np.mean(shade) * part.material_extras["shadeGain"] - 1.0) < 0.02 and part.base_colour[0] > 0.2
+        assert np.allclose(part.colour[-n:], ROOT_SHADE)
+        # On a larger skull the bob's outer surface, as bound, sinks under the scalp; off_skin lifts it out.
+        from scipy.spatial import cKDTree
+        import trimesh
+        body = np.unique(groups["body"]); head = body[vertices[body, 1] > vertices[body, 1].max() - 2.3]
+        big = vertices.copy(); mid = vertices[head].mean(axis=0); big[head] = mid + (vertices[head] - mid) * 1.06
+        bob = build_item(items_by_id()["hair_toigo_blunt_bob"], (200, 200, 200), vertices)
+        n = np.asarray(trimesh.Trimesh(big, groups["body"], process=False).vertex_normals)
+        def sunk(points):
+            d, j = cKDTree(big[head]).query(points); k = head[j]
+            out = (np.asarray(bob.vertex_normals) * n[k]).sum(axis=1) > 0
+            return ((((points - big[k]) * n[k]).sum(axis=1) < 0) & (d < 0.3))[out].mean()
+        assert sunk(bob.vertices) > 0.2 and sunk(garments.off_skin(bob, big, groups["body"]).vertices) < 0.05, "hair left under the scalp"
+    print("ok  textures: few-colour palette keeps its cut-out, object-space normals dropped, strand direction read, roots shaded, hair off the skin")
+
+
 if __name__ == "__main__":
     try:
         check_weights()
@@ -2014,6 +2091,7 @@ if __name__ == "__main__":
         check_curl_cap()
         check_jacket()
         check_style_paint()
+        check_texture_palette()
         __import__("lineup").check()
     except AssertionError as err:
         print(f"FAIL  {err}", file=sys.stderr)

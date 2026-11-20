@@ -34,7 +34,10 @@ TYPE_FOR_WIDTH = {1: gl.SCALAR, 2: gl.VEC2, 3: gl.VEC3, 4: gl.VEC4, 16: gl.MAT4}
 # the lightest swatch (blonde, 186 148 96, wanted 1.22 of 170); a lighter
 # colour comes out at this. The lightest strands, 1.5 times the average,
 # stop at 255.
-HAIR_GREY = 200.0
+# Hair is written this light and darkened to its colour by its material factor, which glTF caps at 1:
+# at 200, grey and blonde hair read lighter than that (p06's 179 176 169 and paler) came out at the
+# texture's own level or darker. 235 leaves room for them.
+HAIR_GREY = 235.0
 
 
 def hair_factor(colour) -> list[float]:
@@ -42,6 +45,13 @@ def hair_factor(colour) -> list[float]:
     linear = lambda c: np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
     factor = linear(np.asarray(colour, dtype=np.float64) / 255.0) / linear(HAIR_GREY / 255.0)
     return np.minimum(factor, 1.0).round(4).tolist()
+
+
+def specular_hue(base_colour) -> list[float]:
+    """The highlight's colour for a base colour: its hue at full strength. Hair's sheen is light
+    that has passed through the fibre: a grey-white highlight read as wet plastic on brown hair."""
+    base = np.asarray(base_colour if base_colour is not None else [1.0, 1.0, 1.0], dtype=np.float64)
+    return (base / max(float(base.max()), 1e-6)).round(4).tolist()
 
 
 class Part:
@@ -73,6 +83,7 @@ class Part:
         self.sheen = None
         self.ior = None                 # KHR_materials_ior, where not glTF's 1.5
         self.anisotropy = None          # (strength, rotation in radians): KHR_materials_anisotropy
+        self.specular = None            # KHR_materials_specular strength, in the base colour's own hue
         self.clearcoat = None           # (strength, roughness): KHR_materials_clearcoat
         self.base_colour = None         # linear RGB the texture is multiplied by (hair_factor)
         self.extra_textures = {}        # {"toonTexture": PIL, ...}: other styles' base colours, in the material's extras
@@ -272,6 +283,11 @@ def _add_texture(gltf, buf, image, quality: int = 90, _seen: dict | None = None,
         index = cKDTree(entries).query(colours.astype(np.float64))[1][inverse.reshape(-1)].reshape(rgb.shape[:2])
         index[~shown] = 255
         out = Image.fromarray(index.astype(np.uint8), "P")
+        # Padded to entry 255, the transparent one: a texture of few colours (a recoloured grey
+        # haircut) gave a short palette, its black landed at entry 184, and the cut-away texels,
+        # pointing past the palette's end, came out opaque black: the scalp layer's feathered
+        # edge as a black band under the toigo bobs, the bun and culturalibre_05.
+        entries = np.vstack([entries, np.zeros((255 - len(entries), 3))])
         out.putpalette([int(c) for c in entries.reshape(-1)] + [0, 0, 0])
         out.save(data, format="PNG", optimize=True, transparency=255)
         mime = "image/png"
@@ -419,6 +435,11 @@ def export(parts: list[Part], skeleton, out_path: pathlib.Path,
                 "anisotropyStrength": float(strength), "anisotropyRotation": float(rotation)}
             if "KHR_materials_anisotropy" not in gltf.extensionsUsed:
                 gltf.extensionsUsed.append("KHR_materials_anisotropy")
+        if part.specular is not None:
+            material.extensions["KHR_materials_specular"] = {
+                "specularFactor": float(part.specular), "specularColorFactor": specular_hue(part.base_colour)}
+            if "KHR_materials_specular" not in gltf.extensionsUsed:
+                gltf.extensionsUsed.append("KHR_materials_specular")
         if part.clearcoat is not None:
             coat, coat_roughness = part.clearcoat
             material.extensions["KHR_materials_clearcoat"] = {
@@ -557,8 +578,12 @@ def with_hair(glb: bytes, cut: str | None, colour=None, glasses: str | None = No
     if colour is not None:
         for primitive in mesh["primitives"]:
             if name(primitive) == cut:
-                doc["materials"][primitive["material"]]["pbrMetallicRoughness"]["baseColorFactor"] = \
-                    [*hair_factor(colour), 1.0]
+                material = doc["materials"][primitive["material"]]
+                gain = material.get("extras", {}).get("shadeGain", 1.0)      # compose.root_shade
+                material["pbrMetallicRoughness"]["baseColorFactor"] = [*np.minimum(np.asarray(hair_factor(colour)) * gain, 1.0).round(4).tolist(), 1.0]
+                if "KHR_materials_specular" in material.get("extensions", {}):
+                    material["extensions"]["KHR_materials_specular"]["specularColorFactor"] = \
+                        specular_hue(hair_factor(colour))
     mesh["extras"] = {**extras, "hair": cut if cut in cuts else None, "hairOptions": [], "glassesOptions": []}
     return _pack(*_compact(doc, blob))
 

@@ -223,6 +223,19 @@
             <button type="button" data-gender="male" aria-pressed="true">Masculine</button>
             <button type="button" data-gender="female" aria-pressed="false">Feminine</button>
           </div>
+          <h2>Build</h2>
+          <div class="seg" role="group" aria-label="Build">
+            <button type="button" data-build="slim" aria-pressed="false">Slim</button>
+            <button type="button" data-build="average" aria-pressed="true">Average</button>
+            <button type="button" data-build="athletic" aria-pressed="false">Athletic</button>
+            <button type="button" data-build="full" aria-pressed="false">Full</button>
+          </div>
+          <h2>Height</h2>
+          <div class="seg" role="group" aria-label="Height">
+            <button type="button" data-height="short" aria-pressed="false">Shorter</button>
+            <button type="button" data-height="average" aria-pressed="true">Average</button>
+            <button type="button" data-height="tall" aria-pressed="false">Taller</button>
+          </div>
           <h2>Outfit</h2>
           <div class="seg" role="group" aria-label="Outfit">
             <button type="button" data-outfit="shirt" aria-pressed="true">Shirt</button>
@@ -330,7 +343,7 @@ import { setupRealism, applyMaterials, applyToon, applyStylized, stylizedShapes,
 import { assess, getLandmarker, STEADY_FRAMES, LEFT } from '/lib/photo-checks.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { front: null, sides: [], gender: 'male', outfit: 'shirt', model: null, id: null, hair: null, glasses: 'none' };
+const state = { front: null, sides: [], gender: 'male', build: 'average', height: 'average', outfit: 'shirt', model: null, id: null, hair: null, glasses: 'none' };
 
 // ---- Steps -------------------------------------------------------------------
 const ORDER = ['photo', 'create', 'style', 'save'];
@@ -422,6 +435,13 @@ document.querySelectorAll('[data-outfit]').forEach((b) => b.addEventListener('cl
   state.outfit = b.dataset.outfit;
   document.querySelectorAll('[data-outfit]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
 }));
+// Build and height: picked, not read from the photo (a selfie shows the head).
+for (const key of ['build', 'height']) {
+  document.querySelectorAll(`[data-${key}]`).forEach((b) => b.addEventListener('click', () => {
+    state[key] = b.dataset[key];
+    document.querySelectorAll(`[data-${key}]`).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  }));
+}
 
 // The selfie: front, then turned each way (optional), each taken by itself
 // once the live checks hold (as the studio's guided capture does).
@@ -542,6 +562,8 @@ $('create').addEventListener('click', async () => {
   body.append('mode', 'body');
   body.append('gender', state.gender);
   body.append('outfit', state.outfit);
+  body.append('build', state.build);
+  body.append('height', state.height);
   try {
     const res = await fetch('/generate', { method: 'POST', body });
     const data = await res.json().catch(() => ({}));

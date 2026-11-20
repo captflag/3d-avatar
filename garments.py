@@ -315,7 +315,8 @@ def load_mhmat(path: pathlib.Path) -> dict:
     return settings
 
 
-def material_textures(mhmat: pathlib.Path, colour=None, size: int = 1024, derive_normal: bool = False):
+def material_textures(mhmat: pathlib.Path, colour=None, size: int = 1024, derive_normal: bool = False,
+                      contrast: float = 1.0):
     """Base colour and normal map for an MHCLO asset, ready for glTF.
 
     Ambient occlusion is multiplied into the base colour: it is where the
@@ -344,6 +345,14 @@ def material_textures(mhmat: pathlib.Path, colour=None, size: int = 1024, derive
         # strand normal map its own .mhmat never refers to.
         normal = Image.open(mhmat.parent / f"{mhmat.stem}_normal.png")
         normal.thumbnail((size, size))
+    if normal is not None:
+        n = np.asarray(normal.convert("RGB")).astype(np.int32)
+        lit = n.sum(-1) > 30
+        if lit.any() and (n[..., 2][lit] < 128).mean() > 0.5:
+            # An object-space map (two Cortu cuts ship `*_objnorm.png`): read as
+            # tangent-space, its normals point anywhere and the light comes off
+            # the hair in white flecks. A tangent map's blue never drops below half.
+            normal = None
     if diffuse is None:
         return None, None, transparent
 
@@ -365,7 +374,13 @@ def material_textures(mhmat: pathlib.Path, colour=None, size: int = 1024, derive
         mean = brightness[solid].mean() if solid.any() else brightness.mean()
         # Capped, or the few near-white texels a hair texture carries along its
         # edge come out at four times the hair's brightness: a white blotch.
-        relative = np.clip(brightness / max(mean, 1.0), 0.0, 1.5)
+        # A texture with nothing in it (culturalibre_14 ships `black.png`) takes the colour flat:
+        # scaled by its own black, it stayed black whatever colour was asked for.
+        relative = np.clip(brightness / mean, 0.0, 1.5) if mean >= 1.0 else np.ones_like(brightness)
+        # `contrast` below 1 pulls each texel's brightness towards the texture's average: a hair
+        # texture's own shading has near-black areas (a painted crown's shadow, the dark side of a
+        # lock) that dyed grey or blonde stayed black, in patches across light hair.
+        relative = np.clip(1.0 + contrast * (relative - 1.0), 0.0, 1.5) if contrast != 1.0 else relative
         rgb = np.asarray(colour, dtype=np.float64)[None, None, :] * relative[..., None]
     rgb = np.clip(rgb, 0, 255).astype(np.uint8)
     if transparent:
@@ -1504,22 +1519,54 @@ def glasses_frames(glasses: trimesh.Trimesh, eyes: np.ndarray, skin: trimesh.Tri
     return frames
 
 
-def strand_normals(rgb: np.ndarray, depth: float = 2.0):
+def strand_normals(rgb: np.ndarray, depth: float = 1.0):
     """A tangent-space normal map from a hair texture's own brightness.
 
     Only one of MakeHuman's haircuts ships a normal map. Light strands sit
     proud of dark ones, so the texture's lightness, lightly blurred, serves as
     a height; its slopes give the relief that catches the light per strand.
+    At depth 2 and a 1-texel blur the edges of bob02's painted highlights came out as ridges that
+    took the light in white lines across the hair.
     """
     import cv2
     from PIL import Image
-    height = cv2.GaussianBlur(rgb.mean(axis=2) / 255.0, (0, 0), 1.0)
+    height = cv2.GaussianBlur(rgb.mean(axis=2) / 255.0, (0, 0), 1.5)
     dx = cv2.Sobel(height, cv2.CV_64F, 1, 0, ksize=3) * depth
     dy = cv2.Sobel(height, cv2.CV_64F, 0, 1, ksize=3) * depth
     n = np.dstack([-dx, dy, np.ones_like(height)])
     n /= np.linalg.norm(n, axis=2, keepdims=True)
     return Image.fromarray(((n * 0.5 + 0.5) * 255).astype(np.uint8), "RGB")
 
+
+
+def strands_along_v(texture, tile: int = 32) -> float:
+    """Share of a hair texture's strand detail that runs along v (within 30 degrees), from the
+    structure tensor of each solid `tile`-texel square, weighted by how one-way it is. Most cuts paint
+    their strands down the texture (toigo's bobs 95%, long01 91%); MakeHuman's short cuts and the bun
+    paint them every way (31-49%)."""
+    import cv2
+    rgba = np.asarray(texture.convert("RGBA")).astype(np.float64)
+    H, W = rgba.shape[:2]
+    lum = cv2.GaussianBlur(rgba[..., :3].mean(axis=2), (0, 0), 1.0)
+    solid = rgba[..., 3] > 128
+    gu, gv = cv2.Sobel(lum, cv2.CV_64F, 1, 0) * W, cv2.Sobel(lum, cv2.CV_64F, 0, 1) * H
+    along = total = 0.0
+    for y in range(0, H - tile + 1, tile):
+        for x in range(0, W - tile + 1, tile):
+            s = solid[y:y + tile, x:x + tile]
+            if s.mean() < 0.5:
+                continue
+            u, v = gu[y:y + tile, x:x + tile][s], gv[y:y + tile, x:x + tile][s]
+            juu, jvv, juv = (u * u).sum(), (v * v).sum(), (u * v).sum()
+            if juu + jvv < 1e-9:
+                continue
+            coherence = np.hypot(juu - jvv, 2 * juv) / (juu + jvv)
+            if coherence < 0.3:
+                continue
+            strand = (np.degrees(0.5 * np.arctan2(2 * juv, juu - jvv)) + 90.0) % 180.0
+            total += coherence * s.sum()
+            along += coherence * s.sum() * (abs(strand - 90.0) < 30.0)
+    return along / total if total else 0.0
 
 
 def open_rim(mesh: trimesh.Trimesh, weld: float = 0.03) -> np.ndarray:
@@ -1655,3 +1702,244 @@ def leather_roughness(mesh: trimesh.Trimesh, vertices: np.ndarray, groups: dict,
     green = np.where(region, LEATHER_ROUGHNESS[0], LEATHER_ROUGHNESS[1])
     return Image.merge("RGB", [Image.fromarray(np.uint8(c)) for c in (np.zeros_like(green), green * 255, np.zeros_like(green))])
 
+
+
+# The scalp under a haircut (with_scalp): how far out of the skin it lies, in mesh units (dm), on the
+# head and in front of the ears; how far a ray out of the skin may go to meet the hair and still call
+# the skin under it; how far in from its edge it thins out into the skin; and its colour against the
+# hair texture's own median, roots and the shadow under hair being darker than the hair.
+# Hair off the skin (off_skin): at least HAIR_CLEAR over it, lifted at most HAIR_LIFT_MAX.
+HAIR_CLEAR = 0.015
+HAIR_LIFT_MAX = 0.1
+
+
+def off_skin(hair: trimesh.Trimesh, vertices: np.ndarray, body_faces: np.ndarray, rounds: int = 6) -> trimesh.Trimesh:
+    """The haircut lifted out of the head wherever it lies under the skin or within HAIR_CLEAR of it.
+
+    The picker's cuts are carried to this head by their MHCLO bindings alone, made on the stock head;
+    on a larger skull a bob's crown sank under the scalp (p09: 17% of toigo's blunt bob, 6.9 mm deep)
+    and the skin, or the scalp layer, showed through it in specks. Each point is lifted along the
+    skin's normal, by no more than HAIR_LIFT_MAX (deeper is a card meant to be hidden inside), the
+    surface facing out only; copies
+    of one position move as one, and the lift is spread over the neighbours so it leaves no crease."""
+    from scipy.spatial import cKDTree
+    body = np.unique(body_faces)
+    normals = np.asarray(trimesh.Trimesh(vertices, body_faces, process=False).vertex_normals)
+    head = body[vertices[body, 1] > vertices[body, 1].max() - 2.3]
+    points = np.asarray(hair.vertices, dtype=np.float64)
+    dist, j = cKDTree(vertices[head]).query(points)
+    near = head[j]
+    over = ((points - vertices[near]) * normals[near]).sum(axis=1)
+    # The surface that faces out only: a shell's inside lies under the scalp by design (toigo's bob, 12%
+    # of it, on the stock head too), hidden, and lifted it came up through the outside.
+    facing = (np.asarray(hair.vertex_normals) * normals[near]).sum(axis=1) > 0.0
+    need = np.where((dist < 0.3) & facing & (over > -HAIR_LIFT_MAX), np.clip(HAIR_CLEAR - over, 0.0, None), 0.0)
+    if not need.any():
+        return hair
+    place, same = np.unique(np.round(points, 5), axis=0, return_inverse=True)
+    same = same.reshape(-1)
+    f = same[np.asarray(hair.faces)]
+    edges = np.unique(np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1), axis=0)
+    lift = np.zeros(len(place))
+    np.maximum.at(lift, same, need)
+    own = lift.copy()
+    count = np.bincount(edges.ravel(), minlength=len(place))
+    for _ in range(rounds):
+        total = np.zeros_like(lift)
+        np.add.at(total, edges[:, 0], lift[edges[:, 1]]); np.add.at(total, edges[:, 1], lift[edges[:, 0]])
+        lift = np.maximum(own, 0.5 * lift + 0.5 * total / np.maximum(count, 1))
+    out = hair.copy()
+    out.vertices = points + lift[same][:, None] * normals[near]
+    out.metadata = dict(hair.metadata)
+    return out
+
+
+SCALP_LIFT = (0.03, 0.05)
+SCALP_REACH = 0.3
+SCALP_FADE = 0.06
+SCALP_SHADE = 0.75
+SCALP_UNDER = 0.45
+SCALP_FLOOR = 0.006
+# The hair's shadow on the skin (with_scalp): up to SHADOW_ALPHA of near-black over the skin, fading
+# over SHADOW_BAND past the hair's edge and wherever hair hangs within SHADOW_REACH over it (a fringe
+# over the forehead), SHADOW_LIFT off the skin. Skin is mostly its baked photo (scene-setup
+# SHADING.skin.lit 0.3), so the studio's own shadow of the hair hardly showed on it.
+SHADOW_ALPHA = 0.35
+SHADOW_BAND = 0.12
+SHADOW_REACH = 0.25
+# Not on the eyes: within this ellipse (half-width, half-height) round each eye's centre, faded out
+# over EYE_CLEAR_FADE of its radius. The head's lids and sockets are moved after the hair is fitted
+# (compose), and a layer lifted off the body's own came out under the drawn lids, in black fragments.
+EYE_CLEAR = (0.28, 0.14)
+EYE_CLEAR_FADE = 0.25
+SHADOW_LIFT = 0.004
+# Toward where the light comes from: above, in front, either side. Along the skin's normal alone, a
+# fringe that ends above the brows shaded nothing that shows: the shadow stayed under the hair.
+SHADOW_RAYS = ((0.0, 1.0, 0.0), (0.0, 0.7, 0.7), (0.6, 0.7, 0.4), (-0.6, 0.7, 0.4), (0.0, 0.3, 1.0))
+
+
+def _ray_hits(origins: np.ndarray, directions: np.ndarray, tris: np.ndarray, reach: float) -> np.ndarray:
+    """How far along each ray the nearest of the triangles is, inf past `reach` (Moller-Trumbore, in chunks)."""
+    a, e1, e2 = tris[:, 0], tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
+    out = np.full(len(origins), np.inf)
+    for k in range(0, len(origins), 32):
+        o, d = origins[k:k + 32, None, :], directions[k:k + 32, None, :]
+        pv = np.cross(d, e2[None]); det = (e1[None] * pv).sum(-1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            inv = 1.0 / det
+            tv = o - a[None]; u = (tv * pv).sum(-1) * inv
+            qv = np.cross(tv, e1[None]); v = (d * qv).sum(-1) * inv; t = (e2[None] * qv).sum(-1) * inv
+            hit = (np.abs(det) > 1e-12) & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0) & (t < reach)
+        out[k:k + 32] = np.where(hit, t, np.inf).min(axis=1)
+    return out
+
+
+def with_scalp(hair: trimesh.Trimesh, vertices: np.ndarray, body_faces: np.ndarray,
+               eyes: list[np.ndarray] = ()) -> trimesh.Trimesh:
+    """The haircut with a scalp layer under it: the head's own surface a few millimetres out, wherever
+    the hair lies over it, in a darker shade of the hair, thinning out over its last SCALP_FADE into
+    the skin. Not the ears or the face. And the hair's shadow on the skin (`_hair_shadow`).
+
+    Without it every gap between the cards showed bare skin, the hair stopped on the forehead in a
+    hard line, and nothing under the hair was in its shade: the cut sat on the head like a hat. Its
+    texture is a strip added under the hair's own (the hair's texture coordinates moved up to make
+    room, the hair's texels untouched): u is how far in from the edge, v a random row, so the edge
+    comes out ragged, as a hairline is. Rigged and dyed with the hair: it is part of the same mesh."""
+    from PIL import Image
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
+    texture, uv = hair.metadata.get("texture"), hair.metadata.get("uv")
+    if texture is None or uv is None or "mhclo_idx" not in hair.metadata:
+        return hair
+    body = np.unique(body_faces)
+    normals = np.asarray(trimesh.Trimesh(vertices, body_faces, process=False).vertex_normals)
+    top = vertices[body, 1].max()
+    head = body[vertices[body, 1] > top - 2.3]
+    h, hn = vertices[head], normals[head]
+    widest = np.abs(h[:, 0]).max()
+    ear = h[np.abs(h[:, 0]) > 0.9 * widest]
+    ear_top, ear_bottom, ear_front = ear[:, 1].max(), ear[:, 1].min(), ear[:, 2].max()
+    is_ear = (np.abs(h[:, 0]) > 0.85 * widest) & (h[:, 1] < ear_top + 0.05) & (h[:, 1] > ear_bottom - 0.15)
+    face = (h[:, 1] < ear_top) & (h[:, 2] > ear_front - 0.1)
+    cand = head[~is_ear & ~face & (h[:, 1] > ear_bottom - 0.3)]
+    tris = np.asarray(hair.vertices)[hair.faces]
+    near = tris.mean(axis=1)[:, 1] > ear_bottom - 0.6
+    gap = np.full(len(vertices), np.inf)
+    gap[cand] = 0.005 + _ray_hits(vertices[cand] + 0.005 * normals[cand], normals[cand], tris[near], SCALP_REACH)
+    covered = np.isfinite(gap)
+    faces = body_faces[covered[body_faces].all(axis=1)]
+    if len(faces) < 10:
+        return hair
+    keep = np.unique(faces)
+    local = np.searchsorted(keep, faces)
+    lift = SCALP_LIFT[0] + (SCALP_LIFT[1] - SCALP_LIFT[0]) * np.clip((vertices[keep, 2] - (ear_front - 0.2)) / 0.2, 0, 1)
+    # Under the half-way point to the hair: a bob that lies 3 mm off the crown had the layer through it,
+    # in dark crackle across the top of the head.
+    lift = np.minimum(lift, np.maximum(SCALP_UNDER * gap[keep], SCALP_FLOOR))
+    points = vertices[keep] + lift[:, None] * normals[keep]
+    # How far in from the layer's edge, over its own surface.
+    edges = np.sort(np.concatenate([local[:, [0, 1]], local[:, [1, 2]], local[:, [2, 0]]]), axis=1)
+    pairs, count = np.unique(edges, axis=0, return_counts=True)
+    border = np.unique(pairs[count == 1])
+    length = np.linalg.norm(points[pairs[:, 0]] - points[pairs[:, 1]], axis=1)
+    graph = coo_matrix((length, (pairs[:, 0], pairs[:, 1])), shape=(len(points),) * 2).tocsr()
+    inward = dijkstra(graph, directed=False, indices=border, min_only=True, limit=2 * SCALP_FADE)
+    fade = np.clip(np.nan_to_num(inward, posinf=2 * SCALP_FADE) / SCALP_FADE, 0.0, 1.0)
+    # The strip under the hair's texture: a quarter of its height.
+    rgba = np.asarray(texture.convert("RGBA")).astype(np.float64)
+    H, W = rgba.shape[:2]
+    strip = max(H // 4, 16)
+    solid = rgba[..., 3] > 128
+    grey = SCALP_SHADE * np.median(rgba[..., :3][solid], axis=0) if solid.any() else np.full(3, 100.0)
+    # The strip is the hair's own most solid band of rows, darker: through a hole in a shell cut (the
+    # toigo bobs tear at the crown) a flat grey sheet took the light as one smooth blue-grey patch.
+    # Hair under hair, with its strands and their normals, reads as depth.
+    cover = np.convolve(solid.mean(axis=1), np.ones(strip), "valid")
+    r0 = int(np.argmax(cover))
+    strands = np.where(solid[r0:r0 + strip, :, None], SCALP_SHADE * rgba[r0:r0 + strip, :, :3], grey)
+    rng = np.random.default_rng(3)
+    noise = rng.random((strip, W))
+    noise = np.asarray(Image.fromarray((noise * 255).astype(np.uint8)).resize((W // 8, strip)).resize((W, strip), Image.BILINEAR)) / 255.0
+    ramp = np.linspace(0.0, 1.0, W)[None, :]
+    alpha = np.clip(ramp * 1.25 + (noise - 0.5) * 0.7, 0.0, 1.0)
+    band = np.dstack([strands, alpha * 255])
+    atlas = np.vstack([rgba, band]).clip(0, 255).astype(np.uint8)
+    new_texture = Image.fromarray(atlas, mode="RGBA")
+    if texture.mode == "P":
+        new_texture = new_texture.quantize(256, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.NONE)
+    total = H + strip
+    normal = hair.metadata.get("normal_texture")
+    if normal is not None:
+        n = np.asarray(normal.convert("RGB").resize((W, H)))
+        normal = Image.fromarray(np.vstack([n, n[r0:r0 + strip]]))
+    hair_uv = np.c_[uv[:, 0], (strip + uv[:, 1] * H) / total]
+    rows = rng.uniform(0.05, 0.95, len(points)) * strip / total
+    scalp_uv = np.c_[0.01 + 0.98 * fade, rows]
+    n_hair = len(hair.vertices)
+    out = trimesh.Trimesh(np.vstack([hair.vertices, points]), np.vstack([hair.faces, local + n_hair]), process=False)
+    out.metadata = dict(hair.metadata)
+    out.metadata.update(
+        uv=np.vstack([hair_uv, scalp_uv]), texture=new_texture, normal_texture=normal, alpha_mask=True,
+        mhclo_idx=np.vstack([hair.metadata["mhclo_idx"], np.repeat(keep[:, None], 3, axis=1)]),
+        mhclo_blend=np.vstack([hair.metadata["mhclo_blend"], np.tile([1.0, 0.0, 0.0], (len(keep), 1))]),
+        scalp_vertices=len(keep))
+    if hasattr(hair.visual, "vertex_colors") and len(getattr(hair.visual, "vertex_colors", [])) == n_hair:
+        vc = np.asarray(hair.visual.vertex_colors)
+        out.visual = trimesh.visual.ColorVisuals(out, vertex_colors=np.vstack([vc, np.repeat(vc[:1], len(keep), axis=0)]))
+    # The hair's shadow on the skin, a mesh of its own (compose draws it blended, black, by its
+    # vertices' alpha): in the hair's material it took the hair's highlight and lit the forehead in
+    # pale facets, and in its texture the palette ran its faint black into the hair's.
+    shade_keep, shade_faces, strength = _hair_shadow(vertices, normals, body_faces, head, is_ear, covered, tris[near], eyes)
+    if len(shade_faces):
+        shadow = trimesh.Trimesh(vertices[shade_keep] + SHADOW_LIFT * normals[shade_keep], shade_faces, process=False)
+        colours = np.zeros((len(shade_keep), 4), np.uint8); colours[:, 3] = np.rint(255 * strength)
+        shadow.visual = trimesh.visual.ColorVisuals(shadow, vertex_colors=colours)
+        shadow.metadata = {"mhclo_idx": np.repeat(shade_keep[:, None], 3, axis=1),
+                           "mhclo_blend": np.tile([1.0, 0.0, 0.0], (len(shade_keep), 1))}
+        out.metadata["shadow"] = shadow
+    return out
+
+
+def _hair_shadow(vertices, normals, body_faces, head, is_ear, covered, hair_tris, eyes=()):
+    """Where the hair shades the skin, and how much (0..SHADOW_ALPHA): over SHADOW_BAND past the
+    covered region's edge, over the surface, and wherever hair hangs within SHADOW_REACH along the
+    skin's normal (a fringe). Returns the body vertices, their faces (re-indexed to them) and strengths.
+    Under the scalp layer as well, where its solid part hides it."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
+    skin = head[~is_ear]
+    in_skin = np.zeros(len(vertices), bool); in_skin[skin] = True
+    faces = body_faces[in_skin[body_faces].all(axis=1)]
+    edges = np.unique(np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1), axis=0)
+    length = np.linalg.norm(vertices[edges[:, 0]] - vertices[edges[:, 1]], axis=1)
+    graph = coo_matrix((length, (edges[:, 0], edges[:, 1])), shape=(len(vertices),) * 2).tocsr()
+    sources = np.flatnonzero(covered & in_skin)
+    away = dijkstra(graph, directed=False, indices=sources, min_only=True, limit=SHADOW_BAND) if len(sources) else np.full(len(vertices), np.inf)
+    band = np.clip(1.0 - away / SHADOW_BAND, 0.0, 1.0) ** 1.5
+    bare = skin[~covered[skin]]
+    origins = vertices[bare] + 0.005 * normals[bare]
+    hang = np.zeros(len(vertices)); seen = np.zeros(len(vertices))
+    for ray in (normals[bare], *[np.broadcast_to(np.asarray(r) / np.linalg.norm(r), (len(bare), 3)) for r in SHADOW_RAYS]):
+        out = (ray * normals[bare]).sum(axis=1) > 0.1            # only rays that leave the skin
+        hit = _ray_hits(origins[out], np.ascontiguousarray(ray[out]), hair_tris, SHADOW_REACH)
+        hang[bare[out]] += np.clip(1.0 - hit / SHADOW_REACH, 0.0, 1.0)
+        seen[bare[out]] += 1
+    hang = hang / np.maximum(seen, 1)
+    strength = SHADOW_ALPHA * np.maximum(band, hang)
+    strength[covered] = SHADOW_ALPHA
+    # Soft-edged, as a shadow is: averaged with the neighbours twice over the skin's edges.
+    neighbours = coo_matrix((np.ones(2 * len(edges)), (edges.ravel(), edges[:, ::-1].ravel())), shape=(len(vertices),) * 2).tocsr()
+    count = np.maximum(np.asarray(neighbours.sum(axis=1)).ravel(), 1)
+    for _ in range(2):
+        strength = np.where(in_skin, 0.5 * strength + 0.5 * (neighbours @ strength) / count, strength)
+    strength[covered] = SHADOW_ALPHA
+    for eye in eyes:                                  # body vertex indices of one eye
+        centre = vertices[np.unique(eye)].mean(axis=0)
+        r = np.hypot((vertices[:, 0] - centre[0]) / EYE_CLEAR[0], (vertices[:, 1] - centre[1]) / EYE_CLEAR[1])
+        strength *= np.clip((r - 1.0) / EYE_CLEAR_FADE, 0.0, 1.0)
+    shaded = strength > 0.01
+    # Under the scalp layer too: left out there, the strip under its feathered edge kept the bare
+    # skin's colour between the shadow and the hair, a pale halo along the hairline.
+    faces = faces[shaded[faces].all(axis=1)]
+    keep = np.unique(faces)
+    return keep, np.searchsorted(keep, faces), strength[keep]

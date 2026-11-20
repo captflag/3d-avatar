@@ -216,8 +216,32 @@ def load_expressions():
     return _expressions
 
 
-def body_for(base: np.ndarray, gender: str) -> np.ndarray:
-    """The base mesh made into an adult man or woman, before any face fit.
+# Body types the person picks (the app's Body step), as MakeHuman's macro sliders: weight, muscle and
+# height, each 0-1 with 0.5 the average adult. Not read from the photo: a selfie shows the head.
+BODY_TYPES = {
+    "slim": {"weight": 0.05, "muscle": 0.45},
+    "average": {},
+    "athletic": {"weight": 0.5, "muscle": 0.9},
+    "full": {"weight": 1.0, "muscle": 0.5},
+}
+# (Short and tall about 8 cm either side of the average: 164 / 173 / 182 cm a man, 150 / 159 / 168 a woman;
+# the targets are the sliders' extremes, and at 0.2 / 0.8 a man came out 151 and 216 cm.)
+HEIGHTS = {"short": 0.38, "average": 0.5, "tall": 0.57}
+
+
+def _levels(value: float, names=("min", "average", "max")) -> dict:
+    """MakeHuman's split of a 0-1 slider over its min / average / max targets."""
+    v = float(np.clip(value, 0.0, 1.0))
+    return {names[0]: 1 - 2 * v, names[1]: 2 * v} if v < 0.5 else {names[1]: 2 - 2 * v, names[2]: 2 * v - 1}
+
+
+def body_for(base: np.ndarray, gender: str, weight: float = 0.5, muscle: float = 0.5,
+             height: float = 0.5) -> np.ndarray:
+    """The base mesh made into an adult man or woman of this build, before any face fit.
+
+    `weight`, `muscle` and `height` are MakeHuman's macro sliders (0-1, 0.5 average), blended as
+    MakeHuman blends them: the universal target of each muscle x weight pair weighted by both
+    sliders' shares, and the height target of each pair by that and the height slider's.
 
     The raw base mesh is neither: MakeHuman always applies its macro targets on
     top, and we had been skipping them, so every avatar wore the same
@@ -232,6 +256,20 @@ def body_for(base: np.ndarray, gender: str) -> np.ndarray:
     for region in ("african", "asian", "caucasian"):
         idx, delta = read_target(TARGET_DIR / "macrodetails" / f"{region}-{sex}-young.target")
         shaped[idx] += delta / 3.0
+    macro = TARGET_DIR / "macrodetails"
+    heights = {} if abs(height - 0.5) < 1e-6 else _levels(height, ("minheight", "average", "maxheight"))
+    for m, wm in _levels(muscle).items():
+        for w, ww in _levels(weight).items():
+            if wm * ww < 1e-6:
+                continue
+            build = f"{sex}-young-{m}muscle-{w}weight"
+            if not (m == w == "average"):
+                idx, delta = read_target(macro / f"universal-{build}.target")
+                shaped[idx] += wm * ww * delta
+            for h, wh in heights.items():
+                if h != "average" and wh > 1e-6:
+                    idx, delta = read_target(macro / "height" / f"{build}-{h}.target")
+                    shaped[idx] += wm * ww * wh * delta
     return shaped
 
 
