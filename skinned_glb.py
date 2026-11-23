@@ -543,6 +543,21 @@ def dequantised(glb: bytes) -> bytes:
     return _pack(doc, blob)
 
 
+def t_posed(glb: bytes) -> bytes:
+    """The avatar standing in its T-pose: every bone's turn taken off, so it stands as it was built
+    (compose's `bindPose` "t"), but the upper lids' rest (compose.UPPER_LID_DROP). A file built
+    arms-down is returned as it is."""
+    doc, blob = _unpack(glb)
+    if doc["meshes"][0].get("extras", {}).get("bindPose") != "t":
+        return glb
+    joints = {j for skin in doc.get("skins", []) for j in skin["joints"]}
+    for i in joints:
+        node = doc["nodes"][i]
+        if not node.get("name", "").startswith("orbicularis"):
+            node.pop("rotation", None)
+    return _pack(doc, blob)
+
+
 def _unpack(glb: bytes) -> tuple[dict, bytearray]:
     import json
     json_len = struct.unpack_from("<I", glb, 12)[0]
@@ -574,7 +589,9 @@ def with_hair(glb: bytes, cut: str | None, colour=None, glasses: str | None = No
     pairs = set(extras.get("glassesOptions", []))
     name = lambda primitive: doc["materials"][primitive["material"]].get("name")
     mesh["primitives"] = [pr for pr in mesh["primitives"]
-                          if (name(pr) not in cuts or name(pr) == cut) and (name(pr) not in pairs or name(pr) == glasses)]
+                          if (name(pr) not in cuts or name(pr) == cut) and (name(pr) not in pairs or name(pr) == glasses)
+                          # the built cut's cap under its cards (compose) goes with it
+                          and not (name(pr) == "scalp_cap" and cut != extras.get("hair"))]
     if colour is not None:
         for primitive in mesh["primitives"]:
             if name(primitive) == cut:
@@ -584,6 +601,14 @@ def with_hair(glb: bytes, cut: str | None, colour=None, glasses: str | None = No
                 if "KHR_materials_specular" in material.get("extensions", {}):
                     material["extensions"]["KHR_materials_specular"]["specularColorFactor"] = \
                         specular_hue(hair_factor(colour))
+    for material in doc["materials"]:
+        more = material.get("extras", {})
+        if "plainTexture" in more and cut != extras.get("hair"):
+            # Another cut than the built one, or none: the head without its painted hairline (compose).
+            material["pbrMetallicRoughness"]["baseColorTexture"]["index"] = more["plainTexture"]
+        # The studio's other paints are bare texture numbers that _compact cannot renumber: dropped.
+        if more:
+            material["extras"] = {k: v for k, v in more.items() if not k.endswith("Texture")}
     mesh["extras"] = {**extras, "hair": cut if cut in cuts else None, "hairOptions": [], "glassesOptions": []}
     return _pack(*_compact(doc, blob))
 

@@ -789,7 +789,7 @@ def hand_clearance(pose: dict, skeleton, body) -> dict:
 
 
 def arms_clear(pose: dict, skeleton, body, need: float = 0.12, step: float = 2.0,
-               most: float = 20.0) -> dict:
+               most: float = 20.0, back: dict | None = None) -> dict:
     """The pose with each arm swung out until its hand clears the hip.
 
     The arm pose is set on the male base body. A fuller figure, wider at the
@@ -804,7 +804,7 @@ def arms_clear(pose: dict, skeleton, body, need: float = 0.12, step: float = 2.0
         for extra in np.arange(0.0, most + step / 2, step):
             pose[f"upperarm01.{side}"] = [float(c) for c in (
                 Rotation.from_euler("z", extra * sign, degrees=True) * rest).as_quat()]
-            if hand_clearance(pose, skeleton, body)[side] >= need:
+            if hand_clearance(carried(pose, skeleton, back), skeleton, body)[side] >= need:
                 break
     return pose
 
@@ -816,7 +816,27 @@ def arms_clear(pose: dict, skeleton, body, need: float = 0.12, step: float = 2.0
 PALM_TWIST = -20.0
 
 
-POSES = {"relaxed": relaxed_pose, "rest": rest_pose}
+POSES = {"relaxed": relaxed_pose, "rest": rest_pose, "t": lambda: {}}
+
+
+def carried(pose: dict, skeleton, back: dict | None) -> dict:
+    """A pose made for the arms-down rig, for a rig built in the T-pose (morph.t_pose_body).
+
+    `back` holds each bone's rotation from the T-pose to the arms-down rest. Every bone's turn becomes
+    back[parent]^-1 . turn . back[bone]: the same final stance, vertex for vertex where one bone carries
+    a vertex (median 0.00 mm; up to about 2 cm at the shoulder, where skinning blends two bones and the
+    T-pose cannot be undone exactly). With no `back`, the pose as it is."""
+    if not back:
+        return pose
+    from scipy.spatial.transform import Rotation
+    out = {}
+    for i, name in enumerate(skeleton.names):
+        parent = skeleton.names[skeleton.parents[i]] if skeleton.parents[i] >= 0 else None
+        turn = Rotation.from_quat(pose[name]).as_matrix() if name in pose else np.eye(3)
+        m = back.get(parent, np.eye(3)).T @ turn @ back.get(name, np.eye(3))
+        if not np.allclose(m, np.eye(3), atol=1e-9):
+            out[name] = [float(c) for c in Rotation.from_matrix(m).as_quat()]
+    return out
 
 
 def hairline_for(face: trimesh.Trimesh, vertices: np.ndarray, groups: dict, lift: float = 0.0):
@@ -1262,7 +1282,9 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         depth_trust = morph.DEPTH_TRUST + (1.0 - morph.DEPTH_TRUST) * measured
 
     # A man's or a woman's body of the build they picked first, then the face fitted on top of it.
-    base = morph.body_for(raw, gender, height=morph.HEIGHTS[height], **morph.BODY_TYPES[body_type])
+    # Standing in a T-pose (morph.t_pose_body): the rig and the clothes are built on it, and every pose
+    # is carried over to it at the export (carried).
+    base, t_back = morph.t_pose_body(raw, gender, height=morph.HEIGHTS[height], **morph.BODY_TYPES[body_type])
 
     # Shape the skull to this person before anything is built from it. The
     # person's face and MediaPipe's average face are placed on the head the same
@@ -1489,8 +1511,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                                seen_at=np.asarray(shaped.vertices))
             shape_hair(mesh)
         if item["category"] == "hair" and "mhclo" in item and item.get("strands", True):
-            # Its scalp, in its shade, under it (garments.with_scalp), off the skin first (garments.off_skin).
-            mesh = garments.with_scalp(garments.off_skin(mesh, vertices, groups["body"]), vertices, groups["body"],
+            # Its scalp, in its shade, under it (garments.with_scalp), round the ears (garments.around_ears), then off the skin (garments.off_skin).
+            mesh = garments.with_scalp(garments.off_skin(garments.around_ears(mesh, vertices, groups["body"], appearance.ear_weight(len(vertices))), vertices, groups["body"]), vertices, groups["body"],
                                        [groups["helper-l-eye"], groups["helper-r-eye"]])
         if item["category"] == "brows":
             mesh = brows_to_photo(mesh, full_face.vertices, brow_depth, vertices, groups)
@@ -1683,6 +1705,10 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The haircut's cards if there are any, else a buzz cut's scalp layer.
     hair_meshes = [(("mhclo" in item), m) for item, m in worn if item["category"] == "hair"]
     haircut = max(hair_meshes, key=lambda pair: pair[0])[1] if hair_meshes else None
+    # The head without that paint, for the studio's other cuts and no hair (the viewer's chooseHair):
+    # each other cut carries its own scalp layer, and the painted cut's dark cap, its edge stepped
+    # over the ears, stayed on the skin under them all.
+    head_plain = head_texture
     if haircut is not None and hair_rgb is not None:
         # A soft hairline painted on the skin, so the hair cards do not end on
         # bare forehead in a hard line.
@@ -1702,23 +1728,30 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         np.asarray(image, dtype=np.float64) * (1.0 - CAVITY_DEPTH * facetexture.rasterize(
             values, faces_, uv_, uv_faces_, np.asarray(image).shape[0], fill=0.0))[..., None], 0, 255
     ).astype(np.uint8)
-    head_texture = Image.fromarray(shade(head_texture.convert("RGB"), head_faces, head_uv_all, head_uv_faces,
-                                         cavity * (1.0 - photo_strength)))
     # Ears: warmer and redder than the skull's generated skin.
     ears = appearance.ear_weight(len(vertices)) * (1.0 - photo_strength)
-    head_texture = Image.fromarray(appearance.warm_ears(
-        np.asarray(head_texture), facetexture.rasterize(ears, head_faces, head_uv_all, head_uv_faces,
-                                                        head_texture.size[0], fill=0.0)))
+
+    def finish_head(texture):
+        texture = Image.fromarray(shade(texture.convert("RGB"), head_faces, head_uv_all, head_uv_faces,
+                                        cavity * (1.0 - photo_strength)))
+        texture = Image.fromarray(appearance.warm_ears(
+            np.asarray(texture), facetexture.rasterize(ears, head_faces, head_uv_all, head_uv_faces,
+                                                       texture.size[0], fill=0.0)))
+        if side_views:
+            # The cheeks' sides and the jaw towards the ear, which the front
+            # photo never saw, from the turned photos. Not the ears: no landmark
+            # finds them, and a few millimetres' misfit painted the photo's ear
+            # half beside the mesh's.
+            texture, _ = views.paint_sides(texture, vertices, head_faces, head_uv_all, head_uv_faces,
+                                           photo_strength, to_fused,
+                                           [(view[2], camera) for view, camera in zip(side_views, cameras[1:])],
+                                           skip=appearance.ear_weight(len(vertices)))
+        return texture
+
+    tinted = head_texture is not head_plain
+    head_texture = finish_head(head_texture)
+    head_plain = finish_head(head_plain) if tinted else None
     rest_base = shade(rest_base, rest_faces, uv_all, rest_uv_faces, cavity)
-    if side_views:
-        # The cheeks' sides and the jaw towards the ear, which the front
-        # photo never saw, from the turned photos. Not the ears: no landmark
-        # finds them, and a few millimetres' misfit painted the photo's ear
-        # half beside the mesh's.
-        head_texture, _ = views.paint_sides(head_texture, vertices, head_faces, head_uv_all, head_uv_faces,
-                                            photo_strength, to_fused,
-                                            [(view[2], camera) for view, camera in zip(side_views, cameras[1:])],
-                                            skip=appearance.ear_weight(len(vertices)))
 
     # Fingernails: the base mesh's fingertips are smooth skin to the end. The
     # nail is found from the rig (appearance.nail_weight), painted lighter and
@@ -1762,6 +1795,9 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         photo_head = head_texture
         head_texture = appearance.beard_underside(head, head_uv, photo_head, sampler, beard_map,
                                                   landmarks, (pw, ph))
+        if head_plain is not None:
+            head_plain = appearance.beard_underside(head, head_uv, head_plain, sampler, beard_map,
+                                                    landmarks, (pw, ph))
         rest_texture = appearance.beard_underside(head, head_uv, photo_head, sampler, beard_map,
                                                   landmarks, (pw, ph), onto=(body, body_uv, rest_texture))
 
@@ -1849,7 +1885,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         ))
         parts[-1].morphs = expression_morphs(mesh, face_shapes)
         if name == "head":
-            parts[-1].extra_textures = {"toonTexture": toon_texture, "styleTexture": style_texture}
+            parts[-1].extra_textures = {"toonTexture": toon_texture, "styleTexture": style_texture,
+                                        **({"plainTexture": head_plain.convert("RGB")} if head_plain is not None else {})}
         else:
             # The stylized style tints the body's skin as the head's is graded.
             parts[-1].material_extras = {"styleTint": [round(float(g), 4) for g in style_tint]}
@@ -1949,7 +1986,7 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         else:
             mesh = build_item(item, np.full(3, skinned_glb.HAIR_GREY), vertices)
             if item.get("strands", True):
-                mesh = garments.with_scalp(garments.off_skin(mesh, vertices, groups["body"]), vertices, groups["body"],
+                mesh = garments.with_scalp(garments.off_skin(garments.around_ears(mesh, vertices, groups["body"], appearance.ear_weight(len(vertices))), vertices, groups["body"]), vertices, groups["body"],
                                        [groups["helper-l-eye"], groups["helper-r-eye"]])
         parts.append(rigged_part(item["id"], mesh, item.get("roughness", ROUGHNESS.get("hair", 0.8)), vertices,
                                  groups, joints, weights, len(skeleton)))
@@ -2008,11 +2045,15 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # The arms are posed on the male base body; on a fuller figure they are
     # swung out until the hands clear the hips.
     body_part = next(p for p in parts if p.name == "body")
-    skinned_glb.export(parts, skeleton, out_path, pose=arms_clear(POSES[pose](), skeleton, body_part),
+    stance = ({name: q for name, q in rest_pose().items() if name.startswith("orbicularis")} if pose == "t" else
+              carried(arms_clear(POSES[pose](), skeleton, body_part, back=t_back), skeleton, t_back))
+    skinned_glb.export(parts, skeleton, out_path, pose=stance,
                        morph_names=morph.ARKIT_NAMES + ["photoMouth", "stylize"],
                        expression=photo_face,
                        head_pose=head_pose,
                        extras={"hair": shown, "hairOptions": [item["id"] for item in hair_options],
+                               # Built standing in a T-pose (morph.t_pose_body): its bones at rest are the T-pose.
+                               "bindPose": "t",
                                "glassesOptions": [item["id"] for item in glasses_options],
                                # The chin's height and the eye spacing, for the viewer's neck shadow.
                                "jawLine": [float(vertices[corr[152], 1]),

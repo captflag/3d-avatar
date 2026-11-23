@@ -89,6 +89,14 @@ def entries() -> list[dict]:
     return sorted(items, key=lambda i: i["_mtime"], reverse=True)
 
 
+@app.get("/looks")
+def looks():
+    """The outfits the photo step offers beyond its own two, for a gender."""
+    gender = "female" if request.args.get("gender") == "female" else "male"
+    return jsonify([{"id": x["id"], "label": x["label"]} for x in catalogue().get("looks", [])
+                    if x.get("gender", gender) == gender])
+
+
 @app.post("/generate")
 def generate():
     upload = request.files.get("photo")
@@ -138,10 +146,14 @@ def generate():
     height = request.form.get("height") if request.form.get("height") in HEIGHTS else "average"
     # The outfit picked on the photo step: the default, or the jacket in its
     # place. Built in, as the body under clothes is cut to fit them.
+    # Or a look from the catalogue's `looks`: its clothes in place of the default's, the shoes kept.
     wear = None
+    defaults = catalogue()["defaults"][gender]
+    look = next((x for x in catalogue().get("looks", []) if x["id"] == request.form.get("outfit")), None)
     if request.form.get("outfit") == "jacket":
-        defaults = catalogue()["defaults"][gender]
         wear = [JACKET if items_by_id()[i]["category"] == "outfit" else i for i in defaults]
+    elif look:
+        wear = [i for i in defaults if items_by_id()[i]["category"] not in ("outfit", "top", "bottom")] + look["wear"]
     # The haircut the photo check saw (/check), if the page ran one: only a
     # catalogue id or "bald" gets through.
     hair_hint = photo_check.hair_hint({"hair_cut": request.form.get("hair_hint")})
@@ -231,6 +243,8 @@ def serve_download(name: str):
             if len(colour) != 3 or max(colour) > 255:
                 abort(400)
         data = skinned_glb.with_hair(data, request.args["hair"], colour, request.args.get("glasses"))
+    if request.args.get("pose") == "t":
+        data = skinned_glb.t_posed(data)
     if request.args.get("compat"):
         data = skinned_glb.dequantised(data)
     return app.response_class(data, mimetype="model/gltf-binary",

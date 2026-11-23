@@ -224,9 +224,15 @@ BODY_TYPES = {
     "athletic": {"weight": 0.5, "muscle": 0.9},
     "full": {"weight": 1.0, "muscle": 0.5},
 }
-# (Short and tall about 8 cm either side of the average: 164 / 173 / 182 cm a man, 150 / 159 / 168 a woman;
-# the targets are the sliders' extremes, and at 0.2 / 0.8 a man came out 151 and 216 cm.)
-HEIGHTS = {"short": 0.38, "average": 0.5, "tall": 0.57}
+# Anny's height slider (morph.body_for), linear at about 11 cm per 0.1: average 175 cm a man, 162 a woman,
+# short and tall about 9 cm either side. (MakeHuman's own height targets on the stock body gave 173 and 159.)
+HEIGHTS = {"short": 0.275, "average": 0.355, "tall": 0.435}
+# Anny's age for an adult (its anchors: newborn -1/3, baby 0, child 1/3, young 2/3, old 1; at 0.5 the
+# bodies were teenagers), and its proportions (BODY_PROPORTIONS) at the ideal end (0; 1 is "uncommon"): legs to 0.495 of
+# the height against 0.481 on the stock MakeHuman body, which read short-legged and long in the torso.
+ADULT_AGE = 2.0 / 3.0
+BODY_PROPORTIONS = 0.0
+_anny = None
 
 
 def _levels(value: float, names=("min", "average", "max")) -> dict:
@@ -236,41 +242,109 @@ def _levels(value: float, names=("min", "average", "max")) -> dict:
 
 
 def body_for(base: np.ndarray, gender: str, weight: float = 0.5, muscle: float = 0.5,
-             height: float = 0.5) -> np.ndarray:
+             height: float = HEIGHTS["average"]) -> np.ndarray:
     """The base mesh made into an adult man or woman of this build, before any face fit.
 
-    `weight`, `muscle` and `height` are MakeHuman's macro sliders (0-1, 0.5 average), blended as
-    MakeHuman blends them: the universal target of each muscle x weight pair weighted by both
-    sliders' shares, and the height target of each pair by that and the height slider's.
+    Built by Anny (NAVER LABS; Apache-2.0 code over MakeHuman's CC0 targets, data/mpfb2), which uses
+    the MakeHuman base mesh itself, vertex for vertex, and blends MakeHuman's macro targets for gender,
+    age, muscle, weight, height and proportions as MakeHuman does, calibrated over a population. Its
+    body is laid on `base` as an offset from its own template, so whatever `base` carries is kept.
+    `weight` and `muscle` are 0-1 (0.5 average), `height` on Anny's scale (HEIGHTS).
 
-    The raw base mesh is neither: MakeHuman always applies its macro targets on
-    top, and we had been skipping them, so every avatar wore the same
-    androgynous body and "female" only changed the outfit. For a young adult of
-    average muscle and weight the universal target is empty; the male/female
-    difference lives in the three regional targets, which MakeHuman blends
-    equally by default. We do the same, so no ancestry is assumed — the face fit
-    supplies the person's own features afterwards.
+    Before, the stock macro targets alone: no proportions target, so every body had MakeHuman's
+    middling proportions, short in the leg and long in the torso, and the builds barely differed.
+    Anny's `makehuman` topology only: its `smplx` topology is for non-commercial use.
     """
+    global _anny
+    import torch
+    if _anny is None:
+        import anny
+        _anny = anny.Anny(rig="makehuman", topology="makehuman")
+    phenotype = {"gender": 1.0 if gender == "female" else 0.0, "age": ADULT_AGE, "proportions": BODY_PROPORTIONS,
+                 "weight": float(weight), "muscle": float(muscle), "height": float(height)}
+    with torch.no_grad():
+        shaped = _anny(phenotype_kwargs=phenotype)["vertices"][0].numpy().astype(np.float64)
+        template = _anny.template_vertices.numpy().reshape(-1, 3).astype(np.float64)
+    to_ours = lambda t: np.c_[t[:, 0], t[:, 2], -t[:, 1]] * 10.0      # metres, z up -> decimetres, y up
+    return _head_as_base(base, base + to_ours(shaped) - to_ours(template), gender)
+
+
+# The head kept the base's size, the neck blending from Anny's (morph._head_as_base). Heights on the base
+# mesh, in decimetres: the underside of its chin (the midline's front leaps from the neck's 0.75 to the
+# chin's 1.4 there), and its neck joint.
+CHIN_Y, NECK_Y = 6.12, 5.89
+
+
+def _head_as_base(base: np.ndarray, body: np.ndarray, gender: str) -> np.ndarray:
+    """`body` with its head scaled back to the size the face fit was tuned on, about the neck, the neck
+    blending in: `base` with MakeHuman's young man's or woman's regional targets, the stock body's head.
+
+    Anny's adult head is that head 2.6% (a man) to 3% (a woman) larger and otherwise the same shape
+    (0.3 to 0.6 mm after the scale). The face fit is tuned in absolute sizes, and on the larger head it
+    built a wider mouth with a thinner upper lip and a longer chin: likeness 0.524 -> 0.469 on p09."""
     sex = "female" if gender == "female" else "male"
-    shaped = base.copy()
+    tuned = base.copy()
     for region in ("african", "asian", "caucasian"):
         idx, delta = read_target(TARGET_DIR / "macrodetails" / f"{region}-{sex}-young.target")
-        shaped[idx] += delta / 3.0
-    macro = TARGET_DIR / "macrodetails"
-    heights = {} if abs(height - 0.5) < 1e-6 else _levels(height, ("minheight", "average", "maxheight"))
-    for m, wm in _levels(muscle).items():
-        for w, ww in _levels(weight).items():
-            if wm * ww < 1e-6:
-                continue
-            build = f"{sex}-young-{m}muscle-{w}weight"
-            if not (m == w == "average"):
-                idx, delta = read_target(macro / f"universal-{build}.target")
-                shaped[idx] += wm * ww * delta
-            for h, wh in heights.items():
-                if h != "average" and wh > 1e-6:
-                    idx, delta = read_target(macro / "height" / f"{build}-{h}.target")
-                    shaped[idx] += wm * ww * wh * delta
-    return shaped
+        tuned[idx] += delta / 3.0
+    head = base[:, 1] > CHIN_Y
+    a, b = tuned[head] - tuned[head].mean(axis=0), body[head] - body[head].mean(axis=0)
+    scale = float(np.sqrt((b ** 2).sum() / max((a ** 2).sum(), 1e-12)))
+    w = np.clip((base[:, 1] - NECK_Y) / (CHIN_Y - NECK_Y), 0.0, 1.0)
+    w = w * w * (3.0 - 2.0 * w)
+    # Scaled about the neck's middle, where the head sits on it.
+    neck = (base[:, 1] > NECK_Y) & (base[:, 1] < CHIN_Y)
+    pivot = body[neck].mean(axis=0)
+    return pivot + (body - pivot) * (1.0 + w * (1.0 / scale - 1.0))[:, None]
+
+
+def _align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """The smallest rotation taking direction `a` onto `b`."""
+    from scipy.spatial.transform import Rotation
+    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
+    axis = np.cross(a, b)
+    s = np.linalg.norm(axis)
+    return np.eye(3) if s < 1e-9 else Rotation.from_rotvec(axis / s * np.arctan2(s, a @ b)).as_matrix()
+
+
+def t_pose_body(base: np.ndarray, gender: str, weight: float = 0.5, muscle: float = 0.5,
+                height: float = HEIGHTS["average"]) -> tuple[np.ndarray, dict]:
+    """body_for's body standing in a T-pose, and how each bone moved to get there.
+
+    Each upper arm, then forearm, is turned until shoulder to wrist runs straight out sideways (to
+    within 0.002), by Anny's own skinning; four rounds, as the twist bones bend the chain. The rig
+    and the clothes are then built on it: raised after fitting, a shirt stretched and the skin showed
+    through it. Returns the vertices and, per bone name, the rotation (3x3, our frame) taking it from
+    the T-pose back to the arms-down rest: compose.carried uses it to keep every pose made for the
+    arms-down rig (relaxed, rest, the finger curls) as it was.
+    """
+    global _anny
+    import torch
+    body_for(base, gender)                            # loads the model
+    labels = list(_anny.bone_labels)
+    phenotype = {"gender": 1.0 if gender == "female" else 0.0, "age": ADULT_AGE, "proportions": BODY_PROPORTIONS,
+                 "weight": float(weight), "muscle": float(muscle), "height": float(height)}
+    pose = torch.eye(4, dtype=_anny.template_vertices.dtype).repeat(1, len(labels), 1, 1)
+    with torch.no_grad():
+        out = _anny(pose_parameters=pose, phenotype_kwargs=phenotype, return_bone_ends=True)
+        for _ in range(4):
+            for side, x in ((".L", 1.0), (".R", -1.0)):
+                for bone, tip in (("upperarm01", "lowerarm01"), ("lowerarm01", "wrist")):
+                    i, j = labels.index(bone + side), labels.index(tip + side)
+                    heads = out["bone_heads"][0].numpy().astype(np.float64)
+                    turn = _align(heads[j] - heads[i], np.array([x, 0.0, 0.0]))
+                    pose[0, i, :3, :3] = torch.as_tensor(turn @ pose[0, i, :3, :3].numpy().astype(np.float64),
+                                                         dtype=pose.dtype)
+                    out = _anny(pose_parameters=pose, phenotype_kwargs=phenotype, return_bone_ends=True)
+        # Posed, Anny stands the root at the origin; at rest it is where it stands.
+        posed = (out["vertices"][0] + out["rest_bone_poses"][0, 0, :3, 3]).numpy().astype(np.float64)
+        template = _anny.template_vertices.numpy().reshape(-1, 3).astype(np.float64)
+        moves = (out["bone_poses"][0] @ torch.linalg.inv(out["rest_bone_poses"][0])).numpy().astype(np.float64)
+    axes = np.array([[1.0, 0, 0], [0, 0, 1], [0, -1, 0]])              # Anny (x, y, z) -> ours (x, z, -y)
+    to_ours = lambda t: (axes @ t.T).T * 10.0
+    back = {name: (axes @ moves[k, :3, :3] @ axes.T).T for k, name in enumerate(labels)
+            if not np.allclose(moves[k, :3, :3], np.eye(3), atol=1e-9)}
+    return _head_as_base(base, base + to_ours(posed) - to_ours(template), gender), back
 
 
 def canonical_face() -> trimesh.Trimesh:
