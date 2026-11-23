@@ -31,6 +31,12 @@ Outfits and glasses whose files exist only on this PC (downloads under their own
 licences) are listed in `assets/catalogue.local.json`, beside them and never in
 git: their items, and the looks they make up per body.
 
+A downloaded garment is fitted to the T-pose body and written as a MakeHuman clothes
+asset by `fit_garment.py` (glasses: `fit_glasses.py`), tidied by `drop_spikes.py` where cloth
+stands off the shoulders once the arms are down, and checked in the app's relaxed stance with
+`garment_views.py`. Each pack keeps the exact command for each of its garments in a local
+`RECIPES.md` beside them. Refit them all whenever the T-pose body changes.
+
 ## Run it for the team
 
 Start it with **`--dev`** (`start-studio.cmd --dev`) for the team's tools: the
