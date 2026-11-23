@@ -147,6 +147,19 @@ for f in ([args.scale] if args.scale else np.geomspace(0.45, 1.15, 12)):    # cr
 t_best = X[0] - s * Vn[0]
 (score, X), s = min([((score, X), s)] + [(refine(s * f, t_best), s * f) for f in (np.linspace(0.95, 1.05, 11) if not args.scale else [])],
                     key=lambda r: r[0][0])
+if args.kind == "skirt":
+    # A skirt is a ring round the waist: its waistband centred on our body's outline SKIRT_WAIST above the
+    # hip joint and sized to it, SKIRT_EASE out. The nearest-surface fit set a mini 4 cm back and low at
+    # the back, flaring 14 cm behind her and baring her lower back.
+    top = Vn[:, 1] > Vn[:, 1].max() - 0.06 * np.ptp(Vn[:, 1])
+    g_c = Vn[top][:, [0, 2]].mean(0); g_r = np.linalg.norm(Vn[top][:, [0, 2]] - g_c, axis=1).mean()
+    waist_y = hip_y + float(os.environ.get("SKIRT_WAIST", 0.7))
+    ring = T[body_idx][np.abs(T[body_idx, 1] - waist_y) < 0.05]
+    b_c = ring[:, [0, 2]].mean(0); b_r = np.linalg.norm(ring[:, [0, 2]] - b_c, axis=1).mean()
+    s = (b_r + float(os.environ.get("SKIRT_EASE", 0.08))) / g_r
+    X = s * Vn + np.array([b_c[0] - s * g_c[0], waist_y - s * Vn[top, 1].max(), b_c[1] - s * g_c[1]])
+    score = float("nan")
+    print(f"skirt: waistband radius {g_r * s:.2f} on a waist of {b_r:.2f} at y {waist_y:.2f}")
 print(f"scale {s:.3f} (from height {s_height:.3f}); torso score {score:.3f}")
 
 angle, bend, posed_m = 0.0, 0.0, garments.skinning_matrices(skel, {})
