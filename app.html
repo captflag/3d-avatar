@@ -173,7 +173,7 @@
   <!-- 1. The photo -->
   <section data-step="photo" aria-labelledby="t-photo">
     <h1 id="t-photo">Start with a selfie</h1>
-    <p class="lead">One clear photo of your face makes a 3D you. Take one now, or upload one you have.</p>
+    <p class="lead">One clear photo of your face makes your avatar: a 3D model, a picture, or both. Take one now, or upload one you have.</p>
     <div class="photo-grid">
       <div class="stage" id="stage">
         <video id="video" playsinline muted hidden></video>
@@ -218,6 +218,12 @@
         </div>
 
         <div class="card">
+          <h2>You want</h2>
+          <div class="seg" role="group" aria-label="You want">
+            <button type="button" data-output="3d" aria-pressed="false">3D model</button>
+            <button type="button" data-output="2d" aria-pressed="false">2D picture</button>
+            <button type="button" data-output="both" aria-pressed="true">Both</button>
+          </div>
           <h2>Body style</h2>
           <div class="seg" role="group" aria-label="Body style">
             <button type="button" data-gender="male" aria-pressed="true">Masculine</button>
@@ -235,11 +241,6 @@
             <button type="button" data-height="short" aria-pressed="false">Shorter</button>
             <button type="button" data-height="average" aria-pressed="true">Average</button>
             <button type="button" data-height="tall" aria-pressed="false">Taller</button>
-          </div>
-          <h2>Outfit</h2>
-          <div class="seg" id="outfits" role="group" aria-label="Outfit" style="flex-wrap: wrap">
-            <button type="button" data-outfit="shirt" aria-pressed="true">Shirt</button>
-            <button type="button" data-outfit="jacket" aria-pressed="false">Jacket</button>
           </div>
         </div>
 
@@ -269,7 +270,7 @@
         <h1 id="t-create">Creating your avatar</h1>
         <div id="saying" aria-live="polite">Reading your face…</div>
         <div class="bar"><div id="progress"></div></div>
-        <p class="note">This takes about a minute. Keep this page open.</p>
+        <p class="note">This takes a few minutes. Keep this page open.</p>
       </div>
     </div>
   </section>
@@ -277,7 +278,7 @@
   <!-- 3. Style -->
   <section data-step="style" aria-labelledby="t-style">
     <h1 id="t-style">Make it yours</h1>
-    <p class="lead">Pick a hairstyle, colour and glasses. Drag your avatar to turn it.</p>
+    <p class="lead">Pick a hairstyle, colour, glasses and outfit. Drag your avatar to turn it.</p>
     <div class="studio">
       <div class="viewport">
         <canvas id="view" aria-label="Your 3D avatar"></canvas>
@@ -295,6 +296,8 @@
         <div class="swatches" id="swatches" role="group" aria-label="Hair colour"></div>
         <h2>Glasses</h2>
         <div class="cuts" id="glasses" role="group" aria-label="Glasses"></div>
+        <h2>Outfit</h2>
+        <div class="seg" id="outfits" role="group" aria-label="Outfit" style="flex-wrap: wrap"></div>
         <h2 id="pose-title" hidden>Pose</h2>
         <div class="seg" id="pose" role="group" aria-label="Pose" hidden>
           <button type="button" data-pose="relaxed" aria-pressed="true">Relaxed</button>
@@ -322,8 +325,28 @@
     <div class="save">
       <img class="shot" id="finalshot" alt="Your avatar">
       <div class="stack">
-        <button class="option" type="button" id="dl-png"><i>PNG</i><span><b>Picture</b><small>A transparent image of your avatar</small></span></button>
-        <button class="option" type="button" id="dl-glb"><i>3D</i><span><b>3D model (.glb)</b><small>For games, Blender, Unity and 3D apps</small></span></button>
+        <div class="card" id="out2d">
+          <h2>Picture</h2>
+          <img id="pngpreview" alt="Your picture" hidden style="width:100%; border-radius:12px; border:1px solid var(--line); margin-bottom:10px; background:repeating-conic-gradient(#1a1e27 0 25%, #12151c 0 50%) 0 0 / 16px 16px">
+          <div class="seg" role="group" aria-label="Framing">
+            <button type="button" data-frame="portrait" aria-pressed="true">Portrait</button>
+            <button type="button" data-frame="body" aria-pressed="false">Full body</button>
+          </div>
+          <h2>Background</h2>
+          <div class="seg" role="group" aria-label="Background">
+            <button type="button" data-bg="clear" aria-pressed="true">Transparent</button>
+            <button type="button" data-bg="studio" aria-pressed="false">Studio</button>
+          </div>
+          <button class="option" type="button" id="dl-png" style="margin-top:14px"><i>PNG</i><span><b>Download picture (.png)</b><small id="pngsize">For profiles, chats and 2D games</small></span></button>
+        </div>
+        <div class="card" id="out3d">
+          <h2>3D model</h2>
+          <button class="option" type="button" id="dl-glb"><i>3D</i><span><b>Download 3D model (.glb)</b><small>Rigged, for games, Blender, Unity and 3D apps</small></span></button>
+        </div>
+        <div class="card" id="credits" hidden>
+          <h2>Credits</h2>
+          <ul class="note" id="creditlist" style="margin:0; padding-left:18px; display:grid; gap:6px"></ul>
+        </div>
         <p class="error" id="saveerror" role="alert"></p>
       </div>
     </div>
@@ -344,11 +367,12 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { setupRealism, applyMaterials, applyToon, applyStylized, stylizedShapes, portraitLights, idleMotion, gestureMotion, groundAndShadow, visibleBox, chooseHair, chooseGlasses, loadPlainHead } from '/lib/scene-setup.js';
+import { setupRealism, applyMaterials, applyToon, applyStylized, stylizedShapes, portraitLights, idleMotion, gestureMotion, groundAndShadow, visibleBox, chooseHair, chooseGlasses, chooseOutfit, loadPlainHead, loadLookMasks } from '/lib/scene-setup.js';
 import { assess, getLandmarker, STEADY_FRAMES, LEFT } from '/lib/photo-checks.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { front: null, sides: [], gender: 'male', build: 'average', height: 'average', outfit: 'shirt', model: null, id: null, hair: null, glasses: 'none' };
+const state = { front: null, sides: [], gender: 'male', build: 'average', height: 'average', outfit: null, model: null, id: null, hair: null, glasses: 'none',
+               output: 'both', frame: 'portrait', bg: 'clear' };
 
 // ---- Steps -------------------------------------------------------------------
 const ORDER = ['photo', 'create', 'style', 'save'];
@@ -435,27 +459,7 @@ $('file').addEventListener('change', () => {
 document.querySelectorAll('[data-gender]').forEach((b) => b.addEventListener('click', () => {
   state.gender = b.dataset.gender;
   document.querySelectorAll('[data-gender]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-  loadLooks();
 }));
-$('outfits').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-outfit]');
-  if (!b) return;
-  state.outfit = b.dataset.outfit;
-  for (const x of $('outfits').children) x.setAttribute('aria-pressed', String(x === b));
-});
-/** The catalogue's looks for this gender (/looks), after the page's own Shirt and Jacket. */
-async function loadLooks() {
-  const looks = await fetch(`/looks?gender=${state.gender}`).then((r) => r.json()).catch(() => []);
-  for (const b of [...$('outfits').children]) if (!['shirt', 'jacket'].includes(b.dataset.outfit)) b.remove();
-  for (const { id, label } of looks) {
-    const b = document.createElement('button');
-    b.type = 'button'; b.dataset.outfit = id; b.textContent = label;
-    b.setAttribute('aria-pressed', String(state.outfit === id));
-    $('outfits').append(b);
-  }
-  if (![...$('outfits').children].some((b) => b.dataset.outfit === state.outfit)) $('outfits').children[0].click();
-}
-loadLooks();
 // Build and height: picked, not read from the photo (a selfie shows the head).
 for (const key of ['build', 'height']) {
   document.querySelectorAll(`[data-${key}]`).forEach((b) => b.addEventListener('click', () => {
@@ -562,6 +566,15 @@ $('shoot').addEventListener('click', take);
 $('skipturn').addEventListener('click', () => { turn += 1; turn >= TURNS.length ? finishCamera() : beginTurn(); });
 $('stopcam').addEventListener('click', () => (turn > 0 ? finishCamera() : stopCamera()));
 
+// What the player wants (3D, 2D or both), and the picture's framing and background: one choice per group.
+for (const key of ['output', 'frame', 'bg']) {
+  document.querySelectorAll(`[data-${key}]`).forEach((b) => b.addEventListener('click', () => {
+    state[key] = b.dataset[key];
+    document.querySelectorAll(`[data-${key}]`).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    if (key !== 'output') showPicture();
+  }));
+}
+
 // ---- Step 2: creating ----------------------------------------------------------
 const SAYINGS = ['Reading your face…', 'Shaping your head…', 'Matching your skin tone…', 'Fitting your eyes…',
                  'Adding your features…', 'Dressing your avatar…', 'Almost there…'];
@@ -582,7 +595,6 @@ $('create').addEventListener('click', async () => {
   state.sides.forEach((f) => body.append('side', f));
   body.append('mode', 'body');
   body.append('gender', state.gender);
-  body.append('outfit', state.outfit);
   body.append('build', state.build);
   body.append('height', state.height);
   try {
@@ -612,7 +624,7 @@ const lights = setupRealism(renderer, scene);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.enablePan = false;
-let avatar = null, hairInfo = null, frames = null, view = 'face';
+let avatar = null, hairInfo = null, frames = null, view = 'face', credits = [];
 
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -686,6 +698,7 @@ async function showAvatar(url) {
   } else {
     applyMaterials(avatar);
     await loadPlainHead(avatar, gltf.parser);
+    await loadLookMasks(avatar, gltf.parser);
     idle = moves = null;
   }
   $('moves').hidden = $('moves-title').hidden = !moves;
@@ -701,6 +714,8 @@ async function showAvatar(url) {
   frames = {
     body: { span: [size.x * 1.1, size.y * 1.12], target: new THREE.Vector3(0, 0, 0) },
     face: { span: [size.y * 0.22, size.y * 0.2], target: new THREE.Vector3(0, eye, 0) },
+    // The 2D picture's portrait: head and shoulders, the eyes a third of the way down.
+    portrait: { span: [size.y * 0.3, size.y * 0.36], target: new THREE.Vector3(0, eye - size.y * 0.06, 0) },
   };
   // The stylized portrait: head and shoulders, the head about 55% of the
   // height, the eyes 45% from the top (the reference cartoon avatar: 40%,
@@ -724,8 +739,10 @@ async function showAvatar(url) {
   state.pose = 'relaxed';
   setPose('relaxed');
   hairInfo = info?.hair || null;
+  credits = info?.credits || [];
   buildPicker();
   buildGlasses(info?.glasses);
+  buildOutfits(info?.outfits);
   $('viewloading').hidden = true;
 }
 
@@ -808,6 +825,27 @@ function buildGlasses(glasses) {
   wearGlasses(glasses.shown || 'none');
 }
 
+/** The outfit picker: the looks the file carries (compose's info.outfits), starting on the one it was built in. */
+let outfits = [];
+function buildOutfits(info) {
+  outfits = info?.options || [];
+  $('outfits').replaceChildren();
+  if (!outfits.length) { $('outfits').textContent = 'No other outfits in this avatar.'; return; }
+  for (const { id, label } of outfits) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.dataset.look = id; b.textContent = label;
+    b.addEventListener('click', () => { wearOutfit(id); frame('body'); });
+    $('outfits').append(b);
+  }
+  wearOutfit(info.shown || outfits[0].id);
+}
+
+function wearOutfit(look) {
+  state.outfit = look;
+  chooseOutfit(avatar, look);
+  for (const b of $('outfits').children) b.setAttribute('aria-pressed', String(b.dataset.look === look));
+}
+
 function wearGlasses(pair) {
   state.glasses = pair;
   chooseGlasses(avatar, pair);
@@ -834,22 +872,31 @@ $('moves').addEventListener('click', (e) => {
 $('again1').addEventListener('click', () => go('photo'));
 
 // ---- Step 4: save --------------------------------------------------------------
-/** The avatar as a picture: the whole figure, transparent behind (the
- * stylized style: its portrait, on its backdrop). Drawn at twice the size
- * and halved, smoother edges than the canvas's own antialiasing. */
-function picture(width = 1200, height = 1600) {
-  const keep = { w: canvas.width, h: canvas.height, pos: camera.position.clone(), target: controls.target.clone(), aspect: camera.aspect };
+/** The avatar as a picture, framed as the player chose (head and shoulders, or the whole figure),
+ * transparent behind or on the studio's backdrop. Drawn at twice the size and halved, smoother edges
+ * than the canvas's own antialiasing. */
+function picture(width = 1600, height = 2000, which = state.frame, bg = state.bg) {
+  const keep = { w: canvas.width, h: canvas.height, pos: camera.position.clone(), target: controls.target.clone(), aspect: camera.aspect,
+                 near: controls.minDistance, far: controls.maxDistance };
   renderer.setSize((2 * width) / renderer.getPixelRatio(), (2 * height) / renderer.getPixelRatio(), false);
   camera.aspect = width / height; camera.updateProjectionMatrix();
-  frame(new URLSearchParams(location.search).get('style') === 'stylized' ? 'face' : 'body', false);
+  frame(which === 'portrait' ? 'portrait' : 'body', false);
   renderer.render(scene, camera);
   const out = Object.assign(document.createElement('canvas'), { width, height });
   const pen = out.getContext('2d');
   pen.imageSmoothingQuality = 'high';
+  if (bg === 'studio') {
+    // The page's own backdrop: a soft light high behind the head, dark at the edges.
+    const glow = pen.createRadialGradient(width / 2, height * 0.3, 0, width / 2, height * 0.3, Math.max(width, height) * 0.8);
+    glow.addColorStop(0, '#2a3142'); glow.addColorStop(1, '#0d0f15');
+    pen.fillStyle = glow; pen.fillRect(0, 0, width, height);
+  }
   pen.drawImage(canvas, 0, 0, width, height);
   const url = out.toDataURL('image/png');
   renderer.setSize(keep.w / renderer.getPixelRatio(), keep.h / renderer.getPixelRatio(), false);
   camera.aspect = keep.aspect; camera.updateProjectionMatrix();
+  // The zoom limits too: the picture's framing set its own, and they pulled the restored camera in.
+  controls.minDistance = keep.near; controls.maxDistance = keep.far;
   camera.position.copy(keep.pos); controls.target.copy(keep.target); controls.update();
   return url;
 }
@@ -859,18 +906,43 @@ function save(url, name) {
   document.body.append(a); a.click(); a.remove();
 }
 
+// The viewer moves to the Save step when the player wants the 3D model, to turn it there; back for Style.
+const viewport = document.querySelector('.viewport'), viewHome = viewport.parentNode;
+function viewerHome() { viewHome.prepend(viewport); $('finalshot').hidden = false; }
+/** The picture as it will download: the big preview when it is all the player wants, else in its card. */
+function showPicture() {
+  const url = picture(900, 1125);
+  if (state.output === '2d') $('finalshot').src = url; else $('pngpreview').src = url;
+}
 $('tosave').addEventListener('click', () => {
-  $('finalshot').src = picture(900, 1200);
+  // Only what the player asked for: the picture, the 3D model, or both.
+  const two = state.output !== '3d', three = state.output !== '2d';
+  $('out2d').hidden = !two; $('out3d').hidden = !three;
+  $('t-save').textContent = two && three ? 'Your avatar is ready' : two ? 'Your picture is ready' : 'Your 3D avatar is ready';
+  $('pngpreview').hidden = !(two && three);
+  if (three) { $('finalshot').hidden = true; $('finalshot').after(viewport); } else viewerHome();
+  // Framed once the viewer has its new size on the page: framed before, it kept the Style step's shape
+  // and cut the head and feet off.
+  requestAnimationFrame(() => { resize(); if (three) frame('body'); if (two) showPicture(); });
+  // Whom the avatar owes a credit (compose's credits_for): what it wears, its hair and glasses as picked.
+  const pieces = new Set(outfits.flatMap((o) => o.wear)), wearing = new Set(outfits.find((o) => o.id === state.outfit)?.wear || []);
+  const worn = credits.filter((c) => (c.category === 'hair' ? c.id === state.hair?.cut
+                                       : c.category === 'glasses' ? c.id === state.glasses
+                                       : !pieces.has(c.id) || wearing.has(c.id)));
+  $('creditlist').replaceChildren(...worn.map((c) => Object.assign(document.createElement('li'), { textContent: `${c.label}: ${c.licence}` })));
+  $('credits').hidden = !worn.length;
   go('save');
 });
 $('dl-png').addEventListener('click', () => save(picture(), 'my-avatar.png'));
 $('dl-glb').addEventListener('click', () => {
   const q = new URLSearchParams({ hair: state.hair?.cut || 'bald', colour: (state.hair?.colour || []).join(','), glasses: state.glasses,
+                                  outfit: state.outfit || '',
                                   pose: state.pose || 'relaxed' });
   save(`/download/${state.model.split('/').pop()}?${q}`, 'my-avatar.glb');
 });
-$('backstyle').addEventListener('click', () => go('style'));
+$('backstyle').addEventListener('click', () => { viewerHome(); go('style'); });
 $('again2').addEventListener('click', () => {
+  viewerHome();
   state.front = null; state.sides = [];
   $('preview').hidden = true; $('empty').hidden = false; $('checked').hidden = true; $('create').disabled = true;
   go('photo');

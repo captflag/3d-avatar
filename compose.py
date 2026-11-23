@@ -62,6 +62,8 @@ PORE_STRENGTH = {"head": 0.5, "body": 0.25}
 # colour and a few shapes, needs less.
 SKIN_SIZE = 2048
 TOON_SIZE = 1024
+# Each other look's mask of the body skin it hides (the outfit picker), texels a side.
+LOOK_MASK_SIZE = 1024
 # Cards blended by their texture's alpha, not cut at half. The lashes are a
 # few pixels on screen, so they are drawn from the texture's smallest mip
 # levels, where a strand's alpha is averaged far below half: cut, the fine
@@ -1124,6 +1126,18 @@ def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_c
     )
 
 
+def credits_for(items: list[dict]) -> list[dict]:
+    """The items among `items` whose licence asks for a credit (CC-BY), once each, for the file and the
+    page to show: id, category, label and the licence's own text (author and source)."""
+    seen, out = set(), []
+    for item in items:
+        if item["id"] not in seen and str(item.get("licence", "")).upper().startswith("CC-BY"):
+            seen.add(item["id"])
+            out.append({"id": item["id"], "category": item["category"], "label": item.get("label", item["id"]),
+                        "licence": item["licence"]})
+    return out
+
+
 def outfit_for(gender: str, chosen: list[str] | None) -> list[dict]:
     """The wearables to put on, by id, falling back to the catalogue default."""
     index = items_by_id()
@@ -1544,6 +1558,20 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             if item["category"] == "shoes" and "mhclo" in item:
                 garments.drop_socks(m, ankle)
 
+    # Every look the catalogue offers this body (its `looks`), for the studio's outfit picker as the hair's
+    # and the glasses': the pieces not already worn fitted here too, on the same body, and hidden. The worn
+    # look alone shapes the skin under it (tuck_skin); each look gets its own mask of the skin it hides.
+    looks = [look for look in catalogue().get("looks", []) if look.get("gender", gender) == gender
+             and all(i in items_by_id() for i in look["wear"])]
+    worn_by_id = {item["id"]: m for item, m in worn}
+    worn_ids = set(worn_by_id)
+    look_pieces = {}
+    for look in looks:
+        for piece in look["wear"]:
+            if piece not in worn_ids and piece not in look_pieces:
+                look_pieces[piece] = build_item(items_by_id()[piece], None, vertices)
+    shown_look = next((look["id"] for look in looks if set(look["wear"]) <= worn_ids), None)
+
     # Only clothing hides skin; hair sits on top of it.
     covering = [(item, m) for item, m in worn if item["category"] in ("top", "bottom", "shoes", "outfit")]
     # And no skin in front of it (garments.tuck_skin).
@@ -1556,39 +1584,51 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # Every body triangle is kept; skin under clothes is hidden by the texture's
     # alpha instead, with a band left under each garment edge (coverage_alpha).
     body_faces = groups["body"]
-    skin_alpha = np.ones(len(vertices))
     body_vertices_used = np.unique(body_faces)
-    skin_alpha[body_vertices_used] = coverage_alpha(vertices[body_vertices_used],
-                                                    [m for _, m in covering])
-    for _, m in covering:
-        # MakeHuman garments list the body vertices their author made sure
-        # are under cloth; hide those too — but not within 3 cm of the
-        # garment's edge. On a body shaped to a person and posed, some of the
-        # listed neck sits just in front of the collar, and hiding it cut
-        # windows in the neck through to the inside of the collar: green
-        # patches below the jaw. Near an edge, coverage_alpha decides.
-        hides = m.metadata.get("hides")
-        if hides is not None and len(hides):
-            from scipy.spatial import cKDTree
-            hides = hides[hides < len(skin_alpha)]
-            rim = m.vertices[garments.open_rim(m)]
-            if len(rim):
-                hides = hides[cKDTree(rim).query(vertices[hides])[0] > 0.3]
-            skin_alpha[hides] = 0.0
-    # The neck is never cut away. A collar wraps it but never covers it from
-    # the front, and cutting it where a collar passes close behind left holes
-    # under the ears through which the collar's inside showed. Skin poking
-    # through a collar on a hard head turn is the smaller fault.
     collarbone = float(vertices[np.unique(groups["joint-l-clavicle"])][:, 1].mean())
     neck = (vertices[:, 1] > collarbone + 0.05) & (np.abs(vertices[:, 0]) < 0.75)
-    skin_alpha[neck] = 1.0
-    # A foot inside a shoe is never seen, and where it is fuller than the shoe
-    # it came through: a toe under the sole. Below the collar's lowest point
-    # the shoe encloses the foot, so the skin there is hidden outright; the
-    # distance test above kept most of it, being near the sole's open edges.
-    for item, m in worn:
-        if item["category"] == "shoes":
-            skin_alpha[garments.enclosed_by_shoe(m, vertices)] = 0.0
+    shoes_worn = [m for item, m in worn if item["category"] == "shoes"]
+
+    def skin_alpha_under(cloth):
+        """Per body vertex, 1 shown to 0 hidden, under the garments `cloth` (meshes) and the shoes worn."""
+        alpha = np.ones(len(vertices))
+        alpha[body_vertices_used] = coverage_alpha(vertices[body_vertices_used], cloth + shoes_worn)
+        hide_listed(alpha, cloth + shoes_worn)
+        # The neck is never cut away. A collar wraps it but never covers it from
+        # the front, and cutting it where a collar passes close behind left holes
+        # under the ears through which the collar's inside showed. Skin poking
+        # through a collar on a hard head turn is the smaller fault.
+        alpha[neck] = 1.0
+        # A foot inside a shoe is never seen, and where it is fuller than the shoe
+        # it came through: a toe under the sole. Below the collar's lowest point
+        # the shoe encloses the foot, so the skin there is hidden outright; the
+        # distance test above kept most of it, being near the sole's open edges.
+        for m in shoes_worn:
+            alpha[garments.enclosed_by_shoe(m, vertices)] = 0.0
+        return alpha
+
+    def hide_listed(alpha, cloth):
+        """MakeHuman garments list the body vertices their author made sure
+        are under cloth; hide those too — but not within 3 cm of the
+        garment's edge. On a body shaped to a person and posed, some of the
+        listed neck sits just in front of the collar, and hiding it cut
+        windows in the neck through to the inside of the collar: green
+        patches below the jaw. Near an edge, coverage_alpha decides."""
+        for m in cloth:
+            hides = m.metadata.get("hides")
+            if hides is not None and len(hides):
+                from scipy.spatial import cKDTree
+                hides = hides[hides < len(alpha)]
+                rim = m.vertices[garments.open_rim(m)]
+                if len(rim):
+                    hides = hides[cKDTree(rim).query(vertices[hides])[0] > 0.3]
+                alpha[hides] = 0.0
+
+    skin_alpha = skin_alpha_under([m for item, m in covering if item["category"] != "shoes"])
+    # Each look's own, for the picker: the worn look's is skin_alpha itself.
+    look_alpha = {look["id"]: skin_alpha_under([look_pieces[p] if p in look_pieces else worn_by_id[p]
+                                                 for p in look["wear"]])
+                  for look in looks if look["id"] != shown_look} if looks else {}
     uv_all, uv_groups = load_base_uv()
     uv_faces = uv_groups["body"]
 
@@ -1638,7 +1678,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # Joined to the other lip's, it cannot be moved out of a laugh's way, and
     # it hung below the upper lip as a jagged strip in shadow; at rest the
     # lips hide it.
-    skin_alpha[(mouth > 0) & (mouth < LIP_HIDDEN)] = 0.0
+    for alpha in (skin_alpha, *look_alpha.values()):
+        alpha[(mouth > 0) & (mouth < LIP_HIDDEN)] = 0.0
 
     # A skin texture built to the person's own cheek statistics, so skin is
     # mottled rather than one flat colour.
@@ -1774,6 +1815,12 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     body_roughness = Image.fromarray(np.dstack([np.full_like(body_rough, 255), body_rough * 255,
                                                 np.zeros_like(body_rough)]).astype(np.uint8))
     rest_texture = finish(Image.fromarray(rest_base), rest_base, rest_faces, uv_all, rest_uv_faces)
+    # For the outfit picker: the body's skin whole, nothing cut, and each other look's mask of the skin it
+    # hides (grey, 1024: an alpha cut-out needs no more), which the studio and the download put together.
+    body_whole = Image.fromarray(rest_base).convert("RGB") if look_alpha else None
+    look_masks = {look_id: Image.fromarray((np.clip(facetexture.rasterize(alpha, rest_faces, uv_all, rest_uv_faces, LOOK_MASK_SIZE,
+                                                                          fill=1.0), 0.0, 1.0) * 255).astype(np.uint8)).convert("RGB")
+                  for look_id, alpha in look_alpha.items()}
 
     # Roughness by region on the face: the T-zone oilier, the lips glossier,
     # cheeks matte; off the face, plain skin.
@@ -1800,6 +1847,9 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                                                     landmarks, (pw, ph))
         rest_texture = appearance.beard_underside(head, head_uv, photo_head, sampler, beard_map,
                                                   landmarks, (pw, ph), onto=(body, body_uv, rest_texture))
+        if body_whole is not None:
+            body_whole = appearance.beard_underside(head, head_uv, photo_head, sampler, beard_map,
+                                                    landmarks, (pw, ph), onto=(body, body_uv, body_whole))
 
     # Eyes: generated, with only the iris colour taken from the photo, judged
     # against the whites of the eyes, as a person sees it, and snapped halfway
@@ -1890,6 +1940,10 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         else:
             # The stylized style tints the body's skin as the head's is graded.
             parts[-1].material_extras = {"styleTint": [round(float(g), 4) for g in style_tint]}
+            if body_whole is not None:
+                # The outfit picker's: the skin whole and each other look's mask (the viewer's chooseOutfit).
+                parts[-1].extra_textures = {"wholeTexture": body_whole,
+                                            **{f"{look_id}.maskTexture": mask for look_id, mask in look_masks.items()}}
         # Skin reflects less than the glTF default (IOR 1.5): with it the
         # face wore a pale sheen of reflected room that read as grey.
         parts[-1].ior = SKIN_IOR
@@ -1938,7 +1992,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             ))
             parts[-1].alpha_blend = True
             parts[-1].morphs = expression_morphs(cap, face_shapes)
-    for item, mesh in worn:
+    # The worn pieces, then the other looks' (hidden, for the outfit picker), rigged alike.
+    for item, mesh in worn + [(items_by_id()[piece], m) for piece, m in look_pieces.items()]:
         finish = item.get("roughness", ROUGHNESS.get(item["category"], 0.8))
         parts.append(rigged_part(item["id"], mesh, finish, vertices, groups,
                                  joints, weights, len(skeleton)))
@@ -2052,6 +2107,11 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                        expression=photo_face,
                        head_pose=head_pose,
                        extras={"hair": shown, "hairOptions": [item["id"] for item in hair_options],
+                               # Whom the file owes a credit: its CC-BY clothes, hair and glasses (credits_for).
+                               "credits": credits_for([item for item, _ in worn] + [items_by_id()[p] for p in look_pieces]
+                                                      + hair_options + glasses_options),
+                               # The outfit picker's looks, by id, each the pieces it wears, and the one worn (shown).
+                               "outfits": {look["id"]: look["wear"] for look in looks}, "outfit": shown_look,
                                # Built standing in a T-pose (morph.t_pose_body): its bones at rest are the T-pose.
                                "bindPose": "t",
                                "glassesOptions": [item["id"] for item in glasses_options],
@@ -2068,6 +2128,10 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         # where the photo shows glasses (`photo`), none otherwise.
         "glasses": {"photo": bool(photo_glasses), "shown": glasses_shown,
                     "options": [{"id": i["id"], "label": i["label"]} for i in glasses_options]},
+        "credits": credits_for([item for item, _ in worn] + [items_by_id()[p] for p in look_pieces]
+                               + hair_options + glasses_options),
+        # The studio's outfit picker: the looks this avatar carries, starting on the one worn.
+        "outfits": {"shown": shown_look, "options": [{"id": look["id"], "label": look["label"], "wear": look["wear"]} for look in looks]},
         "source_photo": photo_path.name,
         "photo_size": list(photo.size),
         "kind": "full-body",
@@ -2085,8 +2149,6 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         "bones": len(skeleton),
         "gender": gender, "body_type": body_type, "height": height,
         "wearing": [item["id"] for item, _ in worn],
-        # CC-BY items name their authors, to be credited where the avatar is shown.
-        "credits": sorted({f"{item['label']}: {item['credit']} (CC-BY)" for item, _ in worn if item.get("credit")}),
         "skin_tone": [int(c) for c in tone],
         "hair_colour": None if hair_rgb is None else [int(c) for c in hair_rgb],
         "body_triangles": int(len(body.faces) + len(head.faces)),

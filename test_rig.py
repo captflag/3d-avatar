@@ -109,6 +109,28 @@ def check_export():
             assert left == ({keep} if keep else set()), f"the download kept glasses {left}, not {keep}"
         print(f"ok  glasses in the file: {len(pairs)} pairs, the download keeps only the one picked")
 
+        # Credits (compose.credits_for): every CC-BY item the file carries; a download keeps those it still holds.
+        credits = gltf.meshes[0].extras.get("credits")
+        assert isinstance(credits, list), "the file carries no credits list"
+        bare = gl.GLTF2().load_from_bytes(skinned_glb.with_hair(out.read_bytes(), "bald", glasses=None)).meshes[0].extras["credits"]
+        assert not [c for c in bare if c["category"] in ("hair", "glasses")], "a dropped cut or pair is still credited"
+        print(f"ok  credits: {len(credits)} in the file, {len(bare)} once the hair and glasses are dropped")
+
+        # Every look for this body (compose's outfits), the built one shown; a download keeps one, its pieces
+        # alone, and the body cut where that look covers it.
+        outfits, built = gltf.meshes[0].extras.get("outfits") or {}, gltf.meshes[0].extras.get("outfit")
+        if len(outfits) > 1:
+            other = next(look for look in outfits if look != built)
+            kept = gl.GLTF2().load_from_bytes(skinned_glb.with_hair(out.read_bytes(), "bald", outfit=other))
+            left = names(kept)
+            assert set(outfits[other]) <= left, f"the download dropped {other}'s pieces"
+            assert not (set().union(*outfits.values()) - set(outfits[other])) & left, "another look's pieces are still in the download"
+            body = next(m for m in kept.materials if m.name == "body")
+            assert body.alphaMode == "MASK", "the body is not cut under the look kept"
+            print(f"ok  outfits: {len(outfits)} looks in the file; the download keeps {other} and cuts the skin under it")
+        else:
+            print(f"ok  outfits: {len(outfits)} look in the file, nothing to swap")
+
         # The head without the built cut's painted hairline, worn by any other cut or none (compose's
         # head_plain): in the download too.
         def head_image(data):
@@ -1704,7 +1726,8 @@ def check_review_fixes():
                 gltf.materials[names.index(part)].pbrMetallicRoughness.baseColorTexture.index].source].bufferView]
             size = _Image.open(io.BytesIO(blob[view.byteOffset:view.byteOffset + view.byteLength])).size
             assert size == (2048, 2048), f"{part} skin texture is {size}, not 2048"
-        cloth = [m for m in gltf.materials if m.name.startswith("outfit")]
+        # Leather has a gloss instead (compose's `leather`): the jacket look rides in every man's file now.
+        cloth = [m for m in gltf.materials if m.name.startswith("outfit") and not items_by_id()[m.name].get("leather")]
         assert cloth and all("KHR_materials_sheen" in m.extensions for m in cloth), "cloth has no sheen"
         # Strands catch a band of light; the made curly cut's coils have relief only.
         hair = [m for m in gltf.materials if m.name.startswith("hair_") and m.alphaMode != "BLEND"]

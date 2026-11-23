@@ -1,6 +1,7 @@
 @echo off
-rem Start the avatar studio for the team. Double-click this file, or run it from
-rem a terminal. Leave the window open; closing it stops the server.
+rem Start the avatar maker. Double-click this file, or run it from a terminal.
+rem Leave the window open; closing it stops the server. Add --dev for the team's
+rem tools (testing studio, review, gallery), --lan to open it to the local network.
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
@@ -14,8 +15,8 @@ if not exist "assets\face_landmarker.task" (
   exit /b 1
 )
 
-echo Starting avatar studio. Open http://localhost:8777
-echo It listens on this PC only. For teammates on the same network, run
+echo Starting the avatar maker. Open http://localhost:8777
+echo It listens on this PC only. For players on the same network, run
 echo   .venv\Scripts\python.exe app.py --lan
 echo.
 .venv\Scripts\python.exe app.py %*

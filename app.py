@@ -1,12 +1,16 @@
-"""Avatar studio — the local tool the team uses to try the engine on photos.
+"""The avatar maker: one photo in, a realistic avatar out, as a 3D model, a 2D picture or both.
 
-Drop a photo on the page, get a 3D avatar next to it. Runs on one PC and listens
-on this PC only; `python app.py --lan` opens it to the office network. Generation
-happens inline because it takes a couple of seconds; there is no queue and no
-database, by design.
+Players open the page (app.html): photo, create, style, save. Runs on one PC and
+listens on this PC only; `python app.py --lan` opens it to the local network.
+Builds take a few minutes and run one at a time (BUILD_LOCK); the page waits.
 
-ponytail: no auth, no accounts, no job queue. This is an internal testing tool on
-a trusted network, not the product. The product path is the Fastify API.
+`--dev` also serves the team's tools: the testing studio, the review page, the
+gallery of every build, uploaded photos and the people lineup. Without it they
+are not there: uploads are faces, and a player sees only their own avatar, by an
+id nobody can guess.
+
+ponytail: no accounts and no job queue; one lock, one PC. A queue with places in
+line is the next step if several players wait at once.
 """
 
 from __future__ import annotations
@@ -15,18 +19,18 @@ import datetime as dt
 import json
 import pathlib
 import re
+import secrets
 import sys
+import threading
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 from PIL import Image
 
 import photo_check
 import skinned_glb
-from catalogue import catalogue, items_by_id
 from compose import compose
 from morph import BODY_TYPES, HEIGHTS
 
-JACKET = "outfit_jacket_jeans"
 from generate import NoFaceFound, generate_avatar, get_landmarker
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -40,12 +44,17 @@ MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
+# The team's tools and every player's uploads, served only with --dev (see the module's note).
+DEV = "--dev" in sys.argv[1:]
+DEV_PATHS = ("/studio", "/review.html", "/gallery.json", "/uploads/", "/samples/", "/lineup")
+# ponytail: one build at a time on this PC; each takes all its cores for minutes.
+BUILD_LOCK = threading.Lock()
 
-def safe_stem(name: str) -> str:
-    """A filename we are willing to put on disk and in a URL."""
-    stem = pathlib.Path(name).stem[:48]
-    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", stem).strip("-")
-    return stem or "photo"
+
+@app.before_request
+def dev_only():
+    if not DEV and request.path.startswith(DEV_PATHS):
+        abort(404)
 
 
 def entries() -> list[dict]:
@@ -89,14 +98,6 @@ def entries() -> list[dict]:
     return sorted(items, key=lambda i: i["_mtime"], reverse=True)
 
 
-@app.get("/looks")
-def looks():
-    """The outfits the photo step offers beyond its own two, for a gender."""
-    gender = "female" if request.args.get("gender") == "female" else "male"
-    return jsonify([{"id": x["id"], "label": x["label"]} for x in catalogue().get("looks", [])
-                    if x.get("gender", gender) == gender])
-
-
 @app.post("/generate")
 def generate():
     upload = request.files.get("photo")
@@ -109,7 +110,8 @@ def generate():
 
     UPLOADS.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    entry_id = f"{stamp}-{safe_stem(upload.filename)}"
+    # A time and a random part, not the photo's file name: the id is all that guards a player's avatar.
+    entry_id = f"{stamp}-{secrets.token_urlsafe(9)}"
     photo_path = UPLOADS / f"{entry_id}{suffix}"
     upload.save(photo_path)
 
@@ -144,26 +146,20 @@ def generate():
     # The build and height picked on the photo step; anything else is the average.
     body_type = request.form.get("build") if request.form.get("build") in BODY_TYPES else "average"
     height = request.form.get("height") if request.form.get("height") in HEIGHTS else "average"
-    # The outfit picked on the photo step: the default, or the jacket in its
-    # place. Built in, as the body under clothes is cut to fit them.
-    # Or a look from the catalogue's `looks`: its clothes in place of the default's, the shoes kept.
+    # The outfit is picked on the Style step, from every look the build carries (compose's `outfits`):
+    # it wears the body's default.
     wear = None
-    defaults = catalogue()["defaults"][gender]
-    look = next((x for x in catalogue().get("looks", []) if x["id"] == request.form.get("outfit")), None)
-    if request.form.get("outfit") == "jacket":
-        wear = [JACKET if items_by_id()[i]["category"] == "outfit" else i for i in defaults]
-    elif look:
-        wear = [i for i in defaults if items_by_id()[i]["category"] not in ("outfit", "top", "bottom")] + look["wear"]
     # The haircut the photo check saw (/check), if the page ran one: only a
     # catalogue id or "bald" gets through.
     hair_hint = photo_check.hair_hint({"hair_cut": request.form.get("hair_hint")})
     hair_colour = photo_check.hair_colour_hint({"hair_colour": request.form.get("hair_colour")})
     try:
-        if full_body:
-            info = compose(photo_path, OUT / f"{entry_id}.glb", gender, wear=wear, side_photos=side_photos or None,
-                           hair_hint=hair_hint, hair_colour_hint=hair_colour, body_type=body_type, height=height)
-        else:
-            info = generate_avatar(photo_path, OUT / f"{entry_id}.glb", side_photos)
+        with BUILD_LOCK:
+            if full_body:
+                info = compose(photo_path, OUT / f"{entry_id}.glb", gender, wear=wear, side_photos=side_photos or None,
+                               hair_hint=hair_hint, hair_colour_hint=hair_colour, body_type=body_type, height=height)
+            else:
+                info = generate_avatar(photo_path, OUT / f"{entry_id}.glb", side_photos)
     except NoFaceFound:
         photo_path.unlink(missing_ok=True)
         return jsonify(error="No face found in that photo. Try a clear, front-facing one."), 422
@@ -229,7 +225,7 @@ def serve_compat(name: str):
 @app.get("/download/<name>")
 def serve_download(name: str):
     """An avatar for download wearing the haircut the studio's picker chose:
-    ?hair=<catalogue id or bald>&colour=r,g,b&glasses=<catalogue id or none>
+    ?hair=<catalogue id or bald>&colour=r,g,b&glasses=<catalogue id or none>&outfit=<look id>
     (skinned_glb.with_hair), the other cuts and glasses the file carries
     taken out; ?compat=1 also as serve_compat."""
     path = OUT / name
@@ -242,7 +238,8 @@ def serve_download(name: str):
             colour = [int(c) for c in request.args["colour"].split(",") if c.strip().isdigit()]
             if len(colour) != 3 or max(colour) > 255:
                 abort(400)
-        data = skinned_glb.with_hair(data, request.args["hair"], colour, request.args.get("glasses"))
+        data = skinned_glb.with_hair(data, request.args["hair"], colour, request.args.get("glasses"),
+                                     request.args.get("outfit"))
     if request.args.get("pose") == "t":
         data = skinned_glb.t_posed(data)
     if request.args.get("compat"):
