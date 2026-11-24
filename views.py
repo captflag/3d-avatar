@@ -168,10 +168,8 @@ def paint_sides(texture: Image.Image, vertices: np.ndarray, faces: np.ndarray, u
     scale_p, shift_p = to_fused
     normals = trimesh.Trimesh(vertices, faces, process=False).vertex_normals
     # Every texel's place on the head and its normal, from the mesh's.
-    at = np.dstack([facetexture.rasterize(vertices[:, k], faces, uv, uv_faces, size, fill=np.nan)
-                    for k in range(3)])
-    facing_map = np.dstack([facetexture.rasterize(normals[:, k], faces, uv, uv_faces, size, fill=0.0)
-                            for k in range(3)])
+    at = facetexture.rasterize(vertices, faces, uv, uv_faces, size, fill=np.nan)
+    facing_map = facetexture.rasterize(normals, faces, uv, uv_faces, size, fill=0.0)
     front_map = facetexture.rasterize(front, faces, uv, uv_faces, size, fill=0.0)
     if skip is not None:
         front_map = np.maximum(front_map, facetexture.rasterize(skip, faces, uv, uv_faces, size, fill=0.0))

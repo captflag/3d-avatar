@@ -1208,7 +1208,7 @@ def hairline_tint(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarr
     # skin under the hair. Each texel's place on the head is rasterised and
     # its tint computed there.
     size = texture.size[0]
-    at = np.dstack([rasterize(vertices[:, k], faces, uv, uv_faces, size, fill=np.nan) for k in range(3)])
+    at = rasterize(vertices, faces, uv, uv_faces, size, fill=np.nan)
     on = ~np.isnan(at[..., 1])
     tex_angle = np.degrees(np.arctan2(at[..., 0] - centre[0], at[..., 2] - centre[1])) % 360.0
     line = np.interp(tex_angle / (360.0 / bins), np.arange(bins), edge, period=bins)
@@ -1530,8 +1530,9 @@ def stubble(texture, vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv
     if not on.any():
         return texture
     size = texture.size[0]
-    at = lambda values: rasterize(values, faces[on], uv, uv_faces[on], size, fill=0.0).astype(np.float32)
-    density = cv2.remap(hair.astype(np.float32), at(pixels[:, 0]), at(pixels[:, 1]), cv2.INTER_LINEAR) * at(strength)
+    at = rasterize(np.column_stack([pixels[:, 0], pixels[:, 1], strength]), faces[on], uv, uv_faces[on], size,
+                   fill=0.0).astype(np.float32)
+    density = cv2.remap(hair.astype(np.float32), at[..., 0], at[..., 1], cv2.INTER_LINEAR) * at[..., 2]
 
     # Down the face runs along u on the head's map (see beard_underside).
     grain = cv2.GaussianBlur(np.random.default_rng(11).standard_normal((size, size)).astype(np.float32),
@@ -1627,10 +1628,12 @@ def beard_underside(head, head_uv: np.ndarray, head_texture, sampler, facial_hai
     # Worked out per texel, not per vertex: on the neck's large triangles a
     # per-vertex weight drew their outlines as pale, angular patches.
     size = texture.size[0]
-    covered = rasterize(np.ones(len(target.vertices)), faces, target_uv, faces, size, fill=0.0) > 0.5
-    at = lambda values: rasterize(values, faces, target_uv, faces, size, fill=0.0)[covered]
-    points = np.column_stack([at(target.vertices[:, k]) for k in range(3)])
-    texel_facing = at(normals[:, 2])
+    # Coverage, position and facing painted in one pass.
+    maps = rasterize(np.column_stack([np.ones(len(target.vertices)), target.vertices, normals[:, 2]]),
+                     faces, target_uv, faces, size, fill=0.0)
+    covered = maps[..., 0] > 0.5
+    points = maps[covered][:, 1:4]
+    texel_facing = maps[covered][:, 4]
     unknown = np.maximum(np.clip((0.45 - texel_facing) / 0.3, 0.0, 1.0), 1.0 - sampler.trust(points))
     # Density and height blended over the eight nearest sources: taken from
     # the single nearest, they jumped wherever it changed and drew the
@@ -2190,14 +2193,18 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
             frame = (cv2.dilate(frame.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & reach
             rgb[frame] = _skin_blur(rgb, source & ~frame, max(SMOOTH_MARKS * face_w, 1.0))[frame]
     fine = _skin_blur(rgb, source, max(SMOOTH_MARKS * face_w, 1.0))
-    broad = _skin_blur(rgb, source, max(SMOOTH_BROAD * face_w, 1.0))
     # The evening, in L*a*b*: colour (a, b) SMOOTH_EVEN of the way to the
     # median, lightness SMOOTH_EVEN_LIGHT of that. As an RGB shift with its
     # luma taken out it bent the hue of dark and light skin (p02 greyed, and
     # match_colour then doubled her blue).
     to_lab = lambda x: cv2.cvtColor(np.clip(x / 255.0, 0, 1).astype(np.float32), cv2.COLOR_RGB2LAB).astype(np.float64)
-    shift = (0.0 if repairs_only else SMOOTH_EVEN) * (to_lab(np.median(rgb[source], axis=0)[None, None, :]) - to_lab(broad))
-    shift[..., 0] *= SMOOTH_EVEN_LIGHT
+    # Photo-true skin is not evened: its shift is zero, and the broad blur behind it skipped.
+    if repairs_only:
+        shift = np.zeros(rgb.shape)
+    else:
+        broad = _skin_blur(rgb, source, max(SMOOTH_BROAD * face_w, 1.0))
+        shift = SMOOTH_EVEN * (to_lab(np.median(rgb[source], axis=0)[None, None, :]) - to_lab(broad))
+        shift[..., 0] *= SMOOTH_EVEN_LIGHT
 
     def evened(image, weight=1.0):
         lab = to_lab(image) + shift * weight
@@ -2225,9 +2232,12 @@ def smooth_skin(skin_rgb: np.ndarray, landmarks, face_mask: np.ndarray, parts: n
     median = np.median(rgb[source], axis=0)
     filled = cv2.GaussianBlur(hair.astype(np.float64), (0, 0), 2 * feather)[..., None]
     skin = skin * (1.0 - filled) + median * filled
-    amount, scale = (0.0, FEATURE_SHARPEN[1]) if repairs_only else FEATURE_SHARPEN
-    detail = rgb - cv2.GaussianBlur(rgb, (0, 0), max(scale * face_w, 0.6))
-    sharp = rgb + amount * detail * (keep & face_mask)[..., None]
+    if repairs_only:
+        sharp = rgb                             # not sharpened
+    else:
+        amount, scale = FEATURE_SHARPEN
+        detail = rgb - cv2.GaussianBlur(rgb, (0, 0), max(scale * face_w, 0.6))
+        sharp = rgb + amount * detail * (keep & face_mask)[..., None]
     out = evened(sharp, whole) * (1.0 - alpha) + skin * alpha
     # Each brow drawn whole beneath its hairs: kept hair by hair, a fine or
     # light brow came out sparse and broken, and one a rim crossed, notched.

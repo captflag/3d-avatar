@@ -1385,9 +1385,9 @@ def _paint_cap(texture, normal_texture, v: np.ndarray, faces: np.ndarray, uv: np
         ang = np.arctan2(m[1], m[0])
         c2[f] += np.cos(2 * ang); s2[f] += np.sin(2 * ang); w[f] += 1
     c2, s2 = c2 / np.maximum(w, 1), s2 / np.maximum(w, 1)
-    covered = rasterize(np.ones(len(v)), faces, uv, faces, size, fill=0.0) > 0.5
-    fc = rasterize(c2, faces, uv, faces, size, fill=0.0).astype(np.float32)
-    fs = rasterize(s2, faces, uv, faces, size, fill=0.0).astype(np.float32)
+    maps = rasterize(np.column_stack([np.ones(len(v)), c2, s2]), faces, uv, faces, size, fill=0.0)
+    covered = maps[..., 0] > 0.5
+    fc, fs = maps[..., 1].astype(np.float32), maps[..., 2].astype(np.float32)
 
     # Fine noise streaked along the field, both ways from each texel.
     rng = np.random.default_rng(7)

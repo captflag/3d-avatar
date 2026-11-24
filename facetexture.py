@@ -410,58 +410,60 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
     np.add.at(vertex_normals, faces, face_normals[:, None, :].repeat(3, axis=1))
     toward = vertex_normals[:, 2] / np.maximum(np.linalg.norm(vertex_normals, axis=1), 1e-12)
 
+    # All the triangles' bounding boxes at once, in batches of about 2M texels painted in the
+    # triangles' order, later ones winning (a loop over them, as rasterize had).
     lips = sampler.on_lips(centroids[candidates])
-    for fi, on_lips in zip(candidates, lips):
-        tri = vertices[faces[fi]]
-        if face_normals[fi, 2] <= 0 and not on_lips:
-            continue                            # facing away from the camera
+    fs_all = candidates[(face_normals[candidates, 2] > 0) | lips]      # facing away: skipped, but lips
+    lip_face = np.zeros(len(faces), bool)
+    lip_face[candidates[lips]] = True
+    tri_uv = uv[uv_faces[fs_all]]
+    px = tri_uv[..., 0] * (size - 1)
+    py = (1.0 - tri_uv[..., 1]) * (size - 1)    # UV origin is bottom-left
+    x0, x1 = np.floor(px.min(1)).astype(np.int64), np.ceil(px.max(1)).astype(np.int64)
+    y0, y1 = np.floor(py.min(1)).astype(np.int64), np.ceil(py.max(1)).astype(np.int64)
+    small = (x1 - x0 <= size // 2) & (y1 - y0 <= size // 2)  # else it straddles a UV seam
+    x0, x1, y0, y1 = np.maximum(x0, 0), np.minimum(x1, size - 1), np.maximum(y0, 0), np.minimum(y1, size - 1)
+    denom = (py[:, 1] - py[:, 2]) * (px[:, 0] - px[:, 2]) + (px[:, 2] - px[:, 1]) * (py[:, 0] - py[:, 2])
+    keep = np.flatnonzero(small & (x0 <= x1) & (y0 <= y1) & (np.abs(denom) >= 1e-9))
+    bw, bh = x1 - x0 + 1, y1 - y0 + 1
 
-        tri_uv = uv[uv_faces[fi]]
-        px = tri_uv[:, 0] * (size - 1)
-        py = (1.0 - tri_uv[:, 1]) * (size - 1)  # UV origin is bottom-left
-
-        x0, x1 = int(np.floor(px.min())), int(np.ceil(px.max()))
-        y0, y1 = int(np.floor(py.min())), int(np.ceil(py.max()))
-        if x1 - x0 > size // 2 or y1 - y0 > size // 2:
-            continue                            # straddles a UV seam
-        x0, x1, y0, y1 = max(x0, 0), min(x1, size - 1), max(y0, 0), min(y1, size - 1)
-        if x0 > x1 or y0 > y1:
-            continue
-
-        xs, ys = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))
-        denom = (py[1] - py[2]) * (px[0] - px[2]) + (px[2] - px[1]) * (py[0] - py[2])
-        if abs(denom) < 1e-9:
-            continue
-        w0 = ((py[1] - py[2]) * (xs - px[2]) + (px[2] - px[1]) * (ys - py[2])) / denom
-        w1 = ((py[2] - py[0]) * (xs - px[2]) + (px[0] - px[2]) * (ys - py[2])) / denom
+    def paint(k):
+        n = bw[k] * bh[k]; f = np.repeat(k, n)
+        local = np.arange(n.sum()) - np.repeat(np.cumsum(n) - n, n)
+        xs, ys = x0[f] + local % bw[f], y0[f] + local // bw[f]
+        d = denom[f]
+        w0 = ((py[f, 1] - py[f, 2]) * (xs - px[f, 2]) + (px[f, 2] - px[f, 1]) * (ys - py[f, 2])) / d
+        w1 = ((py[f, 2] - py[f, 0]) * (xs - px[f, 2]) + (px[f, 0] - px[f, 2]) * (ys - py[f, 2])) / d
         w2 = 1.0 - w0 - w1
         inside = (w0 >= -0.002) & (w1 >= -0.002) & (w2 >= -0.002)
-        if not inside.any():
-            continue
-
-        position = w0[..., None] * tri[0] + w1[..., None] * tri[1] + w2[..., None] * tri[2]
-        flat = position[inside]
-        f0, f1, f2 = toward[faces[fi]]
-        facing = (w0 * f0 + w1 * f1 + w2 * f2)[inside]
+        f, w0, w1, w2, xs, ys = f[inside], w0[inside], w1[inside], w2[inside], xs[inside], ys[inside]
+        tri = vertices[faces[fs_all[f]]]
+        flat = w0[:, None] * tri[:, 0] + w1[:, None] * tri[:, 1] + w2[:, None] * tri[:, 2]
+        fc = toward[faces[fs_all[f]]]
+        facing = w0 * fc[:, 0] + w1 * fc[:, 1] + w2 * fc[:, 2]
         pixels, strength = sampler.sample(flat, facing)
-        if not on_lips:
-            # Faded out as the surface turns edge-on, not cut where a triangle turns away: near the
-            # face's sides the cut left triangle-shaped islands of the photo, pale skin and dark hair
-            # stretched across them, among generated skin (p07's cheeks, from the side).
-            strength = strength * np.clip((facing - FACING_FROM) / FACING_BAND, 0.0, 1.0)
-
-        ty, tx = ys[inside], xs[inside]
+        # Faded out as the surface turns edge-on, not cut where a triangle turns away: near the
+        # face's sides the cut left triangle-shaped islands of the photo, pale skin and dark hair
+        # stretched across them, among generated skin (p07's cheeks, from the side).
+        strength = np.where(lip_face[fs_all[f]], strength,
+                            strength * np.clip((facing - FACING_FROM) / FACING_BAND, 0.0, 1.0))
         # Bilinear, not the nearest pixel: a small photo's face is a few
         # dozen pixels wide, spread over hundreds of texels, and nearest
         # lookups painted it as visible squares.
-        # As a 1-wide map in runs: OpenCV's remap takes at most 32767 rows, and
-        # a large triangle at a big texture size covers more texels than that.
+        # As a 1-wide map in runs: OpenCV's remap takes at most 32767 rows.
         maps = (pixels - 0.5).astype(np.float32)
-        painted[ty, tx] = np.concatenate([
-            cv2.remap(photo32, maps[i:i + 32000, :1], maps[i:i + 32000, 1:],
-                      cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)[:, 0]
-            for i in range(0, len(maps), 32000)])
-        weight[ty, tx] = np.maximum(weight[ty, tx], strength)
+        if len(maps):
+            painted[ys, xs] = np.concatenate([
+                cv2.remap(photo32, maps[i:i + 32000, :1], maps[i:i + 32000, 1:],
+                          cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)[:, 0]
+                for i in range(0, len(maps), 32000)])   # later faces win
+            np.maximum.at(weight, (ys, xs), strength)
+
+    cum = np.cumsum(bw[keep] * bh[keep])
+    cuts = np.searchsorted(cum, np.arange(2_000_000, cum[-1] + 2_000_000, 2_000_000)) if len(keep) else []
+    for k in np.split(keep, np.unique(np.minimum(cuts, len(keep)))):
+        if len(k):
+            paint(k)
 
     # A thin unpainted strip inside the painted face (a UV seam's edge, slivers
     # the triangles miss) takes the painted texels round it: left as the skin
@@ -509,12 +511,14 @@ def rasterize(values: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: n
               size: int, fill: float = 1.0) -> np.ndarray:
     """Paint a per-vertex value into UV space, interpolated across each triangle.
 
-    `values` is indexed like the vertices `faces` refers to. Texels no triangle
-    covers keep `fill`; where triangles overlap the later one wins.
+    `values` is indexed like the vertices `faces` refers to, one value each or a row
+    of them (V, k) for k channels painted at once. Texels no triangle covers keep
+    `fill`; where triangles overlap the later one wins.
     All triangles' bounding boxes at once, in batches, painted in their order (a loop over the
     triangles took 12% of a build).
     """
-    image = np.full((size, size), fill, dtype=np.float64)
+    values = np.asarray(values)
+    image = np.full((size, size) + values.shape[1:], fill, dtype=np.float64)
     tri = uv[uv_faces]                                          # (F, 3, 2)
     px, py = tri[..., 0] * (size - 1), (1.0 - tri[..., 1]) * (size - 1)
     x0, x1 = np.floor(px.min(1)).astype(np.int64), np.ceil(px.max(1)).astype(np.int64)
@@ -523,7 +527,7 @@ def rasterize(values: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: n
     small = (x1 - x0 <= size // 2) & (y1 - y0 <= size // 2)
     x0, x1, y0, y1 = np.maximum(x0, 0), np.minimum(x1, size - 1), np.maximum(y0, 0), np.minimum(y1, size - 1)
     keep = np.flatnonzero(small & (x0 <= x1) & (y0 <= y1) & (np.abs(denom) >= 1e-9))
-    vals = values[faces]                                        # (F, 3)
+    vals = values[faces]                                        # (F, 3) or (F, 3, k)
     w, h = x1 - x0 + 1, y1 - y0 + 1
     def paint(fs):
         n = w[fs] * h[fs]; f = np.repeat(fs, n)
@@ -534,8 +538,11 @@ def rasterize(values: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: n
         w1 = ((py[f, 2] - py[f, 0]) * (xs - px[f, 2]) + (px[f, 0] - px[f, 2]) * (ys - py[f, 2])) / d
         w2 = 1.0 - w0 - w1
         inside = (w0 >= -0.01) & (w1 >= -0.01) & (w2 >= -0.01)
+        f, w0, w1, w2 = f[inside], w0[inside], w1[inside], w2[inside]
+        if vals.ndim == 3:
+            w0, w1, w2 = w0[:, None], w1[:, None], w2[:, None]
         v = vals[f]
-        image[ys[inside], xs[inside]] = (w0 * v[:, 0] + w1 * v[:, 1] + w2 * v[:, 2])[inside]   # later faces win
+        image[ys[inside], xs[inside]] = w0 * v[:, 0] + w1 * v[:, 1] + w2 * v[:, 2]   # later faces win
     cum = np.cumsum(w[keep] * h[keep])                          # batches of about 2M texels, in order
     cuts = np.searchsorted(cum, np.arange(2_000_000, cum[-1] + 2_000_000, 2_000_000)) if len(keep) else []
     for fs in np.split(keep, np.unique(np.minimum(cuts, len(keep)))):
