@@ -41,7 +41,7 @@ def transfer_weights(points: np.ndarray, body_vertices: np.ndarray,
                      body_joints: np.ndarray, body_weights: np.ndarray,
                      bone_count: int, neighbours: int = 8, power: float = 2.0,
                      faces: np.ndarray | None = None, loose_from: float = 0.15,
-                     loose_to: float = 0.8, smoothing: int = 40):
+                     loose_to: float = 0.8, smoothing: int = 40, normals=None):
     """Joints and weights for arbitrary `points`, borrowed from the body.
 
     Each point blends the bone influences of its `neighbours` nearest body
@@ -55,7 +55,16 @@ def transfer_weights(points: np.ndarray, body_vertices: np.ndarray,
     move apart. Tight-fitting areas are left exact.
     """
     tree = cKDTree(body_vertices)
-    distance, nearest = tree.query(points, k=neighbours)
+    if normals is None:
+        distance, nearest = tree.query(points, k=neighbours)
+    else:
+        # Only skin facing the same way: cloth on the torso's side, pressed by a lowered arm, takes the
+        # torso's bones (the arm's inner skin faces it); the sleeve's inner side takes the arm's.
+        point_normals, body_normals = normals
+        distance, nearest = tree.query(points, k=4 * neighbours)
+        facing = (body_normals[nearest] * point_normals[:, None]).sum(-1) > 0.0
+        order = np.argsort(np.where(facing, distance, distance + 1e3), axis=1)[:, :neighbours]
+        distance, nearest = np.take_along_axis(distance, order, 1), np.take_along_axis(nearest, order, 1)
     closeness = 1.0 / np.maximum(distance, 1e-6) ** power
     closeness /= closeness.sum(axis=1, keepdims=True)
 
@@ -219,7 +228,7 @@ def load_mhclo(path: pathlib.Path, vertices: np.ndarray) -> trimesh.Trimesh:
     glTF allows one per vertex), its material file, and the body vertices its
     author marked as hidden underneath it.
     """
-    obj_file, material, scales, refs, hidden = None, None, {}, [], []
+    obj_file, material, scales, refs, hidden, pose = None, None, {}, [], [], None
     section = None
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -245,6 +254,8 @@ def load_mhclo(path: pathlib.Path, vertices: np.ndarray) -> trimesh.Trimesh:
             obj_file = parts[1]
         elif parts[0] == "material":
             material = parts[1]
+        elif parts[0] == "pose":                 # bound to the body standing so (fit_garment --pose)
+            pose = parts[1]
         elif parts[0] in ("x_scale", "y_scale", "z_scale"):
             scales[parts[0][0]] = (int(parts[1]), int(parts[2]), float(parts[3]))
 
@@ -289,6 +300,7 @@ def load_mhclo(path: pathlib.Path, vertices: np.ndarray) -> trimesh.Trimesh:
     mesh.metadata["uv"] = uv
     mesh.metadata["material"] = path.parent / material if material else None
     mesh.metadata["hides"] = _ranges(hidden)
+    mesh.metadata["pose"] = pose                 # None: the T-pose, as `vertices` stand
     return mesh
 
 
@@ -410,6 +422,20 @@ def mhclo_weights(idx: np.ndarray, blend: np.ndarray, joints: np.ndarray,
     top_w = np.take_along_axis(dense, top, axis=1)
     top_w /= np.maximum(top_w.sum(axis=1, keepdims=True), 1e-12)
     return top.astype(np.uint16), top_w.astype(np.float32)
+
+
+def carry_back(mesh: trimesh.Trimesh, vertices: np.ndarray, posed: np.ndarray, joints: np.ndarray,
+               weights: np.ndarray, matrices: np.ndarray) -> trimesh.Trimesh:
+    """An MHCLO garment bound to the body standing (its `pose`, fit_garment --pose): built on `posed`
+    (the body skinned by `matrices`) and carried back to `vertices` by the inverse of its own skinning
+    (mhclo_weights), so skinned into that stance again it is exactly where it was fitted. `mesh` as
+    load_mhclo built it on `vertices`."""
+    idx, blend = mesh.metadata["mhclo_idx"], mesh.metadata["mhclo_blend"]
+    on_body = np.asarray(mesh.vertices) + np.einsum("nk,nkd->nd", blend, posed[idx] - vertices[idx])
+    j, w = mhclo_weights(idx, blend, joints, weights, len(matrices))
+    carry = np.einsum("nk,nkij->nij", w.astype(np.float64), matrices[j.astype(np.int64)])
+    mesh.vertices = np.einsum("nij,nj->ni", np.linalg.inv(carry), np.c_[on_body, np.ones(len(on_body))])[:, :3]
+    return mesh
 
 
 def make_test_vest(out_path: pathlib.Path | None = None) -> pathlib.Path:
@@ -1474,6 +1500,8 @@ def shorten_lower_lashes(lashes: trimesh.Trimesh, keep: float = 0.45) -> None:
 # Glasses' frames this far off the skin at least (glasses_frames), in mesh
 # units (about 1 mm): pads that rest on the nose, not in it.
 GLASSES_CLEAR = 0.01
+# Glasses at most this share of the head's width at the eyes, hinge to hinge (glasses_frames).
+GLASSES_WIDTH = 0.93
 
 
 def glasses_frames(glasses: trimesh.Trimesh, eyes: np.ndarray, skin: trimesh.Trimesh,
@@ -1507,15 +1535,32 @@ def glasses_frames(glasses: trimesh.Trimesh, eyes: np.ndarray, skin: trimesh.Tri
     frames = glasses.copy()
     frames.update_faces(~lens)
     used = np.unique(frames.faces)
+    # No wider than GLASSES_WIDTH of this head at the eyes, hinge to hinge, shrunk about the rims' middle:
+    # real frames sit just inside the temples, and the stock pairs, 156 mm on a 144 mm head, read too big.
+    eye_mid = np.asarray(eyes).mean(axis=0)
+    head = skin.vertices[np.unique(skin.faces)]
+    head = head[(np.abs(head[:, 1] - eye_mid[1]) < 0.1) & (head[:, 2] > eye_mid[2] - 0.6)]
+    v = frames.vertices[used]
+    rims = v[v[:, 2] > v[:, 2].max() - 0.15]
+    scale = min(GLASSES_WIDTH * np.ptp(head[:, 0]) / np.ptp(v[:, 0]), 1.0) if len(head) else 1.0
+    if scale < 1.0:
+        centre = np.array([(v[:, 0].min() + v[:, 0].max()) / 2, rims[:, 1].mean(), v[:, 2].max()])
+        frames.vertices = centre + (np.asarray(frames.vertices) - centre) * scale
     front = used[frames.vertices[used, 2] > np.asarray(eyes)[:, 2].mean()]
     skin_points = np.unique(skin.faces)
-    near = skin_points[cKDTree(skin.vertices[skin_points]).query(frames.vertices[front])[1]]
-    normals = skin.vertex_normals[near]
-    gap = ((frames.vertices[front] - skin.vertices[near]) * normals).sum(axis=1)
-    # Forward, so the gap grows by the normal's forward part only: on the
-    # nose's sides, a third or so.
-    push = (clear - gap) / np.maximum(normals[:, 2], 0.3)
-    frames.vertices = frames.vertices + [0.0, 0.0, max(float(push.max(initial=0.0)), 0.0)]
+    tree = cKDTree(skin.vertices[skin_points])
+    for _ in range(4):
+        # Moved forward, a point's nearest skin changes: again until all clear (once left a smaller
+        # pair 0.4 mm off a cheek).
+        near = skin_points[tree.query(frames.vertices[front])[1]]
+        normals = skin.vertex_normals[near]
+        gap = ((frames.vertices[front] - skin.vertices[near]) * normals).sum(axis=1)
+        # Forward, so the gap grows by the normal's forward part only: on the
+        # nose's sides, a third or so.
+        push = max(float(((clear - gap) / np.maximum(normals[:, 2], 0.3)).max(initial=0.0)), 0.0)
+        if push < 1e-4:
+            break
+        frames.vertices = frames.vertices + [0.0, 0.0, push]
     return frames
 
 
@@ -1711,6 +1756,60 @@ def leather_roughness(mesh: trimesh.Trimesh, vertices: np.ndarray, groups: dict,
 # Hair off the skin (off_skin): at least HAIR_CLEAR over it, lifted at most HAIR_LIFT_MAX.
 HAIR_CLEAR = 0.015
 HAIR_LIFT_MAX = 0.1
+# Hair round the ears (around_ears), in mesh units: moved in full within EAR_REACH of an ear's outline
+# side-on, easing out over EAR_BAND past it; EAR_LIFT above its top (cut round it) or EAR_TUCK off it (over it);
+# a cut hangs past an ear when more than EAR_HANG of the hair beside it is below its lobe.
+EAR_REACH, EAR_BAND, EAR_TUCK, EAR_LIFT, EAR_HANG = 0.04, 0.12, 0.01, 0.05, 0.2
+
+
+def around_ears(hair: trimesh.Trimesh, vertices: np.ndarray, body_faces: np.ndarray,
+                ear: np.ndarray) -> trimesh.Trimesh:
+    """Hair round the ears as hair lies, each ear on its own (`ear`: per body vertex, 0-1, how much
+    it is ear; appearance.ear_weight).
+
+    A cut that ends above an ear is lifted clear of it, as a barber cuts round an ear, and the ear
+    shows whole. A cut that hangs past it is pushed out over the ear, so it covers it whole. As
+    fitted, every cut crossed the ears partway: 8-29% of a short cut's ear lay under hair in a band
+    across its top, and the ears came through bobs and curls. Tucking a bob opened a ragged window
+    in it round the ear, so it covers instead."""
+    from scipy.spatial import cKDTree
+    v = np.asarray(hair.vertices, dtype=np.float64).copy()
+    skin = np.unique(body_faces)
+    for side in (1.0, -1.0):
+        e = vertices[skin[(ear[skin] > 0.5) & (np.sign(vertices[skin, 0]) == side)]]
+        if not len(e):
+            continue
+        d, _ = cKDTree(e[:, 1:3]).query(v[:, 1:3])          # side-on distance to the ear's outline
+        here = (np.sign(v[:, 0]) == side) & (d < EAR_REACH + EAR_BAND)
+        if not here.any():
+            continue
+        w = np.clip(1.0 - (d[here] - EAR_REACH) / EAR_BAND, 0.0, 1.0)
+        w = w * w * (3.0 - 2.0 * w)
+        x = np.abs(v[here, 0])
+        # Of the hair beside the ear (over its front-to-back span, below its top), the share below
+        # its lobe: short cuts' sideburns 0-14%, bobs and long hair 27-69%.
+        beside = ((np.sign(v[:, 0]) == side) & (v[:, 2] > e[:, 2].min()) & (v[:, 2] < e[:, 2].max())
+                  & (v[:, 1] < e[:, 1].max()))
+        if beside.any() and (v[beside, 1] < e[:, 1].min()).mean() > EAR_HANG:
+            # Over it: no nearer than the ear's outer face behind each point.
+            _, k = cKDTree(e[:, 1:3]).query(v[here, 1:3], k=8)
+            outer = np.abs(e[k, 0]).max(axis=1) + EAR_TUCK
+            v[here, 0] = side * np.where(x < outer, x + w * (outer - x), x)
+        else:
+            # Cut round it: lifted to EAR_LIFT above the ear's top edge where it lies over or beside
+            # the ear (not the hair behind the head). Pulled in against the skull instead, the cards
+            # went under the skin in places and the edge round the ear came out torn.
+            # The ear's top edge over each point: its highest within EAR_REACH front to back (its 12
+            # nearest that way were often all lobe, and put the edge mid-ear).
+            order = np.argsort(e[:, 2])
+            zs, ys = e[order, 2], e[order, 1]
+            lo = np.searchsorted(zs, v[here, 2] - EAR_REACH)
+            hi = np.maximum(np.searchsorted(zs, v[here, 2] + EAR_REACH), lo + 1)
+            top = np.array([ys[a:b].max() for a, b in zip(np.minimum(lo, len(ys) - 1), np.minimum(hi, len(ys)))]) + EAR_LIFT
+            out = x > np.abs(e[:, 0]).min() - EAR_BAND / 2
+            v[here, 1] = np.where(out & (v[here, 1] < top), v[here, 1] + w * (top - v[here, 1]), v[here, 1])
+    hair.vertices = v
+    return hair
 
 
 def off_skin(hair: trimesh.Trimesh, vertices: np.ndarray, body_faces: np.ndarray, rounds: int = 6) -> trimesh.Trimesh:
@@ -1772,6 +1871,8 @@ SHADOW_REACH = 0.25
 # (compose), and a layer lifted off the body's own came out under the drawn lids, in black fragments.
 EYE_CLEAR = (0.28, 0.14)
 EYE_CLEAR_FADE = 0.25
+# Hair shadow on the face below the eyes and ahead of the ears: none from this far under the eyes.
+CHEEK_SHADOW_FADE = 0.15
 SHADOW_LIFT = 0.004
 # Toward where the light comes from: above, in front, either side. Along the skin's normal alone, a
 # fringe that ends above the brows shaded nothing that shows: the shadow stayed under the hair.
@@ -1933,6 +2034,14 @@ def _hair_shadow(vertices, normals, body_faces, head, is_ear, covered, hair_tris
     for _ in range(2):
         strength = np.where(in_skin, 0.5 * strength + 0.5 * (neighbours @ strength) / count, strength)
     strength[covered] = SHADOW_ALPHA
+    if len(eyes) and is_ear.any():
+        # None on the face below the eyes, ahead of the ears, fading out over CHEEK_SHADOW_FADE: there
+        # the photo's own shading is, and a sideburn's or a bob's shadow on it read as a grey smudge on
+        # the cheek (up to 0.30 under the side parting, 0.32 under a bob).
+        eye_y = float(np.mean([vertices[np.unique(e), 1].mean() for e in eyes]))
+        ahead = vertices[:, 2] > vertices[head[is_ear], 2].max() - 0.1
+        fade = np.clip((vertices[:, 1] - (eye_y - CHEEK_SHADOW_FADE)) / CHEEK_SHADOW_FADE, 0.0, 1.0)
+        strength = np.where(ahead, strength * fade, strength)
     for eye in eyes:                                  # body vertex indices of one eye
         centre = vertices[np.unique(eye)].mean(axis=0)
         r = np.hypot((vertices[:, 0] - centre[0]) / EYE_CLEAR[0], (vertices[:, 1] - centre[1]) / EYE_CLEAR[1])

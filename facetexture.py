@@ -108,6 +108,9 @@ def skin_tone_lab(rgb: np.ndarray, pixels: np.ndarray) -> np.ndarray:
 FADE_BAND = 0.04
 # Share of that band over which a kept beard fades out at the sheet's edge.
 KEEP_EDGE = 0.35
+# The photo fades out as the surface turns edge-on to the camera (bake): none where the normal's
+# forward part is FACING_FROM or less, all from FACING_FROM + FACING_BAND.
+FACING_FROM, FACING_BAND = 0.05, 0.25
 
 
 class FaceSampler:
@@ -439,7 +442,13 @@ def bake(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray, uv_faces: np.n
         position = w0[..., None] * tri[0] + w1[..., None] * tri[1] + w2[..., None] * tri[2]
         flat = position[inside]
         f0, f1, f2 = toward[faces[fi]]
-        pixels, strength = sampler.sample(flat, (w0 * f0 + w1 * f1 + w2 * f2)[inside])
+        facing = (w0 * f0 + w1 * f1 + w2 * f2)[inside]
+        pixels, strength = sampler.sample(flat, facing)
+        if not on_lips:
+            # Faded out as the surface turns edge-on, not cut where a triangle turns away: near the
+            # face's sides the cut left triangle-shaped islands of the photo, pale skin and dark hair
+            # stretched across them, among generated skin (p07's cheeks, from the side).
+            strength = strength * np.clip((facing - FACING_FROM) / FACING_BAND, 0.0, 1.0)
 
         ty, tx = ys[inside], xs[inside]
         # Bilinear, not the nearest pixel: a small photo's face is a few

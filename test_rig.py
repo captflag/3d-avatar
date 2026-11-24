@@ -109,6 +109,46 @@ def check_export():
             assert left == ({keep} if keep else set()), f"the download kept glasses {left}, not {keep}"
         print(f"ok  glasses in the file: {len(pairs)} pairs, the download keeps only the one picked")
 
+        # Credits (compose.credits_for): every CC-BY item the file carries; a download keeps those it still holds.
+        credits = gltf.meshes[0].extras.get("credits")
+        assert isinstance(credits, list), "the file carries no credits list"
+        bare = gl.GLTF2().load_from_bytes(skinned_glb.with_hair(out.read_bytes(), "bald", glasses=None)).meshes[0].extras["credits"]
+        assert not [c for c in bare if c["category"] in ("hair", "glasses")], "a dropped cut or pair is still credited"
+        print(f"ok  credits: {len(credits)} in the file, {len(bare)} once the hair and glasses are dropped")
+
+        # Every look for this body (compose's outfits), the built one shown; a download keeps one, its pieces
+        # alone, and the body cut where that look covers it.
+        outfits, built = gltf.meshes[0].extras.get("outfits") or {}, gltf.meshes[0].extras.get("outfit")
+        if len(outfits) > 1:
+            other = next(look for look in outfits if look != built)
+            kept = gl.GLTF2().load_from_bytes(skinned_glb.with_hair(out.read_bytes(), "bald", outfit=other))
+            left = names(kept)
+            assert set(outfits[other]) <= left, f"the download dropped {other}'s pieces"
+            assert not (set().union(*outfits.values()) - set(outfits[other])) & left, "another look's pieces are still in the download"
+            body = next(m for m in kept.materials if m.name == "body")
+            assert body.alphaMode == "MASK", "the body is not cut under the look kept"
+            print(f"ok  outfits: {len(outfits)} looks in the file; the download keeps {other} and cuts the skin under it")
+        else:
+            print(f"ok  outfits: {len(outfits)} look in the file, nothing to swap")
+
+        # The head without the built cut's painted hairline, worn by any other cut or none (compose's
+        # head_plain): in the download too.
+        def head_image(data):
+            doc, blob = skinned_glb._unpack(data)
+            m = next(m for m in doc["materials"] if m.get("name") == "head")
+            view = doc["bufferViews"][doc["images"][doc["textures"][m["pbrMetallicRoughness"]["baseColorTexture"]["index"]]["source"]]["bufferView"]]
+            return bytes(blob[view.get("byteOffset", 0):view.get("byteOffset", 0) + view["byteLength"]])
+        built = gltf.meshes[0].extras.get("hair")
+        if built and (head_mat.extras or {}).get("plainTexture") is not None:
+            assert head_image(skinned_glb.with_hair(out.read_bytes(), "bald")) != \
+                head_image(skinned_glb.with_hair(out.read_bytes(), built)), "no hair still wears the painted hairline"
+            bald = gl.GLTF2().load_from_bytes(skinned_glb.with_hair(out.read_bytes(), "bald"))
+            assert "scalp_cap" not in names(bald), "no hair still wears the built cut's scalp cap"
+            print("ok  no hair: the head without the built cut's painted hairline, in the download too")
+        else:
+            assert (head_mat.extras or {}).get("plainTexture") is None, "a plain head with no painted hairline to differ from"
+            print("ok  no hair: this build paints no hairline, so there is no second head to carry")
+
         # The compat copy for old viewers: no quantisation left, same geometry.
         compat = pathlib.Path(tmp) / "compat.glb"
         compat.write_bytes(skinned_glb.dequantised(out.read_bytes()))
@@ -1214,7 +1254,7 @@ def check_glasses():
     eyes show through), sits in front of the eyes at their height, and clears
     the face on both bodies (garments.glasses_frames)."""
     import morph
-    from garments import GLASSES_CLEAR, glasses_frames
+    from garments import GLASSES_CLEAR, GLASSES_WIDTH, glasses_frames
     from scipy.spatial import cKDTree
 
     base, groups = load_base()
@@ -1247,7 +1287,12 @@ def check_glasses():
             gap = ((front - vertices[near]) * skin.vertex_normals[near]).sum(axis=1)
             assert gap.min() > GLASSES_CLEAR / 2, \
                 f"{item['id']}: {(gap < 0).sum()} points inside the {figure} face, {gap.min() * 100:.1f} mm off it"
-    print(f"ok  glasses: {len(pairs)} pairs load, lenses out, in front of the eyes and clear of both faces")
+            band = vertices[skin_points]
+            band = band[(np.abs(band[:, 1] - centres[:, 1].mean()) < 0.1) & (band[:, 2] > centres[:, 2].mean() - 0.6)]
+            width = np.ptp(points[:, 0]) / np.ptp(band[:, 0])
+            assert width <= GLASSES_WIDTH + 0.005, f"{item['id']}: {width:.2f} of the {figure} head's width, over {GLASSES_WIDTH}"
+    print(f"ok  glasses: {len(pairs)} pairs load, lenses out, in front of the eyes, clear of both faces, "
+          f"no wider than {GLASSES_WIDTH:.0%} of the head")
 
 
 def check_bodies_and_assets():
@@ -1643,7 +1688,17 @@ def check_review_fixes():
         tex = gltf.materials[names.index("body")].pbrMetallicRoughness.baseColorTexture.index
         view = gltf.bufferViews[gltf.images[gltf.textures[tex].source].bufferView]
         alpha = np.asarray(Image.open(io.BytesIO(blob[view.byteOffset:view.byteOffset + view.byteLength])).convert("RGBA"))[..., 3]
-        collarbone = float(base[np.unique(groups["joint-l-clavicle"])][:, 1].mean())
+        # The collarbone of the body built (its skeleton's clavicle joint), not the stock base mesh's:
+        # Anny's bodies stand taller, and measured off the stock body the "neck" took in the chest.
+        nodes = gltf.nodes
+        parent = {c: i for i, n in enumerate(nodes) for c in (n.children or [])}
+        def world_y(i):
+            y = 0.0
+            while i is not None:
+                y += (nodes[i].translation or [0, 0, 0])[1]
+                i = parent.get(i)
+            return y
+        collarbone = world_y(next(i for i, n in enumerate(nodes) if n.name == "clavicle.L"))
         # Not the mouth's inside: it is body too, and the lips' inner side
         # there is meant to go undrawn (compose.LIP_HIDDEN). Round the teeth.
         teeth = read(gltf.meshes[0].primitives[names.index("teeth")].attributes.POSITION, 3).mean(axis=0)
@@ -1671,8 +1726,13 @@ def check_review_fixes():
                 gltf.materials[names.index(part)].pbrMetallicRoughness.baseColorTexture.index].source].bufferView]
             size = _Image.open(io.BytesIO(blob[view.byteOffset:view.byteOffset + view.byteLength])).size
             assert size == (2048, 2048), f"{part} skin texture is {size}, not 2048"
-        cloth = [m for m in gltf.materials if m.name.startswith("outfit")]
+        # Leather has a gloss instead (compose's `leather`): the jacket look rides in every man's file now.
+        cloth = [m for m in gltf.materials if m.name.startswith("outfit") and not items_by_id()[m.name].get("leather")]
         assert cloth and all("KHR_materials_sheen" in m.extensions for m in cloth), "cloth has no sheen"
+        # Every garment marked for the viewer's cloth gain (scene-setup SHADING.cloth), the skin not.
+        worn = [m for m in gltf.materials if m.name.startswith(("outfit", "shoes"))]
+        assert worn and all((m.extras or {}).get("garment") for m in worn), "a garment is not marked for the cloth gain"
+        assert not any((gltf.materials[names.index(p)].extras or {}).get("garment") for p in ("head", "body")), "skin marked as cloth"
         # Strands catch a band of light; the made curly cut's coils have relief only.
         hair = [m for m in gltf.materials if m.name.startswith("hair_") and m.alphaMode != "BLEND"]
         # And each cut's shadow on the skin comes with it: black, blended, no highlight.
@@ -1984,6 +2044,80 @@ def check_stubble():
     print(f"ok  stubble: grain {hair.std():.1f} over the beard at its own average, none on a shaven face")
 
 
+def check_standing_fit():
+    """A garment bound standing (MHCLO `pose relaxed`, fit_garment --pose): carried back to the T-pose
+    (garments.carry_back) and skinned into the stance again, it lands where it was bound, to the micron."""
+    import shutil, tempfile, morph, compose
+    from garments import carry_back, deform, load_mhclo, mhclo_weights, skinning_matrices
+    item = items_by_id()["outfit_jacket_jeans"]
+    source = HERE / "assets" / item["mhclo"]
+    if not source.exists():
+        print("skip standing fit: outfit_jacket_jeans missing (python fetch_assets.py)")
+        return
+    base, groups = load_base()
+    T, back = morph.t_pose_body(base, "male")
+    skeleton = load_skeleton(T); joints, weights = weight_table(skeleton, len(T))
+    matrices = skinning_matrices(skeleton, compose.standing(T, groups["body"], skeleton, joints, weights, back))
+    posed = deform(T, joints, weights, matrices)
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in source.parent.glob(source.stem + ".*"):
+            shutil.copy(f, tmp)
+        clo = pathlib.Path(tmp) / source.name
+        clo.write_text(clo.read_text(encoding="utf-8").replace("verts 0", "pose relaxed\nverts 0", 1), encoding="utf-8")
+        mesh = load_mhclo(clo, T)
+        assert mesh.metadata["pose"] == "relaxed", "the MHCLO's pose line not read"
+        target = np.asarray(load_mhclo(clo, posed).vertices)
+    mesh = carry_back(mesh, T, posed, joints, weights, matrices)
+    j, w = mhclo_weights(mesh.metadata["mhclo_idx"], mesh.metadata["mhclo_blend"], joints, weights, len(matrices))
+    error = np.abs(deform(np.asarray(mesh.vertices), j.astype(int), w, matrices) - target).max()
+    assert error < 1e-6, f"a standing garment comes back {error:.2e} off where it was bound"
+    print(f"ok standing fit: back where it was bound to {error:.1e}")
+
+
+def check_ears():
+    """Hair round the ears (garments.around_ears): a short cut leaves no hair over an ear's outer face,
+    side-on; a bob hangs over it with nothing of the ear in front of the hair."""
+    import morph, appearance
+    from garments import around_ears, off_skin, EAR_TUCK
+    from scipy.spatial import cKDTree
+    base, groups = load_base()
+    missing = [c for c in ("hair_short02", "hair_toigo_blunt_bob") if not (HERE / "assets" / items_by_id()[c]["mhclo"]).exists()]
+    if missing:
+        print(f"skip ears: {missing} missing (python fetch_assets.py)")
+        return
+    vertices = morph.body_for(base, "female")
+    ear = appearance.ear_weight(len(vertices))
+    skin = np.unique(groups["body"])
+    e = vertices[skin[(ear[skin] > 0.5) & (vertices[skin, 0] > 0)]]
+    def over_ear(v):
+        h = v[v[:, 0] > 0]
+        tree = cKDTree(h[:, 1:3])
+        return np.mean([bool(idx) and (np.abs(h[idx, 0]) > abs(p[0]) - 0.01).any()
+                        for p, idx in zip(e, tree.query_ball_point(e[:, 1:3], 0.03))])
+    short = off_skin(around_ears(build_item(items_by_id()["hair_short02"], None, vertices), vertices, groups["body"], ear),
+                     vertices, groups["body"])
+    # Up to 2%: off_skin sets a few points back down on the ear's top rim (8-29% lay over it before).
+    assert over_ear(np.asarray(short.vertices)) <= 0.02, f"short hair over {over_ear(np.asarray(short.vertices)):.0%} of the ear"
+    bob = off_skin(around_ears(build_item(items_by_id()["hair_toigo_blunt_bob"], None, vertices), vertices, groups["body"], ear),
+                   vertices, groups["body"])
+    b = np.asarray(bob.vertices); b = b[b[:, 0] > 0]
+    d, k = cKDTree(e[:, 1:3]).query(b[:, 1:3], k=8)
+    on = d[:, 0] < 0.02
+    assert (np.abs(b[on, 0]) >= np.abs(e[k[on], 0]).max(axis=1) + EAR_TUCK - 1e-6).all(), "the ear comes through the bob"
+    # And the side parting's shadow kept off the cheek (garments.CHEEK_SHADOW_FADE): 0.30 there before.
+    from garments import with_scalp, CHEEK_SHADOW_FADE
+    eye_groups = [groups["helper-l-eye"], groups["helper-r-eye"]]
+    parting = with_scalp(off_skin(around_ears(build_item(items_by_id()["hair_short04"], None, vertices), vertices,
+                                              groups["body"], ear), vertices, groups["body"]), vertices, groups["body"], eye_groups)
+    shadow = parting.metadata["shadow"]
+    alpha = np.asarray(shadow.visual.vertex_colors)[:, 3] / 255.0
+    sv = np.asarray(shadow.vertices)
+    eye_y = np.mean([vertices[np.unique(g), 1].mean() for g in eye_groups])
+    cheek = (sv[:, 1] < eye_y - CHEEK_SHADOW_FADE) & (sv[:, 2] > vertices[skin[ear[skin] > 0.5], 2].max() - 0.1)
+    assert not cheek.any() or alpha[cheek].max() < 0.02, f"hair shadow {alpha[cheek].max():.2f} on the cheek"
+    print("ok  ears: a short cut runs round them, a bob hangs over them; no hair shadow on the cheeks")
+
+
 def check_texture_palette():
     """A cut-away texel stays see-through in a texture of few colours, and a hair's object-space
     normal map is not used as a tangent one."""
@@ -2092,6 +2226,8 @@ if __name__ == "__main__":
         check_jacket()
         check_style_paint()
         check_texture_palette()
+        check_ears()
+        check_standing_fit()
         __import__("lineup").check()
     except AssertionError as err:
         print(f"FAIL  {err}", file=sys.stderr)

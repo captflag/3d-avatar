@@ -4,15 +4,49 @@ One photo in, one textured 3D face out, plus the expression it detected. This is
 the generation step the rest of the avatar product hangs off, kept deliberately
 small so we can judge one thing: does the avatar look like the person in the photo.
 
+## Run it for players
+
+Double-click **`start-studio.cmd`**, or run it from a terminal, and open
+`http://localhost:8777`. Players go through four steps:
+
+1. **Photo**: a selfie (guided, checked live) or an upload. They choose what they
+   want (**3D model**, **2D picture** or **Both**), a masculine or feminine body,
+   build and height.
+2. **Create**: a few minutes; builds run one at a time on this PC.
+3. **Style**: hairstyle, hair colour, glasses and outfit, on the avatar, orbitable.
+   Each avatar carries every look for its body (catalogue `looks`), fitted and
+   hidden, with a mask of the skin each one hides, so the outfit swaps at once.
+4. **Save**: only what they chose. The picture comes as a portrait (head and
+   shoulders) or full body, on a transparent or studio background; the 3D model
+   as a rigged GLB wearing the picked hair, glasses and outfit, the skin cut
+   under that outfit. The page and the file both
+   credit the CC-BY clothes, hair and glasses the avatar wears.
+
+It listens on this PC only; `app.py --lan` opens it to the local network (no
+login, so never the public internet). Players see only their own avatar, by an
+id nobody can guess; uploaded photos are not served back. Avatars are realistic
+only.
+
+Outfits and glasses whose files exist only on this PC (downloads under their own
+licences) are listed in `assets/catalogue.local.json`, beside them and never in
+git: their items, and the looks they make up per body.
+
+A downloaded garment is fitted to the T-pose body and written as a MakeHuman clothes
+asset by `fit_garment.py` (glasses: `fit_glasses.py`), tidied by `drop_spikes.py` where cloth
+stands off the shoulders once the arms are down, and checked in the app's relaxed stance with
+`garment_views.py`. One modelled with its sleeves, arms down or half down, is fitted with
+`--pose relaxed`: bound to the body standing as the app shows it (the build carries it back to
+the T-pose exactly, `garments.carry_back`), so its shoulders, sleeves and hems stay as modelled.
+`tighten.py` draws a roomy jacket's sleeves and shoulders in towards the arms. Each pack keeps the exact command for each of its garments in a local
+`RECIPES.md` beside them. Refit them all whenever the T-pose body changes.
+
 ## Run it for the team
 
-Double-click **`start-studio.cmd`**, or run it from a terminal. Then open:
+Start it with **`--dev`** (`start-studio.cmd --dev`) for the team's tools: the
+testing studio at `/studio`, the review page, the gallery of every build, the
+uploaded photos and the people lineup. Without `--dev` none of them is served.
 
-```
-http://localhost:8777
-```
-
-Drop a photo on the page and the avatar appears next to it, orbitable. Everything
+In the studio, drop a photo on the page and the avatar appears next to it, orbitable. Everything
 generated stays in the gallery at the bottom, so the team can compare runs. Each
 card is a render of the avatar itself, badged `full body` or `face only`, so you
 can see at a glance what each run produced. Opening the review page with no model
@@ -100,14 +134,14 @@ ask once whether to allow Python through the firewall; allow it for the private
 network only. There is no login, so keep this on the office network and off the
 public internet.
 
-Generation takes a couple of seconds on CPU. One photo is processed at a time.
+Generation takes a few minutes on CPU. One photo is processed at a time.
 
 ## What you can download
 
 | Choice | File | Where it opens |
 |---|---|---|
 | 3D model | `.glb` (glTF 2.0 binary), rigged | Unity, Unreal, Blender, three.js, Babylon.js, Godot, most viewers |
-| 2D image | `.png`, transparent background, 900x1200 full body or 900x900 head | anything |
+| 2D picture | `.png`, 1600x2000, portrait (head and shoulders) or full body, transparent or studio background | anything |
 
 GLB is the default because it is the most widely supported 3D format and the only
 common one that carries the mesh, textures, skeleton and skin weights in a single

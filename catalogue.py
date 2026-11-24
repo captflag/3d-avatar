@@ -36,6 +36,13 @@ def catalogue() -> dict:
     global _catalogue
     if _catalogue is None:
         _catalogue = json.loads(CATALOGUE_JSON.read_text(encoding="utf-8"))
+        # Items whose files exist only on this machine (downloads kept out of the public repo) live
+        # beside them, in the git-ignored assets folder: their entries and any looks made of them.
+        local = ASSET_DIR / "catalogue.local.json"
+        if local.exists():
+            extra = json.loads(local.read_text(encoding="utf-8"))
+            _catalogue = {**_catalogue, "items": _catalogue["items"] + extra.get("items", []),
+                          "looks": _catalogue.get("looks", []) + extra.get("looks", [])}
     return _catalogue
 
 

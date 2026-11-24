@@ -543,6 +543,21 @@ def dequantised(glb: bytes) -> bytes:
     return _pack(doc, blob)
 
 
+def t_posed(glb: bytes) -> bytes:
+    """The avatar standing in its T-pose: every bone's turn taken off, so it stands as it was built
+    (compose's `bindPose` "t"), but the upper lids' rest (compose.UPPER_LID_DROP). A file built
+    arms-down is returned as it is."""
+    doc, blob = _unpack(glb)
+    if doc["meshes"][0].get("extras", {}).get("bindPose") != "t":
+        return glb
+    joints = {j for skin in doc.get("skins", []) for j in skin["joints"]}
+    for i in joints:
+        node = doc["nodes"][i]
+        if not node.get("name", "").startswith("orbicularis"):
+            node.pop("rotation", None)
+    return _pack(doc, blob)
+
+
 def _unpack(glb: bytes) -> tuple[dict, bytearray]:
     import json
     json_len = struct.unpack_from("<I", glb, 12)[0]
@@ -561,20 +576,30 @@ def _pack(doc: dict, blob: bytearray) -> bytes:
     return struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body
 
 
-def with_hair(glb: bytes, cut: str | None, colour=None, glasses: str | None = None) -> bytes:
+def with_hair(glb: bytes, cut: str | None, colour=None, glasses: str | None = None,
+              outfit: str | None = None) -> bytes:
     """The avatar wearing one haircut: the others the file carries for the
     studio's picker (its mesh's `hairOptions`) taken out, so another engine
     does not draw them all at once, and the hair recoloured to `colour`
     (sRGB) if given. `cut` None or "bald" leaves no haircut. The same for
-    the glasses (`glassesOptions`): `glasses` the pair kept, None none."""
+    the glasses (`glassesOptions`): `glasses` the pair kept, None none. And
+    for the clothes (`outfits`, compose's looks): `outfit` the look kept, its
+    skin cut-out put into the body's texture; None or unknown, the one worn."""
     doc, blob = _unpack(glb)
     mesh = doc["meshes"][0]
     extras = mesh.get("extras", {})
+    outfits = extras.get("outfits") or {}
+    outfit = outfit if outfit in outfits else extras.get("outfit")
+    pieces = {piece for wear in outfits.values() for piece in wear}
+    wearing = set(outfits.get(outfit, []))
     cuts = set(extras.get("hairOptions", [])) | ({extras["hair"]} if extras.get("hair") else set())
     pairs = set(extras.get("glassesOptions", []))
     name = lambda primitive: doc["materials"][primitive["material"]].get("name")
     mesh["primitives"] = [pr for pr in mesh["primitives"]
-                          if (name(pr) not in cuts or name(pr) == cut) and (name(pr) not in pairs or name(pr) == glasses)]
+                          if (name(pr) not in cuts or name(pr) == cut) and (name(pr) not in pairs or name(pr) == glasses)
+                          and (name(pr) not in pieces or name(pr) in wearing)
+                          # the built cut's cap under its cards (compose) goes with it
+                          and not (name(pr) == "scalp_cap" and cut != extras.get("hair"))]
     if colour is not None:
         for primitive in mesh["primitives"]:
             if name(primitive) == cut:
@@ -584,8 +609,51 @@ def with_hair(glb: bytes, cut: str | None, colour=None, glasses: str | None = No
                 if "KHR_materials_specular" in material.get("extensions", {}):
                     material["extensions"]["KHR_materials_specular"]["specularColorFactor"] = \
                         specular_hue(hair_factor(colour))
-    mesh["extras"] = {**extras, "hair": cut if cut in cuts else None, "hairOptions": [], "glassesOptions": []}
+    for material in doc["materials"]:
+        more = material.get("extras", {})
+        if f"{outfit}.maskTexture" in more and "wholeTexture" in more:
+            # Another look than the one worn: the skin whole, cut where that look covers it.
+            skin = _image_of(doc, blob, more["wholeTexture"]).convert("RGB")
+            skin.putalpha(_image_of(doc, blob, more[f"{outfit}.maskTexture"]).convert("L").resize(skin.size))
+            material["pbrMetallicRoughness"]["baseColorTexture"]["index"] = _add_image(doc, blob, skin)
+            material["alphaMode"], material["alphaCutoff"] = "MASK", 0.5
+        if "plainTexture" in more and cut != extras.get("hair"):
+            # Another cut than the built one, or none: the head without its painted hairline (compose).
+            material["pbrMetallicRoughness"]["baseColorTexture"]["index"] = more["plainTexture"]
+        # The studio's other paints are bare texture numbers that _compact cannot renumber: dropped.
+        if more:
+            material["extras"] = {k: v for k, v in more.items() if not k.endswith("Texture")}
+    kept = {name(pr) for pr in mesh["primitives"]}
+    # Credits (compose.credits_for) for what the file still holds: the cuts, pairs and looks dropped go too.
+    credits = [c for c in extras.get("credits", []) if c["id"] in kept]
+    mesh["extras"] = {**extras, "hair": cut if cut in cuts else None, "hairOptions": [], "glassesOptions": [],
+                      "outfits": {}, "outfit": outfit, "credits": credits}
+    if credits:
+        doc.setdefault("asset", {})["copyright"] = "; ".join(f"{c['label']}: {c['licence']}" for c in credits)
     return _pack(*_compact(doc, blob))
+
+
+def _image_of(doc: dict, blob: bytearray, texture: int):
+    """The PIL image texture `texture` of an unpacked file shows."""
+    import io
+    from PIL import Image
+    view = doc["bufferViews"][doc["images"][doc["textures"][texture]["source"]]["bufferView"]]
+    start = view.get("byteOffset", 0)
+    return Image.open(io.BytesIO(bytes(blob[start:start + view["byteLength"]])))
+
+
+def _add_image(doc: dict, blob: bytearray, image) -> int:
+    """`image` added to an unpacked file as a PNG texture, sampled as its first texture is; its index."""
+    import io
+    data = io.BytesIO()
+    image.save(data, "PNG")
+    blob.extend(b"\0" * (-len(blob) % 4))
+    doc["bufferViews"].append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(data.getvalue())})
+    blob.extend(data.getvalue())
+    doc.setdefault("images", []).append({"bufferView": len(doc["bufferViews"]) - 1, "mimeType": "image/png"})
+    sampler = (doc.get("textures") or [{}])[0].get("sampler")
+    doc.setdefault("textures", []).append({"source": len(doc["images"]) - 1, **({} if sampler is None else {"sampler": sampler})})
+    return len(doc["textures"]) - 1
 
 
 def _compact(doc: dict, blob: bytearray) -> tuple[dict, bytearray]:
