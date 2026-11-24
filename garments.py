@@ -1880,18 +1880,34 @@ SHADOW_RAYS = ((0.0, 1.0, 0.0), (0.0, 0.7, 0.7), (0.6, 0.7, 0.4), (-0.6, 0.7, 0.
 
 
 def _ray_hits(origins: np.ndarray, directions: np.ndarray, tris: np.ndarray, reach: float) -> np.ndarray:
-    """How far along each ray the nearest of the triangles is, inf past `reach` (Moller-Trumbore, in chunks)."""
-    a, e1, e2 = tris[:, 0], tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
+    """How far along each ray the nearest of the triangles is, inf past `reach` (Moller-Trumbore, in chunks).
+
+    Rays are taken in chunks of neighbours (sorted by the cell of side `reach` they start in), each against
+    only the triangles whose bounds come within its own bounds grown by how far its rays reach: no triangle
+    left out can be hit inside `reach`, so the answer is the brute force's (all against all took 37% of a
+    build, mostly over the hair's scalp layers and shadows)."""
     out = np.full(len(origins), np.inf)
-    for k in range(0, len(origins), 32):
-        o, d = origins[k:k + 32, None, :], directions[k:k + 32, None, :]
+    if not len(origins) or not len(tris):
+        return out
+    lo_t, hi_t = tris.min(axis=1), tris.max(axis=1)
+    span = reach * np.linalg.norm(directions, axis=1).max()
+    order = np.lexsort(np.floor(origins / max(span, 1e-9)).T[::-1])
+    for k in range(0, len(order), 32):
+        idx = order[k:k + 32]
+        o_all = origins[idx]
+        near = np.flatnonzero(((hi_t >= o_all.min(0) - span) & (lo_t <= o_all.max(0) + span)).all(axis=1))
+        if not len(near):
+            continue
+        t_ = tris[near]
+        a, e1, e2 = t_[:, 0], t_[:, 1] - t_[:, 0], t_[:, 2] - t_[:, 0]
+        o, d = o_all[:, None, :], directions[idx][:, None, :]
         pv = np.cross(d, e2[None]); det = (e1[None] * pv).sum(-1)
         with np.errstate(divide="ignore", invalid="ignore"):
             inv = 1.0 / det
             tv = o - a[None]; u = (tv * pv).sum(-1) * inv
             qv = np.cross(tv, e1[None]); v = (d * qv).sum(-1) * inv; t = (e2[None] * qv).sum(-1) * inv
             hit = (np.abs(det) > 1e-12) & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0) & (t < reach)
-        out[k:k + 32] = np.where(hit, t, np.inf).min(axis=1)
+        out[idx] = np.where(hit, t, np.inf).min(axis=1)
     return out
 
 

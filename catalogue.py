@@ -311,19 +311,11 @@ def build_item(item: dict, colour=None, vertices: np.ndarray | None = None) -> t
                       item.get("offset", 0.0), y_min, y_max, vertices, hairline)
 
 
-def nearest_distance(points: np.ndarray, targets: np.ndarray, chunk: int = 2048) -> np.ndarray:
-    """Distance from each point to the closest target vertex.
-
-    Brute force in numpy chunks. ~13k points against ~3k vertices is fast enough
-    and keeps scipy out of the dependency list.
-    ponytail: brute force, swap for a KD-tree if the catalogue gets big.
-    """
-    out = np.empty(len(points), dtype=np.float64)
-    for start in range(0, len(points), chunk):
-        block = points[start:start + chunk]
-        d = np.linalg.norm(block[:, None, :] - targets[None, :, :], axis=2)
-        out[start:start + chunk] = d.min(axis=1)
-    return out
+def nearest_distance(points: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    """Distance from each point to the closest target vertex (a KD-tree: brute force, 13k points against
+    every look's garments, took 8% of a build)."""
+    from scipy.spatial import cKDTree
+    return cKDTree(targets).query(points)[0]
 
 
 def coverage_alpha(points: np.ndarray, covers: list[trimesh.Trimesh],
