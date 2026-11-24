@@ -1729,6 +1729,10 @@ def check_review_fixes():
         # Leather has a gloss instead (compose's `leather`): the jacket look rides in every man's file now.
         cloth = [m for m in gltf.materials if m.name.startswith("outfit") and not items_by_id()[m.name].get("leather")]
         assert cloth and all("KHR_materials_sheen" in m.extensions for m in cloth), "cloth has no sheen"
+        # Every garment marked for the viewer's cloth gain (scene-setup SHADING.cloth), the skin not.
+        worn = [m for m in gltf.materials if m.name.startswith(("outfit", "shoes"))]
+        assert worn and all((m.extras or {}).get("garment") for m in worn), "a garment is not marked for the cloth gain"
+        assert not any((gltf.materials[names.index(p)].extras or {}).get("garment") for p in ("head", "body")), "skin marked as cloth"
         # Strands catch a band of light; the made curly cut's coils have relief only.
         hair = [m for m in gltf.materials if m.name.startswith("hair_") and m.alphaMode != "BLEND"]
         # And each cut's shadow on the skin comes with it: black, blended, no highlight.
@@ -2040,6 +2044,36 @@ def check_stubble():
     print(f"ok  stubble: grain {hair.std():.1f} over the beard at its own average, none on a shaven face")
 
 
+def check_standing_fit():
+    """A garment bound standing (MHCLO `pose relaxed`, fit_garment --pose): carried back to the T-pose
+    (garments.carry_back) and skinned into the stance again, it lands where it was bound, to the micron."""
+    import shutil, tempfile, morph, compose
+    from garments import carry_back, deform, load_mhclo, mhclo_weights, skinning_matrices
+    item = items_by_id()["outfit_jacket_jeans"]
+    source = HERE / "assets" / item["mhclo"]
+    if not source.exists():
+        print("skip standing fit: outfit_jacket_jeans missing (python fetch_assets.py)")
+        return
+    base, groups = load_base()
+    T, back = morph.t_pose_body(base, "male")
+    skeleton = load_skeleton(T); joints, weights = weight_table(skeleton, len(T))
+    matrices = skinning_matrices(skeleton, compose.standing(T, groups["body"], skeleton, joints, weights, back))
+    posed = deform(T, joints, weights, matrices)
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in source.parent.glob(source.stem + ".*"):
+            shutil.copy(f, tmp)
+        clo = pathlib.Path(tmp) / source.name
+        clo.write_text(clo.read_text(encoding="utf-8").replace("verts 0", "pose relaxed\nverts 0", 1), encoding="utf-8")
+        mesh = load_mhclo(clo, T)
+        assert mesh.metadata["pose"] == "relaxed", "the MHCLO's pose line not read"
+        target = np.asarray(load_mhclo(clo, posed).vertices)
+    mesh = carry_back(mesh, T, posed, joints, weights, matrices)
+    j, w = mhclo_weights(mesh.metadata["mhclo_idx"], mesh.metadata["mhclo_blend"], joints, weights, len(matrices))
+    error = np.abs(deform(np.asarray(mesh.vertices), j.astype(int), w, matrices) - target).max()
+    assert error < 1e-6, f"a standing garment comes back {error:.2e} off where it was bound"
+    print(f"ok standing fit: back where it was bound to {error:.1e}")
+
+
 def check_ears():
     """Hair round the ears (garments.around_ears): a short cut leaves no hair over an ear's outer face,
     side-on; a bob hangs over it with nothing of the ear in front of the hair."""
@@ -2193,6 +2227,7 @@ if __name__ == "__main__":
         check_style_paint()
         check_texture_palette()
         check_ears()
+        check_standing_fit()
         __import__("lineup").check()
     except AssertionError as err:
         print(f"FAIL  {err}", file=sys.stderr)

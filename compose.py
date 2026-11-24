@@ -841,6 +841,18 @@ def carried(pose: dict, skeleton, back: dict | None) -> dict:
     return out
 
 
+def standing(vertices, body_faces, skeleton, joints, weights, back, pose: str = "relaxed") -> dict:
+    """The stance a file stands in: `pose` (POSES) with the arms swung clear of this body's hips
+    (arms_clear, on its own skin), carried to the T-pose rig; "t" keeps the T-pose."""
+    if pose == "t":
+        return {name: q for name, q in rest_pose().items() if name.startswith("orbicularis")}
+    from types import SimpleNamespace
+    skin = np.unique(body_faces)
+    body = SimpleNamespace(vertices=vertices[skin], joints=joints[skin], weights=weights[skin],
+                           normals=trimesh.Trimesh(vertices, body_faces, process=False).vertex_normals[skin])
+    return carried(arms_clear(POSES[pose](), skeleton, body, back=back), skeleton, back)
+
+
 def hairline_for(face: trimesh.Trimesh, vertices: np.ndarray, groups: dict, lift: float = 0.0):
     """Where the hair stops, as a height that varies around the head.
 
@@ -1457,6 +1469,22 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     if tooth is not None:
         outfit = [{**i, "tooth_colour": [int(c) for c in tooth]} if i["category"] == "teeth" else i for i in outfit]
 
+    # The stance the file stands in, set now: clothes fitted standing (fit_garment --pose relaxed) are built
+    # on the body posed so and carried back to the T-pose by the inverse of the very skinning that poses them
+    # (mhclo_weights, these matrices), so the viewer shows them exactly as fitted. The arms are swung clear
+    # of this body's hips (arms_clear) on its own skin.
+    stand_skeleton = load_skeleton(vertices)
+    stand_joints, stand_weights = weight_table(stand_skeleton, len(vertices))
+    stance = standing(vertices, groups["body"], stand_skeleton, stand_joints, stand_weights, t_back, pose)
+    stance_matrices = garments.skinning_matrices(stand_skeleton, stance)
+    standing_vertices = garments.deform(vertices, stand_joints, stand_weights, stance_matrices)
+
+    def stood(mesh):
+        """A garment bound standing, put on this body standing and carried back to the T-pose."""
+        if mesh.metadata.get("pose") != "relaxed" or pose == "t":
+            return mesh
+        return garments.carry_back(mesh, vertices, standing_vertices, stand_joints, stand_weights, stance_matrices)
+
     worn, hair_rgb, curve, hair_comb = [], None, None, None
     brow_depth = facetexture.brow_depth(photo_rgb, landmarks)
     for item in outfit:
@@ -1482,7 +1510,7 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # In grey, its colour the material's (skinned_glb.HAIR_GREY), so the
             # studio's picker can recolour it.
             tint, colour = colour, np.full(3, skinned_glb.HAIR_GREY)
-        mesh = build_item(item, colour, vertices)
+        mesh = stood(build_item(item, colour, vertices))
         mesh.metadata["tint"] = tint
         if item["category"] == "hair" and "mhclo" in item and hair_reading:
             def shape_hair(cut):
@@ -1569,7 +1597,7 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     for look in looks:
         for piece in look["wear"]:
             if piece not in worn_ids and piece not in look_pieces:
-                look_pieces[piece] = build_item(items_by_id()[piece], None, vertices)
+                look_pieces[piece] = stood(build_item(items_by_id()[piece], None, vertices))
     shown_look = next((look["id"] for look in looks if set(look["wear"]) <= worn_ids), None)
 
     # Only clothing hides skin; hair sits on top of it.
@@ -1998,6 +2026,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         parts.append(rigged_part(item["id"], mesh, finish, vertices, groups,
                                  joints, weights, len(skeleton)))
         parts[-1].morphs = expression_morphs(mesh, face_shapes)
+        if item["category"] in ("outfit", "top", "bottom", "shoes"):
+            parts[-1].material_extras["garment"] = True      # the viewer's cloth gain (scene-setup SHADING.cloth)
         if item["category"] in ("outfit", "top", "bottom"):
             # Cloth scatters light at grazing angles: a soft rim along folds
             # and edges that plain roughness does not give (KHR_materials_sheen).
@@ -2097,11 +2127,8 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             normal_texture=skin_normals, normal_scale=0.6,
         ))
 
-    # The arms are posed on the male base body; on a fuller figure they are
-    # swung out until the hands clear the hips.
-    body_part = next(p for p in parts if p.name == "body")
-    stance = ({name: q for name, q in rest_pose().items() if name.startswith("orbicularis")} if pose == "t" else
-              carried(arms_clear(POSES[pose](), skeleton, body_part, back=t_back), skeleton, t_back))
+    # The stance set before the clothes were built (stood), the arms swung clear of the hips there: the
+    # clothes fitted standing were carried back by it.
     skinned_glb.export(parts, skeleton, out_path, pose=stance,
                        morph_names=morph.ARKIT_NAMES + ["photoMouth", "stylize"],
                        expression=photo_face,

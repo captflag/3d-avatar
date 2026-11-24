@@ -228,7 +228,7 @@ def load_mhclo(path: pathlib.Path, vertices: np.ndarray) -> trimesh.Trimesh:
     glTF allows one per vertex), its material file, and the body vertices its
     author marked as hidden underneath it.
     """
-    obj_file, material, scales, refs, hidden = None, None, {}, [], []
+    obj_file, material, scales, refs, hidden, pose = None, None, {}, [], [], None
     section = None
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -254,6 +254,8 @@ def load_mhclo(path: pathlib.Path, vertices: np.ndarray) -> trimesh.Trimesh:
             obj_file = parts[1]
         elif parts[0] == "material":
             material = parts[1]
+        elif parts[0] == "pose":                 # bound to the body standing so (fit_garment --pose)
+            pose = parts[1]
         elif parts[0] in ("x_scale", "y_scale", "z_scale"):
             scales[parts[0][0]] = (int(parts[1]), int(parts[2]), float(parts[3]))
 
@@ -298,6 +300,7 @@ def load_mhclo(path: pathlib.Path, vertices: np.ndarray) -> trimesh.Trimesh:
     mesh.metadata["uv"] = uv
     mesh.metadata["material"] = path.parent / material if material else None
     mesh.metadata["hides"] = _ranges(hidden)
+    mesh.metadata["pose"] = pose                 # None: the T-pose, as `vertices` stand
     return mesh
 
 
@@ -419,6 +422,20 @@ def mhclo_weights(idx: np.ndarray, blend: np.ndarray, joints: np.ndarray,
     top_w = np.take_along_axis(dense, top, axis=1)
     top_w /= np.maximum(top_w.sum(axis=1, keepdims=True), 1e-12)
     return top.astype(np.uint16), top_w.astype(np.float32)
+
+
+def carry_back(mesh: trimesh.Trimesh, vertices: np.ndarray, posed: np.ndarray, joints: np.ndarray,
+               weights: np.ndarray, matrices: np.ndarray) -> trimesh.Trimesh:
+    """An MHCLO garment bound to the body standing (its `pose`, fit_garment --pose): built on `posed`
+    (the body skinned by `matrices`) and carried back to `vertices` by the inverse of its own skinning
+    (mhclo_weights), so skinned into that stance again it is exactly where it was fitted. `mesh` as
+    load_mhclo built it on `vertices`."""
+    idx, blend = mesh.metadata["mhclo_idx"], mesh.metadata["mhclo_blend"]
+    on_body = np.asarray(mesh.vertices) + np.einsum("nk,nkd->nd", blend, posed[idx] - vertices[idx])
+    j, w = mhclo_weights(idx, blend, joints, weights, len(matrices))
+    carry = np.einsum("nk,nkij->nij", w.astype(np.float64), matrices[j.astype(np.int64)])
+    mesh.vertices = np.einsum("nij,nj->ni", np.linalg.inv(carry), np.c_[on_body, np.ones(len(on_body))])[:, :3]
+    return mesh
 
 
 def make_test_vest(out_path: pathlib.Path | None = None) -> pathlib.Path:

@@ -6,7 +6,9 @@ clothes asset (OBJ + MHCLO + MHMAT + textures), so it reshapes to every person l
                           [--arms DEG] [--scale F] [--subdivide N] [--legs] [--hem Y]
     Environment switches: FIT_NOSEG=1 short or no sleeves (no sleeve/torso split); FIT_TORSO_BIND=1
     bind to the torso's skin alone (sleeveless); FIT_TEAR=999 no cutting of stretched triangles;
-    FIT_GRID=1 print the best arm fits; FIT_DEBUG=path save the intermediate arrays.
+    FIT_GRID=1 print the best arm fits; FIT_DEBUG=path save the intermediate arrays; FIT_BAND, FIT_YOKE
+    how far the sleeve's share and its centring fade into the body (shares of the arm, 0.08 and 0.25);
+    FIT_UP how far above the collarbone a top is matched (a share of height, 0.02; a suit 0.05).
     Each downloaded pack keeps its garments' settings beside them (assets/community_packs/<pack>/RECIPES.md,
     local). Check a fit in the relaxed stance with garment_views.py.
 
@@ -33,6 +35,7 @@ ap.add_argument("--hem", type=float, default=None, help="cut straight across at 
 ap.add_argument("--legs", action="store_true", help="trousers: also fit our legs' spread to the garment's legs")
 ap.add_argument("--arms", type=float, default=None, help="the garment's arm angle below horizontal (elbows still searched) instead of searching it (a skirt wider than the chest misleads the search)")
 ap.add_argument("--clear", type=float, default=0.02, help="clearance off the skin, decimetres")
+ap.add_argument("--pose", default="t", choices=["t", "relaxed"], help="bind to the body in this pose: relaxed, the app's standing pose, keeps a garment modelled with its arms down as it was (compose builds it there)")
 args = ap.parse_args()
 out = pathlib.Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
@@ -82,8 +85,9 @@ hip_y = float(T[np.unique(groups["joint-pelvis"]) if "joint-pelvis" in groups el
 # A top's body is matched from the hips to the collarbone, not up the neck: matched to the chin, a crop
 # top (little cloth below the chest) slid up until its neckline sat on the chin. Collars still rise past it.
 clav_y = float(T[np.unique(groups["joint-l-clavicle"]), 1].mean())
-part = {"top": (hip_y - 0.05 * H, clav_y + 0.02 * H), "bottom": (low + 0.05 * H, hip_y + 0.12 * H),
-        "shoes": (low - 0.01, low + 0.08 * H), "full": (low + 0.05 * H, clav_y + 0.02 * H),
+up = float(os.environ.get("FIT_UP", 0.02)) * H                    # FIT_UP: reach above the collarbone, a share of height
+part = {"top": (hip_y - 0.05 * H, clav_y + up), "bottom": (low + 0.05 * H, hip_y + 0.12 * H),
+        "shoes": (low - 0.01, low + 0.08 * H), "full": (low + 0.05 * H, clav_y + up),
         # A skirt matched from the hips to the upper thigh: against the legs to the ankle, a mini came out
         # 55 cm long, past the knee.
         "skirt": (hip_y - 0.15 * H, hip_y + 0.08 * H)}[args.kind]
@@ -235,6 +239,8 @@ pn = np.asarray(trimesh.Trimesh(P, body_faces, process=False).vertex_normals)
 # The garment welded by position (texture seams split its vertices), for walking over its surface.
 _, wid = np.unique(np.round(X / 1e-3).astype(np.int64), axis=0, return_inverse=True); wid = wid.ravel()
 nw = wid.max() + 1
+# Exactly one point: a texture seam's copies, for `weld` (within a millimetre took in distinct layers too).
+_, sid = np.unique(X, axis=0, return_inverse=True); sid = sid.ravel(); ns = sid.max() + 1
 E = np.unique(np.sort(np.vstack([wid[F[:, [0, 1]]], wid[F[:, [1, 2]]], wid[F[:, [2, 0]]]]), 1), axis=0)
 E = E[E[:, 0] != E[:, 1]]
 deg = np.maximum(np.bincount(E.ravel(), minlength=nw), 1)
@@ -327,11 +333,12 @@ gj, gw = garments.transfer_weights(X, P[body_idx], joints[body_idx], weights[bod
 def qmul(a, b):
     w1, v1, w2, v2 = a[..., :1], a[..., 1:], b[..., :1], b[..., 1:]
     return np.concatenate([w1 * w2 - (v1 * v2).sum(-1, keepdims=True), w1 * v2 + w2 * v1 + np.cross(v1, v2)], -1)
-def rigid_blend(j_, w_):
+def rigid_blend(j_, w_, mats=None):
     """Each vertex's bones blended as dual quaternions: a rigid turn part-way between them, where
     the matrices' linear blend shrinks towards the joint (and its inverse throws points far out)."""
-    q = Rotation.from_matrix(posed_m[:, :3, :3]).as_quat()[:, [3, 0, 1, 2]]
-    d = 0.5 * qmul(np.c_[np.zeros(len(q)), posed_m[:, :3, 3]], q)
+    mats = posed_m if mats is None else mats
+    q = Rotation.from_matrix(mats[:, :3, :3]).as_quat()[:, [3, 0, 1, 2]]
+    d = 0.5 * qmul(np.c_[np.zeros(len(q)), mats[:, :3, 3]], q)
     qs, ds = q[j_], d[j_]; sgn = np.sign((qs * qs[:, :1]).sum(-1, keepdims=True)); sgn[sgn == 0] = 1
     Q = (w_[..., None] * sgn * qs).sum(1); D = (w_[..., None] * sgn * ds).sum(1)
     n = np.linalg.norm(Q, axis=1, keepdims=True); Q, D = Q / n, D / n
@@ -346,11 +353,21 @@ if sleeve_a.any():
     rest_j, rest_w = gj, np.where(hand[gj], 0.0, gw)
     lost = rest_w.sum(1) < 0.5
     rest_j, rest_w = np.where(lost[:, None], jt, rest_j), np.where(lost[:, None], wt, rest_w / np.maximum(rest_w.sum(1, keepdims=True), 1e-9))
-    M = rigid_blend(np.c_[ja, rest_j], np.c_[sleeve_a[:, None] * wa, (1 - sleeve_a[:, None]) * rest_w])
+    blend_jw = (np.c_[ja, rest_j], np.c_[sleeve_a[:, None] * wa, (1 - sleeve_a[:, None]) * rest_w])
 else:
-    M = rigid_blend(gj, gw)                                         # each vertex's blended bone transform
+    blend_jw = (gj, gw)
+M = rigid_blend(*blend_jw)                                          # each vertex's blended bone transform
 Xh = np.c_[X, np.ones(len(X))]
 XT = np.einsum("nij,nj->ni", np.linalg.inv(M), Xh)[:, :3]
+Bd = T                                                              # the body it is lifted off and bound to
+def weld(Y):
+    """Each point's texture-seam copies (`sid`) put where the copy furthest off the skin is: at their
+    mean, a seam whose copies had drifted 2.6 cm apart across the suit's shoulder was tucked in under the
+    lapel, and skin showed there."""
+    far = cKDTree(Bd[body_idx]).query(Y)[0]; pick = np.zeros(ns, int)
+    order = np.argsort(far); pick[sid[order]] = order                  # repeated index: the last (furthest) wins
+    return Y[pick[sid]]
+XT = weld(XT)                                                       # unposed apart by their own weights; see below
 
 if os.environ.get('FIT_DEBUG'): np.savez(os.environ['FIT_DEBUG'], X=X, XT=XT, gj=gj, gw=gw, gn=gn, sa=sleeve_a, names=np.array(skel.names), P=P, T=T)
 
@@ -382,11 +399,22 @@ if sleeve_a.any():
         XT[g] = axis_pt + (XT[g] - axis_pt) * f[:, None]
         print(f"sleeve {side}: {np.mean(f > 1.001):.0%} of it lifted out from the arm's axis")
 
+# --- --pose relaxed: carried on into the app's standing pose (compose.relaxed_pose, the arms swung clear of
+# the hips) by the same blend of bones that unposed it, so a garment modelled with its arms down turns only
+# the few degrees between its pose and the app's; then lifted off and bound to the body standing so. Stored
+# for the T-pose, the round trip up to it and down again in the app (two blends at the shoulder, the second
+# by other weights) squared the shoulders, drew the sleeves up the forearm and set the hems flaring. ---
+if args.pose == "relaxed":
+    import compose
+    stance_m = garments.skinning_matrices(skel, compose.standing(T, body_faces, skel, joints, weights, back))
+    XT = np.einsum("nij,nj->ni", rigid_blend(*blend_jw, stance_m), np.c_[XT, np.ones(len(XT))])[:, :3]
+    Bd = garments.deform(T, joints, weights, stance_m)
+
 # --- off the skin: any point under it or within `clear` lifted along the skin's normal, smoothed ---
-body = trimesh.Trimesh(T, body_faces, process=False); bn = np.asarray(body.vertex_normals)
+body = trimesh.Trimesh(Bd, body_faces, process=False); bn = np.asarray(body.vertex_normals)
 for _ in range(3):
-    dist, k = cKDTree(T[body_idx]).query(XT); k = body_idx[k]
-    over = ((XT - T[k]) * bn[k]).sum(1)
+    dist, k = cKDTree(Bd[body_idx]).query(XT); k = body_idx[k]
+    over = ((XT - Bd[k]) * bn[k]).sum(1)
     need = np.where((dist < 0.5) & (over < args.clear), args.clear - over, 0.0)
     # Layers move together: each point takes the biggest lift among the cloth within `layer` of it, so
     # a shirt pushed out from under the skin carries its jacket out with it and stays beneath.
@@ -404,27 +432,35 @@ for _ in range(3):
 if sleeve_a.any():
     pull = np.clip(4 * sleeve_a * (1 - sleeve_a), 0, 1) * float(os.environ.get("FIT_PULL", 1.0))
     for _ in range(3):
-        dist, k = cKDTree(T[body_idx]).query(XT); k = body_idx[k]
-        over = ((XT - T[k]) * bn[k]).sum(1)
-        target = T[k] + 2 * args.clear * bn[k]
+        dist, k = cKDTree(Bd[body_idx]).query(XT); k = body_idx[k]
+        over = ((XT - Bd[k]) * bn[k]).sum(1)
+        target = Bd[k] + 2 * args.clear * bn[k]
         XT = XT + np.where(over > 2 * args.clear, pull, 0.0)[:, None] * (target - XT)
-        dist, k = cKDTree(T[body_idx]).query(XT); k = body_idx[k]
-        over = ((XT - T[k]) * bn[k]).sum(1)
+        dist, k = cKDTree(Bd[body_idx]).query(XT); k = body_idx[k]
+        over = ((XT - Bd[k]) * bn[k]).sum(1)
         XT = XT + np.where(over < args.clear, args.clear - over, 0.0)[:, None] * bn[k]
+
+# --- texture seams closed: a point on a seam is two vertices (one per side's texture coordinates), and
+# the steps above move each on its own (its weights, its sleeve share, its lift); on the suit they drifted
+# up to 3 cm apart and opened slits under the sleeves and at the armpits. Each point's copies are put back
+# together (`weld`), so they bind to one triangle and stay together in every pose: once unposed (so the lift off
+# the skin works on the joined cloth) and
+# again here, for what the lift's smoothing over the unwelded edges set apart. ---
+XT = weld(XT)
 
 # --- bound to the T-pose body: nearest triangle's three vertices, barycentric, and the offset ---
 # FIT_TORSO_BIND: a sleeveless top bound to the torso's skin alone. Bound to the nearest skin anywhere,
 # its armholes' edges took the upper arm's and stood up off the shoulders once the arms came down.
 bind_faces = body_faces[(arm_share[body_faces] < 0.2).all(1)] if os.environ.get("FIT_TORSO_BIND") else body_faces
-tri_c = T[bind_faces].mean(1); _, fi = cKDTree(tri_c).query(XT)
+tri_c = Bd[bind_faces].mean(1); _, fi = cKDTree(tri_c).query(XT)
 refs = bind_faces[fi]
-A, B, C = T[refs[:, 0]], T[refs[:, 1]], T[refs[:, 2]]
+A, B, C = Bd[refs[:, 0]], Bd[refs[:, 1]], Bd[refs[:, 2]]
 v0, v1 = B - A, C - A; v2 = XT - A
 d00, d01, d11 = (v0 * v0).sum(1), (v0 * v1).sum(1), (v1 * v1).sum(1); d20, d21 = (v2 * v0).sum(1), (v2 * v1).sum(1)
 den = np.maximum(d00 * d11 - d01 * d01, 1e-12)
 bw = np.clip(np.c_[1 - (d11 * d20 - d01 * d21) / den - (d00 * d21 - d01 * d20) / den, (d11 * d20 - d01 * d21) / den, (d00 * d21 - d01 * d20) / den], 0, 1)
 bw /= bw.sum(1, keepdims=True)
-offset = XT - (bw[:, :, None] * T[refs]).sum(1)
+offset = XT - (bw[:, :, None] * Bd[refs]).sum(1)
 
 # --- torn: triangles the unposing stretched (sleeves modelled fused to the torso's sides) are cut ---
 def longest(V_): return np.stack([np.linalg.norm(V_[F[:, i]] - V_[F[:, (i + 1) % 3]], axis=1) for i in range(3)], 1).max(1)
@@ -458,7 +494,8 @@ for mname in names:
         for u, w_ in UV[idx]: f.write(f"vt {u:.5f} {w_:.5f}\n")
         for tri in Fm: f.write("f " + " ".join(f"{i + 1}/{i + 1}" for i in tri) + "\n")
     with open(out / f"{tag}.mhclo", "w", encoding="utf-8") as f:
-        f.write(f"# fitted by fit_garment.py to the T-pose base body\nname {tag}\nobj_file {tag}.obj\nmaterial {tag}.mhmat\nverts 0\n")
+        f.write(f"# fitted by fit_garment.py to the base body ({'standing as in the app' if args.pose == 'relaxed' else 'T-pose'})\nname {tag}\nobj_file {tag}.obj\nmaterial {tag}.mhmat\n"
+                + ("pose relaxed\n" if args.pose == "relaxed" else "") + "verts 0\n")
         for (i, j, k), (wa, wb, wc), d in zip(refs[idx], bw[idx], offset[idx]):
             f.write(f" {i} {j} {k} {wa:.5f} {wb:.5f} {wc:.5f} {d[0]:.5f} {d[1]:.5f} {d[2]:.5f}\n")
     factor = getattr(material, "baseColorFactor", None)

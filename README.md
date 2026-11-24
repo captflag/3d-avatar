@@ -34,7 +34,10 @@ git: their items, and the looks they make up per body.
 A downloaded garment is fitted to the T-pose body and written as a MakeHuman clothes
 asset by `fit_garment.py` (glasses: `fit_glasses.py`), tidied by `drop_spikes.py` where cloth
 stands off the shoulders once the arms are down, and checked in the app's relaxed stance with
-`garment_views.py`. Each pack keeps the exact command for each of its garments in a local
+`garment_views.py`. One modelled with its sleeves, arms down or half down, is fitted with
+`--pose relaxed`: bound to the body standing as the app shows it (the build carries it back to
+the T-pose exactly, `garments.carry_back`), so its shoulders, sleeves and hems stay as modelled.
+`tighten.py` draws a roomy jacket's sleeves and shoulders in towards the arms. Each pack keeps the exact command for each of its garments in a local
 `RECIPES.md` beside them. Refit them all whenever the T-pose body changes.
 
 ## Run it for the team
