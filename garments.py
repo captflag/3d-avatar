@@ -1730,8 +1730,9 @@ def curl_cap(cap: trimesh.Trimesh) -> trimesh.Trimesh:
 
 # Leather (the jacket outfit's top): shinier than cloth, which an outfit's
 # one material cannot be alone, as the jeans share it. Roughness in a texture,
-# the top's pieces at LEATHER_ROUGHNESS[0], the rest at [1].
-LEATHER_ROUGHNESS = (0.4, 0.85)
+# the top's pieces at LEATHER_ROUGHNESS[0], the rest at [1]. At 0.4 the leather was a mirror: the
+# studio's box lights showed in it as squares down the back, and it rippled like wet vinyl.
+LEATHER_ROUGHNESS = (0.55, 0.85)
 
 
 def leather_roughness(mesh: trimesh.Trimesh, vertices: np.ndarray, groups: dict, size: int = 1024):
@@ -2068,3 +2069,70 @@ def _hair_shadow(vertices, normals, body_faces, head, is_ear, covered, hair_tris
     faces = faces[shaded[faces].all(axis=1)]
     keep = np.unique(faces)
     return keep, np.searchsorted(keep, faces), strength[keep]
+
+
+# The cloth round each armpit, relaxed in the stance the file stands in (relax_underarms): fully within
+# PIT_INNER of the armpit, fading out by PIT_OUTER (mesh units, dm); PIT_ROUNDS of Taubin smoothing; and
+# kept PIT_CLEAR off the skin.
+PIT_INNER, PIT_OUTER, PIT_ROUNDS, PIT_CLEAR = 1.2, 2.0, 60, 0.04
+PIT_WELD = 0.01
+
+
+def armpits(skeleton, matrices: np.ndarray) -> np.ndarray:
+    """Each armpit in the stance `matrices` pose: a tenth of the arm's length below and in from the
+    shoulder joint (the head of upperarm01)."""
+    out = []
+    for side in ("L", "R"):
+        i, j = skeleton.names.index(f"upperarm01.{side}"), skeleton.names.index(f"lowerarm01.{side}")
+        head = np.append(skeleton.heads[i], 1.0)
+        shoulder = (matrices[i] @ head)[:3]
+        elbow = (matrices[j] @ np.append(skeleton.heads[j], 1.0))[:3]
+        down = elbow - shoulder
+        out.append(shoulder + 0.35 * down - np.array([0.25 * np.sign(shoulder[0]) * np.linalg.norm(down), 0, 0]) * 0.3)
+    return np.array(out)
+
+
+def relax_underarms(posed: np.ndarray, faces: np.ndarray, pits: np.ndarray, skin: np.ndarray,
+                    skin_normals: np.ndarray) -> np.ndarray:
+    """A garment's vertices in a standing stance with the cloth round the armpits smoothed out.
+
+    Fitted on arms out and posed arms down, or fitted standing, the cloth between arm and side is
+    squeezed: it crumpled into shards that stood out of the armpits front and back (the suit, the
+    hooded jacket, the overcoat). Taubin smoothing (no shrinking) over the garment as one surface (its
+    pieces' seam vertices welded by position, so seams stay closed), weighted to the armpits, then any
+    of it pushed back out of the skin (`skin`, `skin_normals`: the body posed alike)."""
+    import scipy.sparse as sp
+    from scipy.spatial import cKDTree
+    from scipy.sparse.csgraph import connected_components
+    v = np.asarray(posed, dtype=np.float64)
+    # Seam vertices within PIT_WELD of each other are one: welded at exact positions the hooded jacket's
+    # sleeve and body pieces, a fraction of a millimetre apart, were smoothed apart and the armpits opened.
+    pairs = cKDTree(v).query_pairs(PIT_WELD, output_type="ndarray")
+    _, inverse = connected_components(sp.coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])),
+                                                    shape=(len(v), len(v))), directed=False)
+    w = np.zeros((inverse.max() + 1, 3)); np.add.at(w, inverse, v)
+    w /= np.bincount(inverse)[:, None]
+    d = np.min([np.linalg.norm(w - p, axis=1) for p in pits], axis=0)
+    weight = np.clip((PIT_OUTER - d) / (PIT_OUTER - PIT_INNER), 0.0, 1.0)
+    if not (weight > 0).any():
+        return v
+    f = inverse[np.asarray(faces)]
+    e = np.vstack([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    e = e[e[:, 0] != e[:, 1]]
+    n = len(w)
+    adj = sp.coo_matrix((np.ones(2 * len(e)), (np.r_[e[:, 0], e[:, 1]], np.r_[e[:, 1], e[:, 0]])), shape=(n, n)).tocsr()
+    adj.data[:] = 1.0
+    deg = np.maximum(np.asarray(adj.sum(axis=1)).ravel(), 1.0)
+    k = weight[:, None]
+    near = weight > 0
+    tree = cKDTree(skin)
+    for _ in range(PIT_ROUNDS):
+        for step in (0.5, -0.53):
+            w = w + step * k * (adj @ w / deg[:, None] - w)
+        # Kept out of the skin each round, not only at the end: smoothed first, the crumpled cloth
+        # was drawn into the side and the armpit's skin showed through it.
+        dist, idx = tree.query(w[near])
+        depth = ((w[near] - skin[idx]) * skin_normals[idx]).sum(axis=1)
+        w[near] += (np.clip(PIT_CLEAR - depth, 0.0, None) * (dist < 0.3))[:, None] * skin_normals[idx]
+    return np.where((weight > 0)[inverse][:, None], w[inverse], v)      # the rest exactly as it was
+

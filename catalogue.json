@@ -209,7 +209,8 @@
         30,
         34
       ],
-      "roughness": 0.6,
+      "roughness": 0.8,
+      "_why_roughness": "0.6 with cloth's sheen read as latex; opaque tights are matte",
       "licence": "CC0-1.0 (MakeHuman communityassets-wip; the repository states every submission is CC0: github.com/makehumancommunity/communityassets-wip)"
     },
     {
@@ -283,6 +284,8 @@
     {
       "id": "outfit_jacket_jeans",
       "category": "outfit",
+      "normal_scale": 0.5,
+      "_why_normal_scale": "the cloth's wrinkle map under the leather's gloss rippled like liquid at full strength",
       "label": "Jacket and jeans",
       "_why": "A collared, zipped jacket over a shirt (the reference cartoon avatar's leather jacket); dressed as leather by `leather`.",
       "mhclo": "mh_system/clothes/male_casualsuit05/male_casualsuit05.mhclo",

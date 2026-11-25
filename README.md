@@ -40,6 +40,13 @@ the T-pose exactly, `garments.carry_back`), so its shoulders, sleeves and hems s
 `tighten.py` draws a roomy jacket's sleeves and shoulders in towards the arms. Each pack keeps the exact command for each of its garments in a local
 `RECIPES.md` beside them. Refit them all whenever the T-pose body changes.
 
+`drape.py IN.mhclo OUT_DIR --gender male` hangs a fitted garment on the standing body in Blender's
+cloth simulation (Blender runs only as a tool) and binds the result back as a new, finer MHCLO:
+seams sewn, the fit's crinkle smoothed, supports pinned (shoulders, waistband, forearms, hems,
+inner layers, small pieces), the hands and feet left out of the collider. It rejects a run whose
+cloth flies off. It suits single-layer garments; on layered or pleated ones it opened holes, so
+each draped result is checked before the catalogue points at it.
+
 ## Run it for the team
 
 Start it with **`--dev`** (`start-studio.cmd --dev`) for the team's tools: the

@@ -1703,7 +1703,11 @@ def check_review_fixes():
         # there is meant to go undrawn (compose.LIP_HIDDEN). Round the teeth.
         teeth = read(gltf.meshes[0].primitives[names.index("teeth")].attributes.POSITION, 3).mean(axis=0)
         mouth = np.linalg.norm(pos - teeth, axis=1) < 0.4
-        neck = (pos[:, 1] > collarbone + 0.15) & (np.abs(pos[:, 0]) < 0.6) & ~mouth
+        # Its front and sides (compose keeps those whole, normal z over -0.3): the back of the neck under a
+        # collar is hidden as the rest of the skin is, or the upper back came through a blouse's yoke.
+        acc = gltf.accessors[prim.attributes.NORMAL]; nv = gltf.bufferViews[acc.bufferView]
+        normal = np.frombuffer(blob[nv.byteOffset:nv.byteOffset + nv.byteLength], np.int8).reshape(-1, 4)[:, :3] / 127.0  # bytes, padded to four
+        neck = (pos[:, 1] > collarbone + 0.15) & (np.abs(pos[:, 0]) < 0.6) & ~mouth & (normal[:, 2] > -0.3)
         px = (uv[neck] * (np.array(alpha.shape[::-1]) - 1)).astype(int)
         assert neck.any() and (alpha[px[:, 1], px[:, 0]] > 127).mean() > 0.98, "neck skin was cut away"
 

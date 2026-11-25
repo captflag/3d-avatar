@@ -101,8 +101,12 @@ OPENING = ("jawOpen", "mouthLowerDown", "mouthUpperUp")
 # The shapes that part the lips alone, the teeth left together.
 LIPS_APART = ("mouthUpperUpLeft", "mouthUpperUpRight", "mouthLowerDownLeft", "mouthLowerDownRight")
 # Cloth sheen: colour (linear RGB) and roughness. At 0.35 it washed navy out
-# to slate grey.
+# to slate grey. One grey for every cloth (0.12) outshone dark ones, whose colour the viewer also
+# takes down to 0.4 (scene-setup SHADING.cloth) while leaving the sheen be: a black overcoat read as
+# vinyl and navy as satin. Now CLOTH_SHEEN_SHARE of each garment's own median colour (cloth_sheen),
+# at most the old grey.
 CLOTH_SHEEN = ((0.12, 0.12, 0.12), 0.8)
+CLOTH_SHEEN_SHARE = 0.6
 # Hair: anisotropy strength, and its direction (radians from the texture's u
 # axis, which the strands run across).
 HAIR_ANISOTROPY = (0.7, np.pi / 2)
@@ -1099,6 +1103,36 @@ def welded_normals(mesh: trimesh.Trimesh) -> np.ndarray:
     return np.asarray(welded.vertex_normals)[inverse]        # copies share one normal
 
 
+def cloth_sheen(mesh, item) -> tuple:
+    """A garment's sheen (KHR_materials_sheen colour, roughness): CLOTH_SHEEN_SHARE of its median colour
+    where its vertices' texture coordinates fall (or its own colour), in linear RGB, no more than
+    CLOTH_SHEEN's grey."""
+    texture, uv = mesh.metadata.get("texture"), mesh.metadata.get("uv")
+    if texture is not None and uv is not None:
+        rgb = np.asarray(texture.convert("RGB"))
+        h, w = rgb.shape[:2]
+        x = np.clip((np.asarray(uv)[:, 0] % 1.0) * (w - 1), 0, w - 1).astype(int)
+        y = np.clip((1.0 - np.asarray(uv)[:, 1] % 1.0) * (h - 1), 0, h - 1).astype(int)
+        colour = np.median(rgb[y, x], axis=0)
+    else:
+        colour = np.asarray(item.get("colour") or (128, 128, 128), dtype=np.float64)
+    sheen = np.minimum(CLOTH_SHEEN_SHARE * srgb_to_linear(colour) / 255.0, CLOTH_SHEEN[0])
+    return tuple(float(c) for c in sheen), CLOTH_SHEEN[1]
+
+
+def part_skin(mesh, vertices, groups, joints, weights, bone_count):
+    """A piece's joints and weights: by the base-mesh vertex it was cut from, its MHCLO binding, or
+    borrowed from the body under it (an imported one)."""
+    if "base_index" in mesh.metadata:
+        source = mesh.metadata["base_index"]
+        return joints[source], weights[source]
+    if "mhclo_idx" in mesh.metadata:
+        return garments.mhclo_weights(mesh.metadata["mhclo_idx"], mesh.metadata["mhclo_blend"],
+                                      joints, weights, bone_count)
+    return garments.weights_for(mesh, mesh.metadata.get("fit", "tight"), vertices, groups,
+                                joints, weights, bone_count)
+
+
 def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_count):
     """A catalogue piece, skinned to the rig.
 
@@ -1106,18 +1140,7 @@ def rigged_part(name, mesh, roughness, vertices, groups, joints, weights, bone_c
     from. Imported ones have no such vertices and borrow weights from the
     body underneath them instead.
     """
-    if "base_index" in mesh.metadata:
-        source = mesh.metadata["base_index"]
-        part_joints, part_weights = joints[source], weights[source]
-    elif "mhclo_idx" in mesh.metadata:
-        part_joints, part_weights = garments.mhclo_weights(
-            mesh.metadata["mhclo_idx"], mesh.metadata["mhclo_blend"],
-            joints, weights, bone_count)
-    else:
-        part_joints, part_weights = garments.weights_for(
-            mesh, mesh.metadata.get("fit", "tight"), vertices, groups,
-            joints, weights, bone_count,
-        )
+    part_joints, part_weights = part_skin(mesh, vertices, groups, joints, weights, bone_count)
     if mesh.metadata.get("texture") is not None:
         # Authored asset: its own texture, normal map and alpha cut-out.
         # No vertex colour, which glTF would multiply into the texture.
@@ -1479,11 +1502,22 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     stance_matrices = garments.skinning_matrices(stand_skeleton, stance)
     standing_vertices = garments.deform(vertices, stand_joints, stand_weights, stance_matrices)
 
-    def stood(mesh):
-        """A garment bound standing, put on this body standing and carried back to the T-pose."""
-        if mesh.metadata.get("pose") != "relaxed" or pose == "t":
-            return mesh
-        return garments.carry_back(mesh, vertices, standing_vertices, stand_joints, stand_weights, stance_matrices)
+    standing_skin = trimesh.Trimesh(standing_vertices, groups["body"], process=False)
+    pits = garments.armpits(stand_skeleton, stance_matrices)
+
+    def stood(mesh, item=None):
+        """A garment bound standing, put on this body standing and carried back to the T-pose; a top's or
+        an outfit's cloth round the armpits relaxed as it stands (garments.relax_underarms), unless its
+        catalogue `item` says `relax_underarms: false`."""
+        if mesh.metadata.get("pose") == "relaxed" and pose != "t":
+            mesh = garments.carry_back(mesh, vertices, standing_vertices, stand_joints, stand_weights, stance_matrices)
+        if item and item["category"] in ("top", "outfit") and pose != "t" and item.get("relax_underarms", True):
+            j, w = part_skin(mesh, vertices, groups, stand_joints, stand_weights, len(stance_matrices))
+            carry = np.einsum("nk,nkij->nij", np.asarray(w, dtype=np.float64), stance_matrices[np.asarray(j).astype(np.int64)])
+            on = np.einsum("nij,nj->ni", carry, np.c_[np.asarray(mesh.vertices), np.ones(len(mesh.vertices))])[:, :3]
+            on = garments.relax_underarms(on, mesh.faces, pits, standing_skin.vertices, standing_skin.vertex_normals)
+            mesh.vertices = np.einsum("nij,nj->ni", np.linalg.inv(carry), np.c_[on, np.ones(len(on))])[:, :3]
+        return mesh
 
     worn, hair_rgb, curve, hair_comb = [], None, None, None
     brow_depth = facetexture.brow_depth(photo_rgb, landmarks)
@@ -1510,7 +1544,7 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
             # In grey, its colour the material's (skinned_glb.HAIR_GREY), so the
             # studio's picker can recolour it.
             tint, colour = colour, np.full(3, skinned_glb.HAIR_GREY)
-        mesh = stood(build_item(item, colour, vertices))
+        mesh = stood(build_item(item, colour, vertices), item)
         mesh.metadata["tint"] = tint
         if item["category"] == "hair" and "mhclo" in item and hair_reading:
             def shape_hair(cut):
@@ -1590,14 +1624,30 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     # and the glasses': the pieces not already worn fitted here too, on the same body, and hidden. The worn
     # look alone shapes the skin under it (tuck_skin); each look gets its own mask of the skin it hides.
     looks = [look for look in catalogue().get("looks", []) if look.get("gender", gender) == gender
-             and all(i in items_by_id() for i in look["wear"])]
+             and all(i in items_by_id() for i in look["wear"] + ([look["shoes"]] if look.get("shoes") else []))]
+    # Each look in its own shoes (its `shoes`, else the ones worn), listed with its pieces so the
+    # viewer swaps them with the look: one pair for every look put brown casuals under the suit.
+    shoes_ids = [item["id"] for item, _ in worn if item["category"] == "shoes"]
+    looks = [{**look, "wear": look["wear"] + ([look["shoes"]] if look.get("shoes") else shoes_ids)} for look in looks]
     worn_by_id = {item["id"]: m for item, m in worn}
     worn_ids = set(worn_by_id)
     look_pieces = {}
     for look in looks:
         for piece in look["wear"]:
             if piece not in worn_ids and piece not in look_pieces:
-                look_pieces[piece] = stood(build_item(items_by_id()[piece], None, vertices))
+                look_pieces[piece] = stood(build_item(items_by_id()[piece], None, vertices), items_by_id()[piece])
+    # A look's own shoes lose their socks as the worn ones do above, when every look wearing them has
+    # trousers or tights to the ankle: dropped for the overcoat's tights, the boots' shafts went from
+    # under the graphic top's skirt too, and its shins with them.
+    def long_legs(look):
+        return any(m is not None and m.vertices[:, 1].min() < ankle + 0.3
+                   for m in (look_pieces.get(p, worn_by_id.get(p)) for p in look["wear"]
+                             if items_by_id()[p]["category"] in ("outfit", "bottom")))
+    for p in look_pieces:
+        if items_by_id()[p]["category"] == "shoes" and "mhclo" in items_by_id()[p]:
+            wearing = [look for look in looks if p in look["wear"]]
+            if wearing and all(long_legs(look) for look in wearing):
+                garments.drop_socks(look_pieces[p], ankle)
     shown_look = next((look["id"] for look in looks if set(look["wear"]) <= worn_ids), None)
 
     # Only clothing hides skin; hair sits on top of it.
@@ -1617,21 +1667,39 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
     neck = (vertices[:, 1] > collarbone + 0.05) & (np.abs(vertices[:, 0]) < 0.75)
     shoes_worn = [m for item, m in worn if item["category"] == "shoes"]
 
-    def skin_alpha_under(cloth):
-        """Per body vertex, 1 shown to 0 hidden, under the garments `cloth` (meshes) and the shoes worn."""
+    # Coverage is judged in the T-pose and in the stance the file stands in (coverage_alpha): the body and
+    # each garment posed by their own skinning, as the viewer poses them.
+    body_mesh = trimesh.Trimesh(vertices, body_faces, process=False)
+    standing_body = trimesh.Trimesh(garments.deform(vertices, stand_joints, stand_weights, stance_matrices),
+                                    body_faces, process=False)
+    posed_cloth, covered_by = {}, {}
+
+    def standing_cloth(m):
+        if id(m) not in posed_cloth:
+            j, w = part_skin(m, vertices, groups, stand_joints, stand_weights, len(stance_matrices))
+            posed_cloth[id(m)] = (m, trimesh.Trimesh(garments.deform(np.asarray(m.vertices), np.asarray(j).astype(int),
+                                                                     np.asarray(w), stance_matrices), m.faces, process=False))
+        return posed_cloth[id(m)][1]
+
+    def skin_alpha_under(cloth, shoes):
+        """Per body vertex, 1 shown to 0 hidden, under the garments `cloth` and the `shoes` (meshes)."""
         alpha = np.ones(len(vertices))
-        alpha[body_vertices_used] = coverage_alpha(vertices[body_vertices_used], cloth + shoes_worn)
-        hide_listed(alpha, cloth + shoes_worn)
-        # The neck is never cut away. A collar wraps it but never covers it from
-        # the front, and cutting it where a collar passes close behind left holes
-        # under the ears through which the collar's inside showed. Skin poking
-        # through a collar on a hard head turn is the smaller fault.
-        alpha[neck] = 1.0
+        covers = cloth + shoes
+        used = body_vertices_used
+        alpha[used] = coverage_alpha([(vertices[used], body_mesh.vertex_normals[used], covers),
+                                      (standing_body.vertices[used], standing_body.vertex_normals[used],
+                                       [standing_cloth(m) for m in covers])], cache=covered_by)
+        hide_listed(alpha, covers)
+        # The neck's front and sides are never cut away. A collar wraps the neck but never covers it from
+        # the front, and cutting it where a collar passes close behind left holes under the ears through
+        # which the collar's inside showed. Its back is decided as the rest is: kept whole too, the upper
+        # back above the collarbone came through a blouse's yoke below its collar.
+        alpha[neck & (body_mesh.vertex_normals[:, 2] > -0.3)] = 1.0
         # A foot inside a shoe is never seen, and where it is fuller than the shoe
         # it came through: a toe under the sole. Below the collar's lowest point
         # the shoe encloses the foot, so the skin there is hidden outright; the
         # distance test above kept most of it, being near the sole's open edges.
-        for m in shoes_worn:
+        for m in shoes:
             alpha[garments.enclosed_by_shoe(m, vertices)] = 0.0
         return alpha
 
@@ -1652,10 +1720,12 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
                     hides = hides[cKDTree(rim).query(vertices[hides])[0] > 0.3]
                 alpha[hides] = 0.0
 
-    skin_alpha = skin_alpha_under([m for item, m in covering if item["category"] != "shoes"])
+    skin_alpha = skin_alpha_under([m for item, m in covering if item["category"] != "shoes"], shoes_worn)
     # Each look's own, for the picker: the worn look's is skin_alpha itself.
-    look_alpha = {look["id"]: skin_alpha_under([look_pieces[p] if p in look_pieces else worn_by_id[p]
-                                                 for p in look["wear"]])
+    piece = lambda p: look_pieces[p] if p in look_pieces else worn_by_id[p]
+    is_shoe = lambda p: items_by_id()[p]["category"] == "shoes"
+    look_alpha = {look["id"]: skin_alpha_under([piece(p) for p in look["wear"] if not is_shoe(p)],
+                                               [piece(p) for p in look["wear"] if is_shoe(p)])
                   for look in looks if look["id"] != shown_look} if looks else {}
     uv_all, uv_groups = load_base_uv()
     uv_faces = uv_groups["body"]
@@ -2031,7 +2101,9 @@ def _compose(photo_path: pathlib.Path, out_path: pathlib.Path,
         if item["category"] in ("outfit", "top", "bottom"):
             # Cloth scatters light at grazing angles: a soft rim along folds
             # and edges that plain roughness does not give (KHR_materials_sheen).
-            parts[-1].sheen = CLOTH_SHEEN
+            parts[-1].sheen = cloth_sheen(mesh, item)
+        if item.get("normal_scale") is not None:
+            parts[-1].normal_scale = float(item["normal_scale"])     # the catalogue's, where its folds read too strong
         if item.get("leather"):
             # Leather has a gloss, not cloth's grazing sheen (garments.leather_roughness).
             parts[-1].sheen = None

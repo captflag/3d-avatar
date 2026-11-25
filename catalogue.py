@@ -318,34 +318,40 @@ def nearest_distance(points: np.ndarray, targets: np.ndarray) -> np.ndarray:
     return cKDTree(targets).query(points)[0]
 
 
-def coverage_alpha(points: np.ndarray, covers: list[trimesh.Trimesh],
-                   reach: float = 0.33, margin: float = 0.25, feather: float = 0.1) -> np.ndarray:
+def coverage_alpha(views: list[tuple[np.ndarray, np.ndarray, list[trimesh.Trimesh]]],
+                   margin: float = 0.25, feather: float = 0.1, out_reach: float = 0.6,
+                   in_reach: float = 0.15, cache: dict | None = None) -> np.ndarray:
     """Per body vertex, 1 where the skin shows and 0 where a garment hides it.
 
-    Replaces deleting body faces. Deletion works in whole triangles and has to
-    stop exactly at the garment's edge, so the moment an arm bends and the
-    garment and body move a little differently, a gap opens at the cuff or
-    collar with nothing behind it. Masking in the texture keeps every triangle,
-    fades smoothly, and deliberately leaves a `margin` of skin under each edge,
-    so a gap shows skin rather than a hole.
+    `views` are the same body vertices in one or more poses, each (points, outward normals, the
+    garments there). Skin is covered in a pose where a ray out along its normal meets cloth within
+    `out_reach`, or one in meets it within `in_reach` (skin poking through); hidden only where covered in
+    every pose, and `margin` or more from any skin that shows (in the first pose), so a garment's edge
+    lies over skin, never over a cut.
+
+    Replaces deleting body faces (whole triangles, which opened gaps at the cuff and collar as the arm
+    bent), and then hiding skin within 3.3 cm of cloth in the T-pose: that cut where cloth was near but
+    not over it, a jacket's hem over the jeans' waistband, a cuff over the hand, and standing the cuts
+    showed as torn skin round the waist and wrists and a hole through the back of the hand.
     """
-    alpha = np.ones(len(points))
-    if not covers:
-        return alpha
-    near = nearest_distance(points, np.vstack([c.vertices for c in covers]))
-
-    edges = []
-    for cover in covers:
-        from garments import open_rim
-        rim = open_rim(cover)
-        if len(rim):
-            edges.append(cover.vertices[rim])
-    from_edge = (nearest_distance(points, np.vstack(edges)) if edges
-                 else np.full(len(points), np.inf))
-
-    under = np.clip((reach - near) / feather, 0.0, 1.0)
-    inside = np.clip((from_edge - margin) / feather, 0.0, 1.0)
-    return 1.0 - under * inside
+    from garments import _ray_hits
+    cache = {} if cache is None else cache          # per (pose, garment), when the points are the same each call
+    covered = np.ones(len(views[0][0]), dtype=bool)
+    for k, (points, normals, covers) in enumerate(views):
+        if not covers:
+            return np.ones(len(points))
+        here = np.zeros(len(points), dtype=bool)
+        for c in covers:
+            key = (k, id(c))
+            if key not in cache:
+                tris = np.asarray(c.vertices)[np.asarray(c.faces)]
+                cache[key] = (c, (_ray_hits(points, normals, tris, out_reach) < np.inf)
+                              | (_ray_hits(points, -normals, tris, in_reach) < np.inf))
+            here |= cache[key][1]
+        covered &= here
+    points = views[0][0]
+    from_shown = nearest_distance(points, points[~covered]) if (~covered).any() else np.full(len(points), np.inf)
+    return 1.0 - covered * np.clip((from_shown - margin) / feather, 0.0, 1.0)
 
 
 def hair_colour(photo, landmarks, cheek_pixels: np.ndarray | None = None) -> np.ndarray:
